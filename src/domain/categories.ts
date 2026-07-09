@@ -1,0 +1,65 @@
+import { personalCategory, personalMemberId, type CategoryKey, type FixedCategoryKey, type Member } from "./types";
+
+export interface CategoryInfo {
+  label: string;
+  color: string;
+}
+
+/** The fixed household categories (everything except the per-member personal ones). */
+export const FIXED_CATEGORIES: Record<FixedCategoryKey, CategoryInfo> = {
+  housing: { label: "Housing", color: "#5b8cff" },
+  food: { label: "Food & Dining", color: "#f2b84b" },
+  transport: { label: "Transport", color: "#42c7a5" },
+  lifestyle: { label: "Lifestyle", color: "#b98cff" },
+  family_support: { label: "Family", color: "#5fd6e8" },
+  investments: { label: "Investments", color: "#67d66f" },
+  uncategorized: { label: "Uncategorized", color: "#7b8194" },
+};
+
+const UNKNOWN_PERSONAL: CategoryInfo = { label: "Personal (former member)", color: "#7b8194" };
+
+/** Suggested colours for new members, distinct from each other. */
+export const MEMBER_PALETTE = ["#5b8cff", "#ff80b5", "#f2b84b", "#42c7a5", "#b98cff", "#ff786f", "#5fd6e8", "#67d66f"];
+
+/** A colour for a new member: the first palette entry not already in use. */
+export function nextMemberColor(members: Member[]): string {
+  const used = new Set(members.map((m) => m.color.toLowerCase()));
+  return MEMBER_PALETTE.find((color) => !used.has(color.toLowerCase())) ?? MEMBER_PALETTE[members.length % MEMBER_PALETTE.length]!;
+}
+
+// Personal categories sit between "lifestyle" and "family_support" in the picker.
+const FIXED_BEFORE_PERSONAL: FixedCategoryKey[] = ["housing", "food", "transport", "lifestyle"];
+const FIXED_AFTER_PERSONAL: FixedCategoryKey[] = ["family_support", "investments", "uncategorized"];
+
+/** Any string that is syntactically a valid category key (member-independent). */
+export function isCategoryKey(value: unknown): value is CategoryKey {
+  return typeof value === "string" && (value in FIXED_CATEGORIES || /^personal:.+/.test(value));
+}
+
+/** Label + colour for a category, resolving personal keys against the members. */
+export function categoryInfo(key: CategoryKey, members: Member[]): CategoryInfo {
+  const memberId = personalMemberId(key);
+  if (memberId) {
+    const member = members.find((m) => m.id === memberId);
+    return member ? { label: member.name, color: member.color } : UNKNOWN_PERSONAL;
+  }
+  return FIXED_CATEGORIES[key as FixedCategoryKey] ?? FIXED_CATEGORIES.uncategorized;
+}
+
+export interface CategoryOption extends CategoryInfo {
+  key: CategoryKey;
+}
+
+/** All selectable categories in display order, one personal bucket per member. */
+export function categoryOptions(members: Member[]): CategoryOption[] {
+  return [
+    ...FIXED_BEFORE_PERSONAL.map((key) => ({ key, ...FIXED_CATEGORIES[key] })),
+    ...members.map((m) => ({ key: personalCategory(m.id), label: m.name, color: m.color })),
+    ...FIXED_AFTER_PERSONAL.map((key) => ({ key, ...FIXED_CATEGORIES[key] })),
+  ];
+}
+
+/** Selectable spending categories (everything except "uncategorized"). */
+export function spendingCategoryOptions(members: Member[]): CategoryOption[] {
+  return categoryOptions(members).filter((option) => option.key !== "uncategorized");
+}

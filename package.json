@@ -1,0 +1,36 @@
+{
+  "name": "mizan",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Deterministic, offline household finance PWA. Client-side statement import, per-member settlement, no server, no telemetry — your data never leaves the device.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/munsif3/mizan.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^6.1.200",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "crypto-js": "^4.2.0",
+    "jsdom": "^26.1.0",
+    "pdf-lib": "^1.17.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.12",
+    "vitest": "^3.2.4"
+  }
+}

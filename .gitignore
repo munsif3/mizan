@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+.firebase/
+# Personal Firebase deploy target — created per-machine via `firebase use --add`
+.firebaserc

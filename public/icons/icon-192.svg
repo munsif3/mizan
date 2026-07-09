@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" role="img" aria-label="Mizan">
+  <rect width="192" height="192" rx="42" fill="#10131b"/>
+  <circle cx="96" cy="96" r="62" fill="#f2d27c"/>
+  <circle cx="96" cy="96" r="51" fill="#10131b"/>
+  <path d="M96 43v106" stroke="#f2d27c" stroke-width="11" stroke-linecap="round"/>
+  <path d="M58 78h76" stroke="#f2d27c" stroke-width="11" stroke-linecap="round"/>
+  <path d="M70 78l-22 37h44L70 78Z" fill="#7bd2c5"/>
+  <path d="M122 78l-22 37h44L122 78Z" fill="#ffb86b"/>
+  <path d="M68 135h56" stroke="#f2d27c" stroke-width="11" stroke-linecap="round"/>
+</svg>
