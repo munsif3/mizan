@@ -1,0 +1,79 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function metaPath(householdId) {
+      return /databases/$(database)/documents/households/$(householdId)/meta/current;
+    }
+
+    function isHouseholdDataCollection(collectionId) {
+      return collectionId in [
+        "settings",
+        "transactions",
+        "accounts",
+        "fixedCosts",
+        "incomeReceipts",
+        "members",
+        "customCategories",
+        "counterparties",
+        "merchantRules",
+        "csvPresets"
+      ];
+    }
+
+    function isMember(householdId) {
+      return signedIn()
+        && exists(metaPath(householdId))
+        && get(metaPath(householdId)).data.membersByUid[request.auth.uid].role in ["owner", "member"];
+    }
+
+    function isMemberAfter(householdId) {
+      return signedIn()
+        && existsAfter(metaPath(householdId))
+        && getAfter(metaPath(householdId)).data.membersByUid[request.auth.uid].role in ["owner", "member"];
+    }
+
+    function isOwner(householdId) {
+      return signedIn()
+        && exists(metaPath(householdId))
+        && get(metaPath(householdId)).data.ownerUid == request.auth.uid;
+    }
+
+    function isSelfInviteJoin() {
+      return signedIn()
+        && resource.data.inviteCode == request.resource.data.inviteCode
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.membersByUid.diff(resource.data.membersByUid).affectedKeys().hasOnly([request.auth.uid])
+        && request.resource.data.membersByUid[request.auth.uid].role in ["owner", "member"];
+    }
+
+    match /households/{householdId}/meta/current {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if isOwner(householdId) || isSelfInviteJoin();
+      allow delete: if isOwner(householdId);
+    }
+
+    match /households/{householdId}/{collectionId}/{docId} {
+      allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
+      allow write: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
+    }
+
+    match /users/{uid}/households/{householdId} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /users/{uid}/profile/current {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

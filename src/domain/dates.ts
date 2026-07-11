@@ -5,6 +5,29 @@ export function monthOf(date: string | undefined): string {
   return String(date ?? "").slice(0, 7);
 }
 
+/**
+ * The month most of these transactions fall in; ties resolve to the later month.
+ * A card statement period straddles a calendar boundary, so an import lands rows
+ * in two months — this picks the one worth showing. Row order is not a signal:
+ * statements are printed in post-date order while `date` is the transaction date.
+ */
+export function dominantMonth(transactions: { date: string }[]): string {
+  const counts = new Map<string, number>();
+  for (const txn of transactions) {
+    const month = monthOf(txn.date);
+    if (month) counts.set(month, (counts.get(month) ?? 0) + 1);
+  }
+  let best = "";
+  let bestCount = 0;
+  for (const [month, count] of counts) {
+    if (count > bestCount || (count === bestCount && month > best)) {
+      best = month;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 /** "2026-07" -> "Jul 2026" */
 export function monthLabel(month: string): string {
   if (!month) return "";

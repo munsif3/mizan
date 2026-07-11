@@ -1,6 +1,8 @@
 import { ownerOf } from "./accounts";
 import { categoryInfo, spendingCategoryOptions } from "./categories";
 import { addMonths, daysInMonth, isoDateOf, monthOf } from "./dates";
+import { resolveMonthIncome, type PortionResolution } from "./income";
+import { SPEND_KINDS } from "./movements";
 import {
   personalCategory,
   personalMemberId,
@@ -29,6 +31,7 @@ export interface MovementRow extends CategoryRow {
 
 export interface HistoryRow {
   month: string;
+  income: number;
   spend: number;
   saved: number;
   rate: number;
@@ -60,8 +63,13 @@ export interface MonthSummary {
   dayNumber: number;
   daysInMonth: number;
   daysLeft: number;
+  /** Most recent transaction date in the selected month, regardless of owner filter. */
+  latestTransactionDate: string;
+  /** Calendar days since that transaction for the current month; null for past months or no data. */
+  dataAgeDays: number | null;
 
   incomeTotal: number;
+  incomeItems: PortionResolution[];
   cardSpend: number;
   fixedSpend: number;
   totalSpend: number;
@@ -94,9 +102,14 @@ export interface MonthSummary {
   fairShare: number;
   transfers: Transfer[];
 
+  /** Uncategorized spend in the selected month — gates the month check-in. */
   uncategorizedCount: number;
+  /** Uncategorized spend across every month — the size of the review queue. */
+  reviewQueueCount: number;
   /** fixed costs active now whose `until` falls within the next 2 months */
   endingSoon: FixedCost[];
+  /** Exact category/amount matches that may represent the same payment twice. */
+  possibleFixedCostDuplicates: FixedCost[];
 }
 
 /** Our share of a transaction after an optional split. */
@@ -108,14 +121,21 @@ export function netAmount(txn: Transaction): number {
 }
 
 /**
- * True for a transaction that counts as spend — i.e. not a credit (deposit,
- * salary, transfer in). The one place "what counts as spend" is defined;
- * every spend figure in this file, and any UI component that needs a spend
- * total, should go through this (or `spendTotal`) rather than re-testing
- * `txn.direction` inline.
+ * The movement kinds that count as spend. Everything else — account hops,
+ * lending, repayments, investments, plain credits — is money that moved but was
+ * not spent, so it stays out of every spend/save-rate figure.
+ */
+export { SPEND_KINDS } from "./movements";
+
+/**
+ * True for a transaction that counts as spend. The one place "what counts as
+ * spend" is defined; every spend figure in this file, and any UI component that
+ * needs a spend total, should go through this (or `spendTotal`) rather than
+ * re-testing `txn.kind` inline. Falls back to `direction` for any row without a
+ * kind (shouldn't happen post-migration, but stays defensive).
  */
 export function isSpend(txn: Transaction): boolean {
-  return txn.direction !== "credit";
+  return txn.direction !== "credit" && (txn.kind ? SPEND_KINDS.has(txn.kind) : true);
 }
 
 /** Sum of net amounts for the spend-only subset of a transaction list. */
@@ -130,6 +150,7 @@ export function fixedActive(fixed: FixedCost, month: string): boolean {
 /** Sorted months that have data, always including the current calendar month. */
 export function monthsWithData(data: AppData, today: Date): string[] {
   const months = new Set(data.transactions.map((txn) => monthOf(txn.date)).filter(Boolean));
+  for (const receipt of data.incomeReceipts) months.add(receipt.month);
   months.add(isoDateOf(today).slice(0, 7));
   return [...months].sort();
 }
@@ -137,10 +158,6 @@ export function monthsWithData(data: AppData, today: Date): string[] {
 function ownerMatches(txn: Transaction, owner: OwnerFilter, accounts: Account[]): boolean {
   if (owner === "all") return true;
   return ownerOf(txn.account, accounts) === owner || txn.category === personalCategory(owner);
-}
-
-function incomeOf(members: Member[]): number {
-  return members.reduce((sum, member) => sum + (Number(member.income) || 0), 0);
 }
 
 /**
@@ -197,9 +214,10 @@ function categoryTotalForMonth(data: AppData, category: CategoryKey, month: stri
 }
 
 export function computeMonthSummary(data: AppData, month: string, owner: OwnerFilter, today: Date): MonthSummary {
-  const { targetSaveRate, members } = data.settings;
+  const { targetSaveRate, members, customCategories } = data.settings;
   const memberIds = new Set(members.map((m) => m.id));
-  const incomeTotal = incomeOf(members);
+  const income = resolveMonthIncome(members, data.incomeReceipts, data.settings.currency, data.settings.fxRates, month, today);
+  const incomeTotal = income.total;
 
   // Credits (deposits, salary, transfers in) are kept in monthTransactions for
   // display (the Transactions table shows the account's full history) but are
@@ -221,6 +239,25 @@ export function computeMonthSummary(data: AppData, month: string, owner: OwnerFi
   const isCurrentMonth = month === isoDateOf(today).slice(0, 7);
   const dayNumber = isCurrentMonth ? today.getDate() : totalDays;
   const daysLeft = Math.max(0, totalDays - dayNumber);
+  const latestTransactionDate = monthTransactionsAll.reduce(
+    (latest, txn) => (txn.date > latest ? txn.date : latest),
+    "",
+  );
+  const dataAgeDays =
+    isCurrentMonth && latestTransactionDate
+      ? Math.max(
+          0,
+          Math.floor(
+            (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) -
+              Date.UTC(
+                Number(latestTransactionDate.slice(0, 4)),
+                Number(latestTransactionDate.slice(5, 7)) - 1,
+                Number(latestTransactionDate.slice(8, 10)),
+              )) /
+              86_400_000,
+          ),
+        )
+      : null;
 
   const targetSpend = incomeTotal * (1 - targetSaveRate / 100);
   const dailyAllowance = totalDays ? targetSpend / totalDays : 0;
@@ -241,13 +278,13 @@ export function computeMonthSummary(data: AppData, month: string, owner: OwnerFi
   }
   const categoryRows: CategoryRow[] = [...categoryTotals.entries()]
     .map(([key, value]) => {
-      const info = categoryInfo(key, members);
+      const info = categoryInfo(key, members, customCategories);
       return { key, name: info.label, value, color: info.color };
     })
     .filter((row) => row.value > 0)
     .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
   const maxCategoryValue = Math.max(...categoryRows.map((row) => row.value), 1);
-  const fullCategoryRows: CategoryRow[] = spendingCategoryOptions(members).map(
+  const fullCategoryRows: CategoryRow[] = spendingCategoryOptions(members, customCategories).map(
     (option) =>
       categoryRows.find((row) => row.key === option.key) ?? {
         key: option.key,
@@ -331,9 +368,22 @@ export function computeMonthSummary(data: AppData, month: string, owner: OwnerFi
   const sharedSpend = Math.max(0, totalSpend - totalPersonal);
   const fairShare = members.length ? householdShared / members.length : 0;
 
-  const uncategorizedCount = data.transactions.filter((txn) => txn.category === "uncategorized" && isSpend(txn)).length;
+  // The check-in is month-specific. Old review debt should remain in the full
+  // review queue, but must not make the selected month's forecast look untrusted.
+  const uncategorizedCount = monthSpendAll.filter((txn) => txn.category === "uncategorized").length;
+  // The queue itself spans every month, so its count must too — a statement
+  // period straddles two months, and the badge sits directly above the queue.
+  // Same membership test as `reviewQueue`, so the two cannot drift.
+  const reviewQueueCount = data.transactions.filter(
+    (txn) => txn.category === "uncategorized" && isSpend(txn),
+  ).length;
   const horizon = addMonths(month, 2);
   const endingSoon = monthFixed.filter((fixed) => fixed.until && fixed.until <= horizon);
+  const possibleFixedCostDuplicates = monthFixed.filter((fixed) =>
+    monthSpendAll.some(
+      (txn) => txn.category === fixed.category && Math.abs(netAmount(txn) - Number(fixed.amount || 0)) < 0.01,
+    ),
+  );
 
   return {
     month,
@@ -341,7 +391,10 @@ export function computeMonthSummary(data: AppData, month: string, owner: OwnerFi
     dayNumber,
     daysInMonth: totalDays,
     daysLeft,
+    latestTransactionDate,
+    dataAgeDays,
     incomeTotal,
+    incomeItems: income.items,
     cardSpend,
     fixedSpend,
     totalSpend,
@@ -369,7 +422,9 @@ export function computeMonthSummary(data: AppData, month: string, owner: OwnerFi
     fairShare,
     transfers,
     uncategorizedCount,
+    reviewQueueCount,
     endingSoon,
+    possibleFixedCostDuplicates,
   };
 }
 
@@ -394,18 +449,25 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
 }
 
 /**
- * Month-by-month spend/saved/rate. Uses current income for all months —
- * a documented simplification (see ARCHITECTURE.md).
+ * Month-by-month spend/saved/rate. Confirmed receipts apply to their recorded
+ * month; months without receipts use the current expected portions.
  */
-export function computeHistory(data: AppData, months: string[]): HistoryRow[] {
-  const incomeTotal = incomeOf(data.settings.members);
+export function computeHistory(data: AppData, months: string[], today: Date): HistoryRow[] {
   return months.map((month) => {
+    const incomeTotal = resolveMonthIncome(
+      data.settings.members,
+      data.incomeReceipts,
+      data.settings.currency,
+      data.settings.fxRates,
+      month,
+      today,
+    ).total;
     const spend =
       spendTotal(data.transactions.filter((txn) => monthOf(txn.date) === month)) +
       data.fixedCosts
         .filter((fixed) => fixedActive(fixed, month))
         .reduce((sum, fixed) => sum + Number(fixed.amount || 0), 0);
     const saved = incomeTotal - spend;
-    return { month, spend, saved, rate: incomeTotal ? (saved / incomeTotal) * 100 : 0 };
+    return { month, income: incomeTotal, spend, saved, rate: incomeTotal ? (saved / incomeTotal) * 100 : 0 };
   });
 }

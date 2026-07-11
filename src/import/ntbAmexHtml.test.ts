@@ -19,7 +19,7 @@ function statementHtml(transactions: object[], period = "24-May-2026 to 23-Jun-2
 }
 
 describe("parseCardStatement", () => {
-  it("extracts debits, resolves year-less dates against the statement period, and skips credits", () => {
+  it("extracts debits and payments and resolves year-less dates against the statement period", () => {
     const html = statementHtml([
       { txId: 1, postDate: "25 MAY", txDate: "21 MAY", description: "UBER EATS", txCurrency: "LKR", txAmount: 4080, txConvertedAmount: 4080, crDr: "Dr" },
       { txId: 2, postDate: "25 MAY", txDate: "25 MAY", description: "CASH PAYMENT-FINACLE", txCurrency: "LKR", txAmount: 70524.25, txConvertedAmount: 70524.25, crDr: "Cr" },
@@ -27,10 +27,17 @@ describe("parseCardStatement", () => {
     ]);
 
     const txns = parseCardStatement(html, "fallback");
-    expect(txns).toHaveLength(2);
+    expect(txns).toHaveLength(3);
     expect(txns[0]).toMatchObject({ date: "2026-05-21", description: "UBER EATS", amount: 4080, direction: "debit", category: "uncategorized" });
+    expect(txns[1]).toMatchObject({
+      date: "2026-05-25",
+      description: "CASH PAYMENT-FINACLE",
+      amount: 70524.25,
+      direction: "credit",
+      kind: "account_credit",
+    });
     // "01 JUN" resolves to 2026 (the period's end month/year), not the start year
-    expect(txns[1]).toMatchObject({ date: "2026-06-01", amount: 12450 });
+    expect(txns[2]).toMatchObject({ date: "2026-06-01", amount: 12450 });
     expect(txns.every((t) => t.account.includes("0002"))).toBe(true);
   });
 
@@ -48,10 +55,10 @@ describe("parseCardStatement", () => {
     );
   });
 
-  it("throws when every row is a credit/payment", () => {
+  it("keeps a statement containing only a credit/payment", () => {
     const html = statementHtml([
       { txId: 1, postDate: "25 MAY", txDate: "25 MAY", description: "PAYMENT", txCurrency: "LKR", txAmount: 1000, txConvertedAmount: 1000, crDr: "Cr" },
     ]);
-    expect(() => parseCardStatement(html, "x")).toThrow(/found no debit transactions/i);
+    expect(parseCardStatement(html, "x")[0]).toMatchObject({ amount: 1000, direction: "credit", kind: "account_credit" });
   });
 });

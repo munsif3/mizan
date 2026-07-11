@@ -60,6 +60,29 @@ describe("parseDepositStatement", () => {
     expect(secondAccount.direction).toBe("credit");
   });
 
+  it("uses the booked LKR credit for an explicit USD conversion row", () => {
+    const html = `<html><script>
+      var savingsDataList = [];
+      var currentDataList = [];
+      ${oneSavingsAccount(
+        "100000000001",
+        `stData.push({
+          transactionDateFull: "25-06-2026",
+          savingsTransactionDetails: "FUND TRANSFER USD 1900 @332",
+          transactionDebit: "0.00",
+          transactionCredit: "630,800.00",
+          runningTotal: "884,638.56"
+        });`,
+      )}
+    </script></html>`;
+
+    expect(parseDepositStatement(html, "fallback")[0]).toMatchObject({
+      amount: 630800,
+      direction: "credit",
+      description: "FUND TRANSFER USD 1900 @332",
+    });
+  });
+
   it("throws when neither savings nor current account data is present", () => {
     expect(() =>
       parseDepositStatement("<html><script>var savingsDataList = []; var currentDataList = [];</script></html>", "x"),

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { addMonths, daysInMonth, monthLabel, monthOf, toISODate, toISODateOrdered } from "./dates";
+import { addMonths, daysInMonth, dominantMonth, monthLabel, monthOf, toISODate, toISODateOrdered } from "./dates";
 import { filterNew, transactionSignature } from "./dedupe";
 import { formatMoney, parseAmount } from "./money";
 import { applyRules, cleanMerchant, matchRule, withRule } from "./rules";
-import type { MerchantRules, Transaction } from "./types";
+import type { CategoryKey, MerchantRule, MerchantRules, Transaction } from "./types";
 
 function txn(overrides: Partial<Transaction>): Transaction {
   return {
@@ -16,8 +16,14 @@ function txn(overrides: Partial<Transaction>): Transaction {
     note: "",
     source: "imported",
     direction: "debit",
+    kind: "expense",
     ...overrides,
   };
+}
+
+/** A plain expense rule for the given category — the common test shape. */
+function rule(category: CategoryKey, extra: Partial<MerchantRule> = {}): MerchantRule {
+  return { category, kind: "expense", ...extra };
 }
 
 describe("money", () => {
@@ -64,27 +70,45 @@ describe("dates", () => {
     expect(monthLabel("2026-09")).toBe("Sep 2026");
     expect(daysInMonth("2026-02")).toBe(28);
   });
+
+  it("picks the month holding most of a statement's rows", () => {
+    // A 07 Jun - 06 Jul statement: the bulk is June, so June is where to land.
+    // The last row printed is a July one — row order must not sway this.
+    const statement = [
+      { date: "2026-06-15" },
+      { date: "2026-06-22" },
+      { date: "2026-06-27" },
+      { date: "2026-07-02" },
+    ];
+    expect(dominantMonth(statement)).toBe("2026-06");
+  });
+
+  it("breaks a dominant-month tie toward the later month", () => {
+    expect(dominantMonth([{ date: "2026-06-30" }, { date: "2026-07-01" }])).toBe("2026-07");
+    expect(dominantMonth([])).toBe("");
+    expect(dominantMonth([{ date: "" }])).toBe("");
+  });
 });
 
 describe("rules engine", () => {
   const rules: MerchantRules = withRule(
-    withRule(withRule({}, "KEELLS", "food"), "KEELLS PHARMACY", "lifestyle"),
-    "UBER", "transport",
+    withRule(withRule({}, "KEELLS", rule("food")), "KEELLS PHARMACY", rule("lifestyle")),
+    "UBER", rule("transport"),
   );
 
   it("prefers exact match, then longest substring", () => {
-    expect(matchRule("KEELLS", rules)).toBe("food");
-    expect(matchRule("KEELLS PHARMACY COLOMBO", rules)).toBe("lifestyle");
-    expect(matchRule("KEELLS SUPER WATTALA", rules)).toBe("food");
-    expect(matchRule("UBER *TRIP", rules)).toBe("transport");
+    expect(matchRule("KEELLS", rules)?.category).toBe("food");
+    expect(matchRule("KEELLS PHARMACY COLOMBO", rules)?.category).toBe("lifestyle");
+    expect(matchRule("KEELLS SUPER WATTALA", rules)?.category).toBe("food");
+    expect(matchRule("UBER *TRIP", rules)?.category).toBe("transport");
     expect(matchRule("UNKNOWN SHOP", rules)).toBeNull();
   });
 
   it("is order-independent (deterministic)", () => {
-    const forward = withRule(withRule({}, "ABC", "food"), "ABC XYZ", "transport");
-    const reversed = withRule(withRule({}, "ABC XYZ", "transport"), "ABC", "food");
-    expect(matchRule("ABC XYZ STORE", forward)).toBe("transport");
-    expect(matchRule("ABC XYZ STORE", reversed)).toBe("transport");
+    const forward = withRule(withRule({}, "ABC", rule("food")), "ABC XYZ", rule("transport"));
+    const reversed = withRule(withRule({}, "ABC XYZ", rule("transport")), "ABC", rule("food"));
+    expect(matchRule("ABC XYZ STORE", forward)?.category).toBe("transport");
+    expect(matchRule("ABC XYZ STORE", reversed)?.category).toBe("transport");
   });
 
   it("normalizes merchants and re-applies across transactions", () => {
@@ -92,6 +116,26 @@ describe("rules engine", () => {
     const result = applyRules([txn({}), txn({ id: "t2", description: "PickMe Ride" })], rules);
     expect(result[0]!.category).toBe("food");
     expect(result[1]!.category).toBe("uncategorized");
+  });
+
+  it("applies a rule's movement kind and counterparty, not just its category", () => {
+    const lendRules = withRule({}, "CASH TO SAM", rule("uncategorized", { kind: "money_lent", counterpartyId: "sam" }));
+    const [result] = applyRules([txn({ description: "CASH TO SAM" })], lendRules);
+    expect(result!.kind).toBe("money_lent");
+    expect(result!.counterpartyId).toBe("sam");
+  });
+
+  it("never applies a spend-kind rule to a credit, but still applies transfer rules", () => {
+    const expenseRules = withRule({}, "AMAZON MKTPLACE", rule("lifestyle", { kind: "expense" }));
+    const debit = txn({ id: "debit", description: "AMAZON MKTPLACE", direction: "debit", kind: "expense" });
+    const refund = txn({ id: "refund", description: "AMAZON MKTPLACE REFUND", direction: "credit", kind: "account_credit" });
+    const result = applyRules([debit, refund], expenseRules);
+    expect(result[0]?.category).toBe("lifestyle");
+    expect(result[1]?.kind).toBe("account_credit");
+    expect(result[1]?.category).toBe("uncategorized");
+
+    const transferRules = withRule({}, "AMAZON MKTPLACE", rule("uncategorized", { kind: "internal_transfer" }));
+    expect(applyRules([refund], transferRules)[0]?.kind).toBe("internal_transfer");
   });
 });
 

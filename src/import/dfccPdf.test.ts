@@ -7,7 +7,7 @@ function line(y: number, ...cells: string[]): PdfLine {
 }
 
 describe("parseLines", () => {
-  it("extracts debits, skips inline-CR credits, joins a wrapped description line, and finds the account from the statement banner", () => {
+  it("extracts debits and inline-CR payments, joins a wrapped description line, and finds the account from the statement banner", () => {
     // y-spacing matches a real statement: ~14-15 units between transaction rows, ~9 for a genuine wrap.
     const lines: PdfLine[] = [
       // trilingual header: verified real layout has no single row with every English label
@@ -24,9 +24,8 @@ describe("parseLines", () => {
     ];
 
     const txns = parseLines(lines, "fallback");
-    expect(txns).toHaveLength(3);
+    expect(txns).toHaveLength(4);
     expect(txns.every((t) => t.account === "DFCC 489099******0001")).toBe(true);
-    expect(txns.every((t) => t.direction === "debit")).toBe(true);
 
     expect(txns[0]).toMatchObject({ date: "2026-06-05", description: "THE FAB COLOMBO 03", amount: 1100 });
     expect(txns[1]).toMatchObject({
@@ -34,7 +33,14 @@ describe("parseLines", () => {
       description: "FX FEE Google YouTube 6502530000-ADJUSTMENT",
       amount: 32.52,
     });
-    expect(txns[2]).toMatchObject({ date: "2026-06-15", description: "Dialog Axiata PLC Colombo 02", amount: 200 });
+    expect(txns[2]).toMatchObject({
+      date: "2026-06-13",
+      description: "Credit Transfer",
+      amount: 70710.29,
+      direction: "credit",
+      kind: "account_credit",
+    });
+    expect(txns[3]).toMatchObject({ date: "2026-06-15", description: "Dialog Axiata PLC Colombo 02", amount: 200 });
   });
 
   it("does not attach a continuation line across a non-transaction row", () => {

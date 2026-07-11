@@ -1,5 +1,5 @@
 import { toISODateOrdered } from "../domain/dates";
-import { uid, type CsvMapping, type Transaction } from "../domain/types";
+import { defaultKind, uid, type CsvMapping, type Transaction } from "../domain/types";
 
 export interface CsvMapResult {
   transactions: Transaction[];
@@ -125,6 +125,7 @@ export function mapCsvRows(rows: string[][], mapping: CsvMapping, fallbackAccoun
       note: "",
       source: "imported",
       direction,
+      kind: defaultKind(direction),
     });
   });
 

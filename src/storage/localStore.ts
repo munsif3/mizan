@@ -1,35 +1,40 @@
 import type { AppData } from "../domain/types";
 import { migrate } from "./schema";
 
-const STORAGE_KEY = "mizan_v2";
-/** trackr's key — read once for seamless migration when served from the same origin. */
-const LEGACY_KEY = "trackr_v1";
+export const STORAGE_KEY = "mizan_v2";
+export const LEGACY_KEY = "trackr_v1";
 
-export function loadData(): AppData {
-  if (typeof localStorage === "undefined") return migrate(null);
+function readLegacyPayload(): unknown {
+  if (typeof localStorage === "undefined") return null;
   const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_KEY);
+  return stored ? JSON.parse(stored) : null;
+}
+
+export function hasLegacyLocalData(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(STORAGE_KEY) !== null || localStorage.getItem(LEGACY_KEY) !== null;
+}
+
+export function loadLegacyLocalData(): AppData | null {
   try {
-    return migrate(stored ? JSON.parse(stored) : null);
+    const payload = readLegacyPayload();
+    return payload ? migrate(payload) : null;
   } catch {
-    return migrate(null);
+    return null;
   }
 }
 
-export function saveData(data: AppData): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
-
-export function clearData(): void {
+export function clearLegacyLocalData(): void {
   if (typeof localStorage === "undefined") return;
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LEGACY_KEY);
 }
 
 export function serializeBackup(data: AppData): string {
   return JSON.stringify(data, null, 2);
 }
 
-/** Parse a backup file (Mizan v2 or trackr v1 JSON). Throws on unreadable input. */
+/** Parse a backup file (Mizan v2+ or trackr v1 JSON). Throws on unreadable input. */
 export function parseBackup(text: string): AppData {
   return migrate(JSON.parse(text));
 }

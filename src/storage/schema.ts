@@ -1,20 +1,45 @@
 import { seedAccounts } from "../domain/accounts";
 import { isCategoryKey } from "../domain/categories";
+import { normalizeFxTransaction } from "../domain/fx";
+import { defaultIncomePortion, receiptId } from "../domain/income";
 import { cleanMerchant } from "../domain/rules";
-import { personalCategory, RESERVED_IDS, uid } from "../domain/types";
+import { defaultKind, RESERVED_IDS, uid } from "../domain/types";
 import type {
   Account,
   AppData,
   CategoryKey,
+  Counterparty,
   CsvMapping,
+  CustomCategory,
   FixedCost,
+  IncomePortion,
+  IncomeReceipt,
   Member,
+  MemberId,
+  MerchantRule,
   MerchantRules,
+  MovementKind,
   Split,
   Transaction,
 } from "../domain/types";
+import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-export const SCHEMA_VERSION = 5 as const;
+export const SCHEMA_VERSION = 7 as const;
+
+const MOVEMENT_KINDS = new Set<MovementKind>([
+  "expense",
+  "gift_or_handout",
+  "loan_payment",
+  "internal_transfer",
+  "money_lent",
+  "repayment_received",
+  "investment_transfer",
+  "account_credit",
+]);
+
+function asKind(value: unknown, direction: "debit" | "credit"): MovementKind {
+  return typeof value === "string" && MOVEMENT_KINDS.has(value as MovementKind) ? (value as MovementKind) : defaultKind(direction);
+}
 
 export function emptyData(): AppData {
   return {
@@ -23,21 +48,24 @@ export function emptyData(): AppData {
     merchantRules: {},
     accounts: [],
     fixedCosts: [],
+    incomeReceipts: [],
     settings: {
       members: [],
       targetSaveRate: 25,
       currency: "",
       locale: "",
+      fxRates: {},
       csvPresets: {},
+      counterparties: [],
+      customCategories: [],
     },
   };
 }
 
 function asCategory(value: unknown): CategoryKey {
   if (typeof value === "string") {
-    // Legacy per-person keys (e.g. "munsif_personal") become "personal:<id>".
-    const legacy = value.match(/^(.+)_personal$/);
-    if (legacy) return personalCategory(legacy[1]!);
+    const legacy = legacyCategory(value);
+    if (legacy) return legacy;
     if (isCategoryKey(value)) return value;
   }
   return "uncategorized";
@@ -60,6 +88,9 @@ function asTransaction(value: unknown, splits: Record<string, unknown>): Transac
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amount)) return null;
   const id = String(raw.id ?? "") || `txn_${Math.random().toString(36).slice(2, 11)}`;
   const split = asSplit(raw.split) ?? asSplit(splits[id]);
+  // pre-v4 data has no direction: every stored transaction was debit-only by construction
+  const direction = raw.direction === "credit" ? "credit" : "debit";
+  const counterpartyId = typeof raw.counterpartyId === "string" && raw.counterpartyId ? raw.counterpartyId : undefined;
   return {
     id,
     date,
@@ -70,8 +101,10 @@ function asTransaction(value: unknown, splits: Record<string, unknown>): Transac
     account: String(raw.account ?? raw.card ?? "Unknown"),
     note: String(raw.note ?? ""),
     source: raw.source === "manual" ? "manual" : "imported",
-    // pre-v4 data has no direction: every stored transaction was debit-only by construction
-    direction: raw.direction === "credit" ? "credit" : "debit",
+    direction,
+    // pre-v6 data has no kind: default from direction (debit → expense, credit → account_credit)
+    kind: asKind(raw.kind, direction),
+    ...(counterpartyId ? { counterpartyId } : {}),
     ...(split ? { split } : {}),
   };
 }
@@ -104,6 +137,31 @@ function asAccount(value: unknown): Account | null {
   };
 }
 
+function asPortion(value: unknown): IncomePortion | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const amount = Number(raw.amount);
+  const label = String(raw.label ?? "").trim() || "Income portion";
+  const rawWindow = raw.window && typeof raw.window === "object" ? raw.window as Record<string, unknown> : null;
+  let window: IncomePortion["window"] = null;
+  if (rawWindow) {
+    const first = Number(rawWindow.startDay);
+    const second = Number(rawWindow.endDay);
+    if (Number.isInteger(first) && Number.isInteger(second) && first >= 1 && first <= 31 && second >= 1 && second <= 31) {
+      window = { startDay: Math.min(first, second), endDay: Math.max(first, second) };
+    }
+  }
+  return {
+    id: String(raw.id ?? "").trim() || uid("por"),
+    label,
+    amount: Number.isFinite(amount) ? Math.max(0, amount) : 0,
+    currency: String(raw.currency ?? "").trim().toUpperCase(),
+    taxRate: Number.isFinite(Number(raw.taxRate)) ? Math.max(0, Math.min(99.999999, Number(raw.taxRate))) : 0,
+    taxWithheld: raw.taxWithheld !== false,
+    window,
+  };
+}
+
 function asMember(value: unknown): Member | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
@@ -114,20 +172,98 @@ function asMember(value: unknown): Member | null {
     id,
     name,
     color: typeof raw.color === "string" && raw.color ? raw.color : "#5b8cff",
-    income: Number(raw.income) || 0,
+    portions: Array.isArray(raw.portions)
+      ? asList(raw.portions, asPortion)
+      : Number(raw.income) > 0
+        ? [defaultIncomePortion(id, Number(raw.income))]
+        : [],
   };
+}
+
+function asFxRates(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object") return {};
+  const rates: Record<string, number> = {};
+  for (const [rawCode, rawRate] of Object.entries(value as Record<string, unknown>)) {
+    const code = rawCode.trim().toUpperCase();
+    const rate = Number(rawRate);
+    if (/^[A-Z]{3}$/.test(code) && Number.isFinite(rate) && rate > 0) rates[code] = rate;
+  }
+  return rates;
+}
+
+function asReceipt(value: unknown, portionOwners: Map<string, MemberId>): IncomeReceipt | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const month = String(raw.month ?? "");
+  const portionId = String(raw.portionId ?? "").trim();
+  const owner = portionOwners.get(portionId);
+  const memberId = String(raw.memberId ?? "").trim();
+  const amount = Number(raw.amount);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || !portionId || !owner || owner !== memberId || !Number.isFinite(amount) || amount < 0) return null;
+  const date = String(raw.date ?? "");
+  const transactionId = typeof raw.transactionId === "string" ? raw.transactionId.trim() : "";
+  return {
+    id: receiptId(month, portionId),
+    month,
+    memberId,
+    portionId,
+    amount,
+    ...(/^\d{4}-\d{2}-\d{2}$/.test(date) ? { date } : {}),
+    ...(transactionId ? { transactionId } : {}),
+  };
+}
+
+function asRule(value: unknown): MerchantRule | null {
+  // v5 stored a bare category string; v6 stores { category, kind, counterpartyId? }.
+  if (typeof value === "string") {
+    const category = asCategory(value);
+    return category === "uncategorized" ? null : { category, kind: "expense" };
+  }
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const category = asCategory(raw.category);
+  const kind = asKind(raw.kind, "debit");
+  const counterpartyId = typeof raw.counterpartyId === "string" && raw.counterpartyId ? raw.counterpartyId : undefined;
+  // Drop a rule that classifies nothing (plain expense → uncategorized, no party);
+  // but a non-expense kind or a counterparty is itself a meaningful classification.
+  if (category === "uncategorized" && kind === "expense" && !counterpartyId) return null;
+  return { category, kind, ...(counterpartyId ? { counterpartyId } : {}) };
 }
 
 function asRules(value: unknown): MerchantRules {
   if (!value || typeof value !== "object") return {};
   const rules: MerchantRules = {};
-  for (const [merchant, category] of Object.entries(value as Record<string, unknown>)) {
+  for (const [merchant, rule] of Object.entries(value as Record<string, unknown>)) {
     const key = cleanMerchant(merchant);
-    const mapped = asCategory(category);
+    const mapped = asRule(rule);
     // Only keep an explicit rule, not a fallback to uncategorized.
-    if (key && mapped !== "uncategorized") rules[key] = mapped;
+    if (key && mapped) rules[key] = mapped;
   }
   return rules;
+}
+
+function asCounterparty(value: unknown): Counterparty | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const name = String(raw.name ?? "").trim();
+  if (!name) return null;
+  return { id: String(raw.id ?? "") || uid("cp"), name };
+}
+
+function asCustomCategory(value: unknown): CustomCategory | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const label = String(raw.label ?? "").trim();
+  if (!label) return null;
+  return {
+    id: String(raw.id ?? "") || uid("cat"),
+    label,
+    color: typeof raw.color === "string" && raw.color ? raw.color : "#7b8194",
+  };
+}
+
+function asList<T>(value: unknown, coerce: (item: unknown) => T | null): T[] {
+  return (Array.isArray(value) ? value : []).map(coerce).filter((item): item is T => item !== null);
 }
 
 function asCsvPresets(value: unknown): Record<string, CsvMapping> {
@@ -141,32 +277,16 @@ function asCsvPresets(value: unknown): Record<string, CsvMapping> {
 }
 
 /**
- * True when the source is legacy two-person (Munsif + Sara) data that predates
+ * True when the source is legacy member data that predates
  * the member list — v4 or a trackr v1 backup. Such data seeds two members whose
  * ids are the literal names, so account owners and category keys carry forward
  * without a lookup table.
  */
-function hasLegacyCoupleData(settingsRaw: Record<string, unknown>, incomeRaw: Record<string, unknown>, source: Record<string, unknown>): boolean {
-  if (Array.isArray(settingsRaw.members)) return false;
-  if ("munsif" in incomeRaw || "sara" in incomeRaw) return true;
-  const accounts = Array.isArray(source.accounts) ? source.accounts : [];
-  if (accounts.some((a) => a && typeof a === "object" && ((a as Record<string, unknown>).owner === "munsif" || (a as Record<string, unknown>).owner === "sara"))) {
-    return true;
-  }
-  const categorized = [
-    ...(Array.isArray(source.transactions) ? source.transactions : []),
-    ...(Array.isArray(source.fixedCosts) ? source.fixedCosts : []),
-  ];
-  return categorized.some(
-    (c) => c && typeof c === "object" && /^(munsif|sara)_personal$/.test(String((c as Record<string, unknown>).category ?? "")),
-  );
-}
-
 /**
  * Normalize any known stored/backup shape into schema v5.
  * Accepts Mizan v5/v4/v3/v2 data and trackr v1 backups (`splits` map, `card`
- * field, root-level `income`, `fixedNonCard`). Legacy two-person data seeds a
- * Munsif + Sara member list; data with no member list and no couple markers
+ * field, root-level `income`, `fixedNonCard`). Legacy data seeds a
+ * member list; data with no member list and no legacy member markers
  * yields an empty list (the app then shows onboarding). Accounts without a
  * registry get one seeded from the distinct labels. Unknown junk degrades to
  * empty data, never throws.
@@ -191,15 +311,13 @@ export function migrate(raw: unknown): AppData {
     ? (settingsRaw.income ?? source.income)
     : {}) as Record<string, unknown>;
 
-  const legacy = hasLegacyCoupleData(settingsRaw, incomeRaw, source);
+  const legacyIds = legacyMemberIds(settingsRaw, incomeRaw, source);
+  const legacy = legacyIds.length > 0;
   let members: Member[];
   if (Array.isArray(settingsRaw.members)) {
     members = settingsRaw.members.map(asMember).filter((m): m is Member => m !== null);
   } else if (legacy) {
-    members = [
-      { id: "munsif", name: "Munsif", color: "#5b8cff", income: Number(incomeRaw.munsif) || 0 },
-      { id: "sara", name: "Sara", color: "#ff80b5", income: Number(incomeRaw.sara) || 0 },
-    ];
+    members = legacyMembers(legacyIds, incomeRaw);
   } else {
     members = [];
   }
@@ -212,19 +330,35 @@ export function migrate(raw: unknown): AppData {
 
   const currency = typeof settingsRaw.currency === "string" && settingsRaw.currency ? settingsRaw.currency : legacy ? "LKR" : "";
   const locale = typeof settingsRaw.locale === "string" && settingsRaw.locale ? settingsRaw.locale : legacy ? "en-LK" : "";
+  members = members.map((member) => ({
+    ...member,
+    portions: member.portions.map((portion) => ({ ...portion, currency: portion.currency || currency })),
+  }));
+  const portionOwners = new Map(members.flatMap((member) => member.portions.map((portion) => [portion.id, member.id] as const)));
+  const normalizedTransactions = transactions.map((txn) => normalizeFxTransaction(txn, currency));
+  const transactionIds = new Set(normalizedTransactions.map((txn) => txn.id));
+  const incomeReceipts = asList(source.incomeReceipts, (value) => asReceipt(value, portionOwners)).map((receipt) => {
+    if (!receipt.transactionId || transactionIds.has(receipt.transactionId)) return receipt;
+    const { transactionId: _removed, ...unlinked } = receipt;
+    return unlinked;
+  });
 
   return {
     schemaVersion: SCHEMA_VERSION,
-    transactions,
+    transactions: normalizedTransactions,
     merchantRules: asRules(source.merchantRules),
     accounts,
     fixedCosts,
+    incomeReceipts,
     settings: {
       members,
       targetSaveRate: Number(settingsRaw.targetSaveRate) || 25,
       currency,
       locale,
+      fxRates: asFxRates(settingsRaw.fxRates),
       csvPresets: asCsvPresets(settingsRaw.csvPresets),
+      counterparties: asList(settingsRaw.counterparties, asCounterparty),
+      customCategories: asList(settingsRaw.customCategories, asCustomCategory),
     },
   };
 }

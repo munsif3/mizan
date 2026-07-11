@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { dfccPdfParser } from "./dfccPdf";
-import { ntbHtmlParser } from "./ntbHtml";
 import { parsersFor } from "./registry";
 
 function fileNamed(name: string): File {
@@ -9,12 +7,12 @@ function fileNamed(name: string): File {
 
 describe("parsersFor", () => {
   it("routes .html/.htm files to the NTB parser", () => {
-    expect(parsersFor(fileNamed("statement.html"))).toEqual([ntbHtmlParser]);
-    expect(parsersFor(fileNamed("statement.HTM"))).toEqual([ntbHtmlParser]);
+    expect(parsersFor(fileNamed("statement.html")).map((parser) => parser.id)).toEqual(["ntb-html"]);
+    expect(parsersFor(fileNamed("statement.HTM")).map((parser) => parser.id)).toEqual(["ntb-html"]);
   });
 
   it("routes .pdf files to the DFCC parser", () => {
-    expect(parsersFor(fileNamed("statement.pdf"))).toEqual([dfccPdfParser]);
+    expect(parsersFor(fileNamed("statement.pdf")).map((parser) => parser.id)).toEqual(["dfcc-visa-pdf"]);
   });
 
   it("returns no parser for an unrecognized extension", () => {

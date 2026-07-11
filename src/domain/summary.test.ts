@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { emptyData } from "../storage/schema";
-import { computeHistory, computeMonthSummary, monthsWithData, netAmount, settleUp } from "./summary";
-import type { AppData, Transaction } from "./types";
+import { computeHistory, computeMonthSummary, monthsWithData, netAmount, reviewQueue, settleUp } from "./summary";
+import { defaultKind, type AppData, type MovementKind, type Transaction } from "./types";
 
 function fixture(): AppData {
   const data = emptyData();
   data.settings.members = [
-    { id: "alex", name: "Alex", color: "#5b8cff", income: 600000 },
-    { id: "sam", name: "Sam", color: "#ff80b5", income: 800000 },
+    { id: "alex", name: "Alex", color: "#5b8cff", portions: [{ id: "por_alex", label: "Monthly income", amount: 600000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
+    { id: "sam", name: "Sam", color: "#ff80b5", portions: [{ id: "por_sam", label: "Monthly income", amount: 800000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
   ];
   data.settings.currency = "USD";
   data.settings.locale = "en-US";
@@ -36,8 +36,9 @@ function txn(
   category: Transaction["category"],
   account: string,
   direction: Transaction["direction"] = "debit",
+  kind: MovementKind = defaultKind(direction),
 ): Transaction {
-  return { id, date, description, amount, category, account, note: "", source: "imported", direction };
+  return { id, date, description, amount, category, account, note: "", source: "imported", direction, kind };
 }
 
 const JULY_15: Date = new Date(2026, 6, 15); // mid-month, 31-day month
@@ -53,12 +54,59 @@ describe("computeMonthSummary", () => {
     expect(s.saveRate).toBeCloseTo(65, 0);
   });
 
+  it("uses a confirmed receipt for that month only and exposes income items", () => {
+    const data = fixture();
+    data.incomeReceipts = [{ id: "rcpt_2026-07_por_alex", month: "2026-07", memberId: "alex", portionId: "por_alex", amount: 700000 }];
+    const july = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    const june = computeMonthSummary(data, "2026-06", "all", JULY_15);
+    expect(july.incomeTotal).toBe(1_500_000);
+    expect(june.incomeTotal).toBe(1_400_000);
+    expect(july.incomeItems).toHaveLength(2);
+    expect(july.incomeItems.find((item) => item.portion.id === "por_alex")?.status).toBe("received");
+  });
+
   it("projects month-end spend by extrapolating variable spend only, fixed costs once", () => {
     const s = computeMonthSummary(fixture(), "2026-07", "all", JULY_15);
     expect(s.dayNumber).toBe(15);
     expect(s.daysInMonth).toBe(31);
     expect(s.projectedSpend).toBeCloseTo(370_000 + (120_000 / 15) * 31);
     expect(s.projectedSaveRate).toBeGreaterThan(s.targetSaveRate);
+  });
+
+  it("reports current-month data freshness from the latest household transaction", () => {
+    const current = computeMonthSummary(fixture(), "2026-07", "all", new Date(2026, 6, 20));
+    expect(current.latestTransactionDate).toBe("2026-07-15");
+    expect(current.dataAgeDays).toBe(5);
+
+    const past = computeMonthSummary(fixture(), "2026-06", "all", new Date(2026, 6, 20));
+    expect(past.latestTransactionDate).toBe("2026-06-20");
+    expect(past.dataAgeDays).toBeNull();
+  });
+
+  it("keeps the selected month's review count separate from old review debt", () => {
+    const data = fixture();
+    data.transactions.push(txn("old-review", "2026-06-25", "OLD UNKNOWN", 10_000, "uncategorized", "Alex Visa"));
+    const july = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    const june = computeMonthSummary(data, "2026-06", "all", JULY_15);
+    expect(july.uncategorizedCount).toBe(0);
+    expect(june.uncategorizedCount).toBe(1);
+  });
+
+  it("counts the review queue across every month, whichever month is selected", () => {
+    const data = fixture();
+    data.transactions.push(
+      txn("jun-review", "2026-06-25", "OLD UNKNOWN", 10_000, "uncategorized", "Alex Visa"),
+      txn("jul-review", "2026-07-08", "NEW UNKNOWN", 5_000, "uncategorized", "Alex Visa"),
+      // The card payment on the same statement: a credit, so not review debt.
+      txn("payment", "2026-07-06", "CREDIT TRANSFER", 70_000, "uncategorized", "Alex Visa", "credit"),
+    );
+    const july = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    const june = computeMonthSummary(data, "2026-06", "all", JULY_15);
+    // Same total from either month — it is the size of the queue, not of the month.
+    expect(july.reviewQueueCount).toBe(2);
+    expect(june.reviewQueueCount).toBe(2);
+    // ...and it agrees with the queue the badge sits above.
+    expect(reviewQueue(data.transactions).reduce((sum, item) => sum + item.count, 0)).toBe(2);
   });
 
   it("treats a past month as complete (no projection inflation)", () => {
@@ -80,6 +128,13 @@ describe("computeMonthSummary", () => {
     expect(s.endingSoon.map((f) => f.id)).toEqual(["car"]);
     const may = computeMonthSummary(fixture(), "2026-05", "all", JULY_15);
     expect(may.endingSoon).toEqual([]);
+  });
+
+  it("flags an exact category-and-amount match that may double-count a fixed cost", () => {
+    const data = fixture();
+    data.transactions.push(txn("rent-payment", "2026-07-05", "RENT PAYMENT", 120_000, "housing", "Alex Visa"));
+    const s = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(s.possibleFixedCostDuplicates.map((fixed) => fixed.id)).toEqual(["rent"]);
   });
 
   it("settles fairly: only shared spend a member fronts is split, own personal spend is their own cost", () => {
@@ -142,7 +197,7 @@ describe("computeMonthSummary", () => {
 
   it("handles zero income without dividing by zero", () => {
     const data = fixture();
-    data.settings.members = data.settings.members.map((m) => ({ ...m, income: 0 }));
+    data.settings.members = data.settings.members.map((m) => ({ ...m, portions: [] }));
     const s = computeMonthSummary(data, "2026-07", "all", JULY_15);
     expect(s.saveRate).toBe(0);
     expect(s.projectedSaveRate).toBe(0);
@@ -166,6 +221,89 @@ describe("computeMonthSummary", () => {
     expect(withCredit.totalSpend).toBe(without.totalSpend);
     expect(withCredit.saveRate).toBe(without.saveRate);
     expect(withCredit.uncategorizedCount).toBe(without.uncategorizedCount);
+  });
+
+  it("treats a legacy credit corrupted to expense as zero spend", () => {
+    const data = fixture();
+    data.transactions.push(txn("bad-credit", "2026-07-05", "REFUND", 99_000, "uncategorized", "Alex Visa", "credit", "expense"));
+    const summary = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    const baseline = computeMonthSummary(fixture(), "2026-07", "all", JULY_15);
+    expect(summary.cardSpend).toBe(baseline.cardSpend);
+    expect(summary.fullCategoryRows.find((row) => row.key === "uncategorized")?.value ?? 0).toBe(0);
+    expect(summary.reviewQueueCount).toBe(baseline.reviewQueueCount);
+  });
+
+  it("counts a linked salary only through its receipt and never as spend", () => {
+    const data = fixture();
+    data.transactions.push(txn("salary-credit", "2026-07-05", "SALARY", 700_000, "uncategorized", "Alex Visa", "credit", "account_credit"));
+    data.incomeReceipts = [{
+      id: "rcpt_2026-07_por_alex",
+      month: "2026-07",
+      memberId: "alex",
+      portionId: "por_alex",
+      amount: 700_000,
+      transactionId: "salary-credit",
+    }];
+    const summary = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(summary.incomeTotal).toBe(1_500_000);
+    expect(summary.totalSpend).toBe(computeMonthSummary(fixture(), "2026-07", "all", JULY_15).totalSpend);
+  });
+});
+
+describe("movement kinds and spend", () => {
+  it("excludes an internal transfer pair (debit + credit) from spend", () => {
+    const data = fixture();
+    const baseline = computeMonthSummary(fixture(), "2026-07", "all", JULY_15).cardSpend;
+    // Move 100k from Alex Visa to Sam Visa: both legs marked internal_transfer.
+    data.transactions.push(
+      txn("out", "2026-07-06", "TRANSFER TO SAM VISA", 100_000, "uncategorized", "Alex Visa", "debit", "internal_transfer"),
+      txn("in", "2026-07-06", "TRANSFER FROM ALEX VISA", 100_000, "uncategorized", "Sam Visa", "credit", "internal_transfer"),
+    );
+    const s = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(s.cardSpend).toBe(baseline);
+    // Both legs still appear in the ledger.
+    expect(s.monthTransactions.map((t) => t.id)).toEqual(expect.arrayContaining(["out", "in"]));
+  });
+
+  it("excludes money lent from spend and from member settlement", () => {
+    const data = fixture();
+    const baseline = computeMonthSummary(fixture(), "2026-07", "all", JULY_15);
+    data.transactions.push(
+      txn("lent", "2026-07-07", "CASH TO FRIEND", 25_000, "uncategorized", "Alex Visa", "debit", "money_lent"),
+    );
+    const s = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(s.cardSpend).toBe(baseline.cardSpend);
+    // Lending is not shared household spend, so settlement is unchanged.
+    expect(s.transfers).toEqual(baseline.transfers);
+  });
+
+  it("excludes a repayment received from spend (like any credit)", () => {
+    const data = fixture();
+    const baseline = computeMonthSummary(fixture(), "2026-07", "all", JULY_15).cardSpend;
+    data.transactions.push(
+      txn("repaid", "2026-07-08", "FRIEND PAID BACK", 25_000, "uncategorized", "Alex Visa", "credit", "repayment_received"),
+    );
+    const s = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(s.cardSpend).toBe(baseline);
+  });
+
+  it("counts a gift/handout as spend, unlike money lent", () => {
+    const lent = fixture();
+    lent.transactions.push(txn("g", "2026-07-09", "HELP OUT COUSIN", 15_000, "family_support", "Alex Visa", "debit", "money_lent"));
+    const gift = fixture();
+    gift.transactions.push(txn("g", "2026-07-09", "HELP OUT COUSIN", 15_000, "family_support", "Alex Visa", "debit", "gift_or_handout"));
+    const lentSpend = computeMonthSummary(lent, "2026-07", "all", JULY_15).cardSpend;
+    const giftSpend = computeMonthSummary(gift, "2026-07", "all", JULY_15).cardSpend;
+    expect(giftSpend - lentSpend).toBe(15_000);
+  });
+
+  it("keeps a reclassified transfer out of the review queue", () => {
+    const data = fixture();
+    data.transactions.push(
+      txn("t", "2026-07-11", "MOVE MONEY", 40_000, "uncategorized", "Alex Visa", "debit", "internal_transfer"),
+    );
+    const s = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(s.uncategorizedCount).toBe(0);
   });
 });
 
@@ -201,8 +339,21 @@ describe("history", () => {
   it("lists months with data plus the current month, and computes per-month rates", () => {
     const months = monthsWithData(fixture(), new Date(2026, 7, 1));
     expect(months).toEqual(["2026-06", "2026-07", "2026-08"]);
-    const rows = computeHistory(fixture(), ["2026-06", "2026-07"]);
+    const rows = computeHistory(fixture(), ["2026-06", "2026-07"], JULY_15);
     expect(rows[0]!.spend).toBe(80_000 + 370_000);
     expect(rows[1]!.saved).toBe(1_400_000 - 490_000);
+  });
+
+  it("uses receipts only in their recorded history month", () => {
+    const data = fixture();
+    data.incomeReceipts = [{ id: "rcpt_2026-06_por_sam", month: "2026-06", memberId: "sam", portionId: "por_sam", amount: 900000 }];
+    const rows = computeHistory(data, ["2026-06", "2026-07"], JULY_15);
+    expect(rows.map((row) => row.income)).toEqual([1_500_000, 1_400_000]);
+  });
+
+  it("includes receipt-only months in the available history", () => {
+    const data = fixture();
+    data.incomeReceipts = [{ id: "rcpt_2026-05_por_alex", month: "2026-05", memberId: "alex", portionId: "por_alex", amount: 600000 }];
+    expect(monthsWithData(data, JULY_15)).toContain("2026-05");
   });
 });

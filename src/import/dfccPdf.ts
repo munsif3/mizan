@@ -1,6 +1,6 @@
 import { toISODate } from "../domain/dates";
 import { parseAmount } from "../domain/money";
-import { uid, type Transaction } from "../domain/types";
+import { defaultKind, uid, type Transaction } from "../domain/types";
 import { extractLines, openPdf, type PdfLine } from "./pdfText";
 import type { StatementParser } from "./types";
 
@@ -50,9 +50,11 @@ export function parseLines(lines: PdfLine[], fallbackAccount: string): Transacti
       pending = null;
       const date = toISODate(cells[1]); // transaction date, not post date
       const description = cells.slice(2, -1).join(" ").trim();
-      const amount = parseAmount(cells[cells.length - 1]);
+      const signedAmount = parseAmount(cells[cells.length - 1]);
       if (!date || !description) continue;
-      if (!amount || amount < 0) continue; // credits/payments (inline "(CR)") aren't spend
+      if (!signedAmount) continue;
+      const direction = signedAmount < 0 ? "credit" : "debit";
+      const amount = Math.abs(signedAmount);
       const txn: Transaction = {
         id: uid("txn"),
         date,
@@ -62,7 +64,8 @@ export function parseLines(lines: PdfLine[], fallbackAccount: string): Transacti
         account,
         note: "",
         source: "imported",
-        direction: "debit",
+        direction,
+        kind: defaultKind(direction),
       };
       transactions.push(txn);
       pending = txn;

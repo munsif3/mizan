@@ -1,0 +1,98 @@
+import { describe, expect, it } from "vitest";
+import { detectIncomeCandidates } from "./incomeMatch";
+import type { Account, IncomePortion, IncomeReceipt, Member, Transaction } from "./types";
+
+const BASE: IncomePortion = {
+  id: "salary",
+  label: "Salary",
+  amount: 1000,
+  currency: "LKR",
+  taxRate: 0,
+  taxWithheld: true,
+  window: null,
+};
+
+const members = (portions: IncomePortion[] = [BASE]): Member[] => [
+  { id: "mina", name: "Mina", color: "#123456", portions },
+];
+
+const accounts: Account[] = [
+  { id: "mina", label: "Mina Savings", owner: "mina", match: [] },
+  { id: "other", label: "Other Savings", owner: "other", match: [] },
+  { id: "joint", label: "Joint Account", owner: "joint", match: [] },
+];
+
+function credit(id: string, amount: number, overrides: Partial<Transaction> = {}): Transaction {
+  return {
+    id,
+    date: "2026-07-12",
+    description: "SALARY CREDIT",
+    amount,
+    category: "uncategorized",
+    account: "Mina Savings",
+    note: "",
+    source: "imported",
+    direction: "credit",
+    kind: "account_credit",
+    ...overrides,
+  };
+}
+
+function detect(
+  portions: IncomePortion[],
+  transactions: Transaction[],
+  receipts: IncomeReceipt[] = [],
+  currency = "LKR",
+  fxRates: Record<string, number> = {},
+) {
+  return detectIncomeCandidates(members(portions), transactions, accounts, receipts, currency, fxRates, "2026-07");
+}
+
+describe("detectIncomeCandidates", () => {
+  it("matches same-currency credits in tolerance and rejects a 30% variance", () => {
+    expect(detect([BASE], [credit("near", 1001)])).toHaveLength(1);
+    expect(detect([BASE], [credit("far", 700)])).toEqual([]);
+  });
+
+  it("matches the real FX-shaped salary but rejects a much smaller credit", () => {
+    const usd = { ...BASE, currency: "USD" };
+    expect(detect([usd], [credit("real", 272_199.53)], [], "LKR", { USD: 305 })[0]?.variance).toBeCloseTo(-0.1075, 3);
+    expect(detect([usd], [credit("low", 200_000)], [], "LKR", { USD: 305 })).toEqual([]);
+  });
+
+  it("stays silent for missing FX rates and zero expectations", () => {
+    expect(detect([{ ...BASE, currency: "USD" }], [credit("fx", 1000)])).toEqual([]);
+    expect(detect([{ ...BASE, amount: 0 }], [credit("zero", 1)])).toEqual([]);
+  });
+
+  it("accepts owned and joint registered accounts, but not other or unknown accounts", () => {
+    expect(detect([BASE], [credit("owned", 1000)])).toHaveLength(1);
+    expect(detect([BASE], [credit("joint", 1000, { account: "Joint Account" })])).toHaveLength(1);
+    expect(detect([BASE], [credit("other", 1000, { account: "Other Savings" })])).toEqual([]);
+    expect(detect([BASE], [credit("unknown", 1000, { account: "Unknown" })])).toEqual([]);
+  });
+
+  it("uses the clamped window plus five slack days", () => {
+    const windowed = { ...BASE, window: { startDay: 10, endDay: 15 } };
+    expect(detect([windowed], [credit("day20", 1000, { date: "2026-07-20" })])[0]?.daysOutsideWindow).toBe(5);
+    expect(detect([windowed], [credit("day25", 1000, { date: "2026-07-25" })])).toEqual([]);
+    const day31 = { ...BASE, window: { startDay: 31, endDay: 31 } };
+    expect(detectIncomeCandidates(members([day31]), [credit("apr30", 1000, { date: "2026-04-30" })], accounts, [], "LKR", {}, "2026-04")).toHaveLength(1);
+  });
+
+  it("skips credits linked in any month and credits reclassified as transfers", () => {
+    const linked: IncomeReceipt = { id: "old", month: "2026-06", memberId: "mina", portionId: "old", amount: 1000, transactionId: "used" };
+    expect(detect([BASE], [credit("used", 1000)], [linked])).toEqual([]);
+    expect(detect([BASE], [credit("transfer", 1000, { kind: "internal_transfer" })])).toEqual([]);
+  });
+
+  it("assigns two crossed credits once each and is input-order deterministic", () => {
+    const portions = [{ ...BASE, id: "a", amount: 1000 }, { ...BASE, id: "b", amount: 1100 }];
+    const rows = [credit("for-b", 1100), credit("for-a", 1000)];
+    const first = detect(portions, rows).map((item) => [item.portionId, item.transaction.id]);
+    const shuffled = detect(portions, [...rows].reverse()).map((item) => [item.portionId, item.transaction.id]);
+    expect(first).toEqual([["b", "for-b"], ["a", "for-a"]]);
+    expect(shuffled).toEqual(first);
+    expect(new Set(first.map(([, id]) => id)).size).toBe(2);
+  });
+});

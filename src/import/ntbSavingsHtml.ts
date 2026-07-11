@@ -1,4 +1,5 @@
-import { uid, type Transaction } from "../domain/types";
+import { defaultKind, uid, type Transaction } from "../domain/types";
+import { parseAmount } from "../domain/money";
 
 /**
  * NTB's savings/current-account statement builds its transaction tables at
@@ -111,8 +112,8 @@ function extractDepositGroup(html: string, prefix: "savings" | "current", listVa
 function transactionFromBlock(block: string, prefix: "savings" | "current", accountLabel: string): Transaction | null {
   const dateFull = field(block, "transactionDateFull"); // "DD-MM-YYYY"
   const details = field(block, `${prefix}TransactionDetails`).trim();
-  const debit = Number(field(block, "transactionDebit") || 0);
-  const credit = Number(field(block, "transactionCredit") || 0);
+  const debit = parseAmount(field(block, "transactionDebit"));
+  const credit = parseAmount(field(block, "transactionCredit"));
 
   const dateMatch = dateFull.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
   if (!dateMatch || !details) return null;
@@ -132,6 +133,7 @@ function transactionFromBlock(block: string, prefix: "savings" | "current", acco
     note: "",
     source: "imported",
     direction,
+    kind: defaultKind(direction),
   };
 }
 

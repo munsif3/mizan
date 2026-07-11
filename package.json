@@ -2,13 +2,9 @@
   "name": "mizan",
   "private": true,
   "version": "1.0.0",
-  "description": "Deterministic, offline household finance PWA. Client-side statement import, per-member settlement, no server, no telemetry — your data never leaves the device.",
+  "description": "Deterministic household finance PWA with Google sign-in and Firestore sync.",
   "license": "MIT",
   "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/munsif3/mizan.git"
-  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -17,6 +13,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "firebase": "^12.15.0",
+    "lucide-react": "^1.24.0",
     "pdfjs-dist": "^6.1.200",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"

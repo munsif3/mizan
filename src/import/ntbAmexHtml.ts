@@ -1,4 +1,4 @@
-import { uid, type Transaction } from "../domain/types";
+import { defaultKind, uid, type Transaction } from "../domain/types";
 
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
@@ -104,9 +104,10 @@ function resolveShortDate(shortDate: string | undefined, monthYears: Map<number,
 
 /**
  * Parses NTB's card (Amex) statement from its embedded `cardTransactionsDataList`
- * data. Only debit ("Dr") rows import — payments and refunds ("Cr") aren't
- * spend, consistent with every other card-statement parser here. `txDate` has
- * no year of its own, so it's resolved against the statement's own period.
+ * data. Debit and credit rows are both retained: purchases are spend, while
+ * payments/refunds remain visible account credits and can pair with the paying
+ * bank-account leg. `txDate` has no year of its own, so it's resolved against
+ * the statement's own period.
  */
 export function parseCardStatement(html: string, fallbackAccount: string): Transaction[] {
   const cardBlocks = extractJsonArray(html, "cardTransactionsDataList") as CardBlock[] | null;
@@ -120,11 +121,12 @@ export function parseCardStatement(html: string, fallbackAccount: string): Trans
   for (const block of cardBlocks) {
     const account = block.cardNo ? `NTB ${block.cardNo}` : fallbackAccount;
     for (const txn of block.consumerTransactions ?? []) {
-      if (txn.crDr !== "Dr") continue;
+      if (txn.crDr !== "Dr" && txn.crDr !== "Cr") continue;
       const date = resolveShortDate(txn.txDate, monthYears);
       const description = (txn.description ?? "").trim();
-      const amount = Number(txn.txConvertedAmount);
+      const amount = Math.abs(Number(txn.txConvertedAmount));
       if (!date || !description || !amount || amount < 0) continue;
+      const direction = txn.crDr === "Cr" ? "credit" : "debit";
       transactions.push({
         id: uid("txn"),
         date,
@@ -134,13 +136,14 @@ export function parseCardStatement(html: string, fallbackAccount: string): Trans
         account,
         note: "",
         source: "imported",
-        direction: "debit",
+        direction,
+        kind: defaultKind(direction),
       });
     }
   }
 
   if (!transactions.length) {
-    throw new Error("Decrypted the file, but found no debit transactions to import.");
+    throw new Error("Decrypted the file, but found no card transactions to import.");
   }
   return transactions;
 }

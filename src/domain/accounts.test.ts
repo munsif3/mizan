@@ -3,8 +3,8 @@ import { applyAccounts, guessOwner, ownerOf, resolveAccountLabel, seedAccounts }
 import type { Account, Member, Transaction } from "./types";
 
 const MEMBERS: Member[] = [
-  { id: "alex", name: "Alex", color: "#5b8cff", income: 0 },
-  { id: "sam", name: "Sam", color: "#ff80b5", income: 0 },
+  { id: "alex", name: "Alex", color: "#5b8cff", portions: [] },
+  { id: "sam", name: "Sam", color: "#ff80b5", portions: [] },
 ];
 
 const REGISTRY: Account[] = [
@@ -26,6 +26,7 @@ function txn(account: string): Transaction {
     note: "",
     source: "imported",
     direction: "debit",
+    kind: "expense",
   };
 }
 

@@ -1,52 +1,275 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { BarChart2, ChevronLeft, ChevronRight, Eye, EyeOff, Home, List, Moon, Settings, Sun } from "lucide-react";
+import { authErrorMessage, signInWithGoogle, signOutUser, useAuthState } from "./auth/authStore";
 import { applyAccounts, resolveAccountLabel } from "./domain/accounts";
-import { isoDateOf, monthLabel, monthOf } from "./domain/dates";
+import { dominantMonth, isoDateOf, monthLabel, monthOf } from "./domain/dates";
 import { filterNew } from "./domain/dedupe";
+import { normalizeFxTransaction } from "./domain/fx";
+import { pruneReceipts, removeReceipt, unlinkTransaction, upsertReceipt, type PortionResolution } from "./domain/income";
+import { detectIncomeCandidates, eligibleCredits, type IncomeCandidate } from "./domain/incomeMatch";
 import { formatMoney } from "./domain/money";
-import { applyRules, withRule } from "./domain/rules";
+import { directionForKind } from "./domain/movements";
+import { applyRules, matchingRuleKey, withRule } from "./domain/rules";
 import { computeHistory, computeMonthSummary, monthsWithData, reviewQueue } from "./domain/summary";
-import { personalCategory, uid, type AppData, type CategoryKey, type Member, type OwnerFilter, type Split, type Transaction } from "./domain/types";
+import { detectTransferCandidates } from "./domain/transfers";
+import {
+  defaultKind,
+  personalCategory,
+  uid,
+  type AppData,
+  type CategoryKey,
+  type Counterparty,
+  type CustomCategory,
+  type IncomeReceipt,
+  type MerchantRule,
+  type Member,
+  type MovementKind,
+  type OwnerFilter,
+  type Split,
+  type Transaction,
+} from "./domain/types";
+import { getFirebaseServices } from "./firebase/client";
+import {
+  FirestoreHouseholdRepository,
+  createFirestoreHousehold,
+  joinFirestoreHousehold,
+  loadHouseholdMeta,
+  loadUserHouseholds,
+  loadUserProfile,
+  rotateFirestoreInvite,
+  saveUserProfile,
+} from "./household/firestoreRepository";
+import { hasLocalFinancialData } from "./household/households";
+import type { HouseholdMeta, ThemePreference, UserHouseholdLink } from "./household/types";
 import { parsersFor } from "./import/registry";
-import { clearData, loadData, parseBackup, saveData, serializeBackup } from "./storage/localStore";
+import { clearLegacyLocalData, hasLegacyLocalData, loadLegacyLocalData, parseBackup, serializeBackup } from "./storage/localStore";
+import { type DataRepository } from "./storage/repository";
+import { emptyData } from "./storage/schema";
+import { AuthGate } from "./ui/AuthGate";
+import { IconButton, PageHeader } from "./ui/bits";
 import { HistoryView } from "./ui/HistoryView";
 import { HomeView } from "./ui/HomeView";
 import { ImportModal, type ImportResult } from "./ui/ImportModal";
+import { IncomeConfirmModal } from "./ui/IncomeConfirmModal";
 import { CsvImportModal } from "./ui/CsvImportModal";
 import { ManualModal, type ManualEntry } from "./ui/ManualModal";
 import { OnboardingView } from "./ui/OnboardingView";
+import { RESET_CONFIRMATION, ResetHouseholdModal } from "./ui/ResetHouseholdModal";
 import { SettingsModal } from "./ui/SettingsModal";
 import { SplitModal } from "./ui/SplitModal";
 import { TransactionsView } from "./ui/TransactionsView";
 
 type View = "home" | "transactions" | "history";
-type ModalKind = null | "import" | "manual" | "settings";
+type ModalKind = null | "import" | "manual" | "settings" | "reset";
+
+interface UndoChange {
+  label: string;
+  before: AppData;
+  householdId: string;
+}
 
 const VIEW_TITLES: Record<View, string> = {
-  home: "Monthly check-in",
+  home: "Money check-in",
   transactions: "Transactions",
   history: "Month by month",
 };
 
+const VIEW_DESCRIPTIONS: Record<View, string> = {
+  home: "Weekly review of month health, next actions, and shared household balance.",
+  transactions: "Review merchants, filter the ledger, and correct categories.",
+  history: "Save-rate trend and month-by-month movement.",
+};
+
+const NAV_ITEMS = [
+  ["home", "Home", Home],
+  ["transactions", "Transactions", List],
+  ["history", "History", BarChart2],
+] as const;
+
+const ACTIVE_HOUSEHOLD_KEY = "mizan.activeHouseholdId";
+const PRIVACY_KEY = "mizan.privacy";
+const THEME_KEY = "mizan.theme";
+
+function isView(value: string): value is View {
+  return value === "home" || value === "transactions" || value === "history";
+}
+
+function readLocalConvenience(key: string): string {
+  return typeof localStorage === "undefined" ? "" : localStorage.getItem(key) ?? "";
+}
+
+function writeLocalConvenience(key: string, value: string): void {
+  if (typeof localStorage === "undefined") return;
+  if (value) localStorage.setItem(key, value);
+  else localStorage.removeItem(key);
+}
+
+function initialTheme(): ThemePreference {
+  const saved = readLocalConvenience(THEME_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
 export default function App() {
-  const [data, setData] = useState<AppData>(loadData);
+  const auth = useAuthState();
+  const services = useMemo(() => getFirebaseServices(), []);
+  const skipNextSave = useRef(false);
+  const saveTimer = useRef<number | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const saveVersion = useRef(0);
+  const completedSaveVersion = useRef(0);
+  const restoredHousehold = useRef("");
+  const profileLoaded = useRef(false);
+  const [repository, setRepository] = useState<DataRepository | null>(null);
+  const [data, setData] = useState<AppData>(() => emptyData());
+  const [legacyData, setLegacyData] = useState<AppData | null>(() => loadLegacyLocalData());
+  const [legacyPresent, setLegacyPresent] = useState(() => hasLegacyLocalData());
   const [view, setView] = useState<View>("home");
   const [month, setMonth] = useState("");
   const [owner, setOwner] = useState<OwnerFilter>("all");
-  const [privacy, setPrivacy] = useState(() => typeof localStorage !== "undefined" && localStorage.getItem("mizan.privacy") === "true");
+  const [privacy, setPrivacy] = useState(() => readLocalConvenience(PRIVACY_KEY) === "true");
+  const [theme, setTheme] = useState<ThemePreference>(initialTheme);
   const [categoryFilter, setCategoryFilter] = useState<CategoryKey | "all">("all");
+  const [lastCheckInByHousehold, setLastCheckInByHousehold] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("");
+  const [undoChange, setUndoChange] = useState<UndoChange | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [splitTxn, setSplitTxn] = useState<Transaction | null>(null);
+  const [incomeConfirm, setIncomeConfirm] = useState<{ item: PortionResolution; candidate?: IncomeCandidate } | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [householdMeta, setHouseholdMeta] = useState<HouseholdMeta | null>(null);
+  const [availableHouseholds, setAvailableHouseholds] = useState<UserHouseholdLink[]>([]);
+  const [syncStatus, setSyncStatus] = useState("Sign in to use Firestore");
+  const [dismissedTransfers, setDismissedTransfers] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
-    const timer = window.setTimeout(() => saveData(data), 250);
-    return () => window.clearTimeout(timer);
-  }, [data]);
+    if (!repository) return undefined;
+    if (skipNextSave.current) {
+      skipNextSave.current = false;
+      return;
+    }
+    const version = ++saveVersion.current;
+    const timer = window.setTimeout(() => {
+      saveTimer.current = null;
+      setSyncStatus("Saving to Firestore");
+      const queued = saveQueue.current.catch(() => undefined).then(() => repository.save(data));
+      saveQueue.current = queued;
+      queued
+        .then(() => {
+          completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
+          if (version === saveVersion.current) setSyncStatus("Synced to Firestore");
+        })
+        .catch((error) => {
+          completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
+          if (version === saveVersion.current) setSyncStatus(`Save failed: ${(error as Error).message}`);
+        });
+    }, 250);
+    saveTimer.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (saveTimer.current === timer) saveTimer.current = null;
+    };
+  }, [data, repository]);
 
   useEffect(() => {
-    localStorage.setItem("mizan.privacy", String(privacy));
+    if (!repository?.subscribe) return undefined;
+    setSyncStatus("Listening for household changes");
+    return repository.subscribe(
+      (nextData) => {
+        // A Firestore snapshot can echo an older local save while a newer edit is
+        // still inside the debounce window. Applying that echo would cancel the
+        // newer save and visibly lose the edit, so keep local state authoritative
+        // until the latest queued save settles.
+        if (completedSaveVersion.current < saveVersion.current) return;
+        skipNextSave.current = true;
+        setData(nextData);
+        setSyncStatus("Synced to Firestore");
+      },
+      (message) => setSyncStatus(`Sync failed: ${message}`),
+    );
+  }, [repository]);
+
+  useEffect(() => {
+    writeLocalConvenience(PRIVACY_KEY, String(privacy));
   }, [privacy]);
+
+  useLayoutEffect(() => {
+    writeLocalConvenience(THEME_KEY, theme);
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute(
+      "content",
+      theme === "dark" ? "#0f1713" : "#f1eee5",
+    );
+  }, [theme]);
+
+  useEffect(() => {
+    if (auth.status !== "signed-in" || !services) {
+      setAvailableHouseholds([]);
+      return;
+    }
+    loadUserHouseholds(services.db, auth.user.uid)
+      .then(setAvailableHouseholds)
+      .catch((error) => setSyncStatus(`Could not load households: ${(error as Error).message}`));
+  }, [auth, services, householdMeta]);
+
+  useEffect(() => {
+    if (auth.status !== "signed-in" || !services || restoredHousehold.current) return;
+    let cancelled = false;
+    profileLoaded.current = false;
+    setSyncStatus("Loading cloud profile");
+    loadUserProfile(services.db, auth.user.uid)
+      .then((profile) => {
+        if (cancelled) return;
+        setPrivacy(profile.privacy);
+        if (profile.theme) setTheme(profile.theme);
+        if (isView(profile.lastView)) setView(profile.lastView);
+        if (profile.lastMonth) setMonth(profile.lastMonth);
+        setOwner(profile.ownerFilter || "all");
+        setCategoryFilter((profile.categoryFilter || "all") as CategoryKey | "all");
+        setLastCheckInByHousehold(profile.lastCheckInByHousehold);
+
+        const householdId = profile.activeHouseholdId || readLocalConvenience(ACTIVE_HOUSEHOLD_KEY);
+        if (!householdId) {
+          profileLoaded.current = true;
+          setSyncStatus("Create or join a Firestore household");
+          return;
+        }
+        restoredHousehold.current = householdId;
+        return loadHouseholdMeta(services.db, householdId)
+          .then((meta) => activateHousehold(meta, { migrateLegacy: true }))
+          .catch(() => {
+            writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, "");
+            setSyncStatus("Choose a Firestore household");
+          })
+          .finally(() => {
+            profileLoaded.current = true;
+          });
+      })
+      .catch((error) => setSyncStatus(`Could not load cloud profile: ${(error as Error).message}`));
+    return () => {
+      cancelled = true;
+    };
+  }, [auth, services]);
+
+  useEffect(() => {
+    if (auth.status !== "signed-in" || !services || !profileLoaded.current) return undefined;
+    const timer = window.setTimeout(() => {
+      saveUserProfile(services.db, auth.user.uid, {
+        activeHouseholdId: householdMeta?.id ?? "",
+        privacy,
+        theme,
+        lastView: view,
+        lastMonth: month,
+        ownerFilter: owner,
+        categoryFilter,
+        lastCheckInByHousehold,
+      }).catch((error) => setSyncStatus(`Could not save cloud profile: ${(error as Error).message}`));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [auth, services, householdMeta?.id, privacy, theme, view, month, owner, categoryFilter, lastCheckInByHousehold]);
 
   const today = new Date();
   const todayMonth = isoDateOf(today).slice(0, 7);
@@ -57,33 +280,100 @@ export default function App() {
     [data, currentMonth, owner],
   );
   const queue = useMemo(() => reviewQueue(data.transactions), [data]);
-  const history = useMemo(() => computeHistory(data, months), [data, months]);
+  const history = useMemo(() => computeHistory(data, months, new Date()), [data, months]);
+  const transferCandidates = useMemo(
+    () =>
+      detectTransferCandidates(data.transactions, data.accounts).filter(
+        (pair) => !dismissedTransfers.has(`${pair.debit.id}:${pair.credit.id}`),
+      ),
+    [data.transactions, data.accounts, dismissedTransfers],
+  );
+  const incomeCandidates = useMemo(
+    () => detectIncomeCandidates(
+      data.settings.members,
+      data.transactions,
+      data.accounts,
+      data.incomeReceipts,
+      data.settings.currency,
+      data.settings.fxRates,
+      currentMonth,
+    ),
+    [data.settings.members, data.settings.currency, data.settings.fxRates, data.transactions, data.accounts, data.incomeReceipts, currentMonth],
+  );
+  const incomeCandidateMap = useMemo(
+    () => new Map(incomeCandidates.map((candidate) => [candidate.portionId, candidate])),
+    [incomeCandidates],
+  );
+  const incomeLinkedIds = useMemo(
+    () => new Set(data.incomeReceipts.map((receipt) => receipt.transactionId).filter((id): id is string => Boolean(id))),
+    [data.incomeReceipts],
+  );
   const money = (value: number) =>
     privacy ? "Hidden" : formatMoney(value, { currency: data.settings.currency, locale: data.settings.locale });
 
-  function setTransactionCategory(id: string, category: CategoryKey) {
+  function rememberUndo(label: string) {
+    setUndoChange({ label, before: data, householdId: householdMeta?.id ?? "" });
+  }
+
+  function undoLastLedgerChange() {
+    if (!undoChange || undoChange.householdId !== (householdMeta?.id ?? "")) return;
+    setData(undoChange.before);
+    setNotice(`${undoChange.label} undone.`);
+    setUndoChange(null);
+  }
+
+  /**
+   * Reclassify one transaction (category / kind / counterparty) and remember the
+   * choice as a merchant rule, so every occurrence — past and future — follows.
+   * The rule captures the transaction's full resulting classification.
+   */
+  function classifyTransaction(id: string, patch: Partial<Pick<Transaction, "category" | "kind" | "counterpartyId">>) {
+    const current = data.transactions.find((item) => item.id === id);
+    if (!current) return;
+    rememberUndo(`Classification for ${current.description}`);
     setData((previous) => {
       const txn = previous.transactions.find((item) => item.id === id);
       if (!txn) return previous;
-      const merchantRules = withRule(previous.merchantRules, txn.description, category);
+      const next: Transaction = { ...txn, ...patch };
+      if (!next.counterpartyId) delete next.counterpartyId;
+      const rule: MerchantRule = {
+        category: next.category,
+        kind: next.kind,
+        ...(next.counterpartyId ? { counterpartyId: next.counterpartyId } : {}),
+      };
+      const merchantRules = withRule(previous.merchantRules, txn.description, rule);
       const transactions = applyRules(
-        previous.transactions.map((item) => (item.id === id ? { ...item, category } : item)),
+        previous.transactions.map((item) => (item.id === id ? next : item)),
         merchantRules,
       );
       return { ...previous, merchantRules, transactions };
     });
   }
 
-  function categorizeMerchant(merchant: string, category: CategoryKey) {
+  function setTransactionCategory(id: string, category: CategoryKey) {
+    classifyTransaction(id, { category });
+  }
+
+  function setTransactionKind(id: string, kind: MovementKind) {
+    classifyTransaction(id, { kind });
+  }
+
+  function setTransactionCounterparty(id: string, counterpartyId: string | undefined) {
+    classifyTransaction(id, { counterpartyId });
+  }
+
+  function categorizeMerchant(merchant: string, rule: MerchantRule) {
+    rememberUndo(`Rule for ${merchant}`);
     setData((previous) => {
-      const merchantRules = withRule(previous.merchantRules, merchant, category);
+      const merchantRules = withRule(previous.merchantRules, merchant, rule);
       return { ...previous, merchantRules, transactions: applyRules(previous.transactions, merchantRules) };
     });
   }
 
   function addManual(entry: ManualEntry) {
     const account = resolveAccountLabel(entry.account, data.accounts);
-    const txn: Transaction = { id: uid("txn"), source: "manual", direction: "debit", ...entry, account };
+    const txn: Transaction = { id: uid("txn"), source: "manual", direction: directionForKind(entry.kind), ...entry, account };
+    if (!txn.counterpartyId) delete txn.counterpartyId;
     setData((previous) => ({
       ...previous,
       transactions: [...previous.transactions, txn].sort((a, b) => a.date.localeCompare(b.date)),
@@ -93,7 +383,8 @@ export default function App() {
 
   /** Shared tail for every import route: apply accounts + rules, dedupe, store, notify. */
   function ingestTransactions(parsed: Transaction[], failures: string[], extraNotes: string[] = []): ImportResult {
-    const ruled = applyRules(applyAccounts(parsed, data.accounts), data.merchantRules);
+    const normalized = parsed.map((txn) => normalizeFxTransaction(txn, data.settings.currency));
+    const ruled = applyRules(applyAccounts(normalized, data.accounts), data.merchantRules);
     const fresh = filterNew(data.transactions, ruled);
     const needsReview = fresh.filter((txn) => txn.category === "uncategorized" && txn.direction !== "credit").length;
     if (fresh.length) {
@@ -103,11 +394,22 @@ export default function App() {
           a.date.localeCompare(b.date),
         ),
       }));
-      setMonth(monthOf(fresh[fresh.length - 1]!.date));
+      setMonth(dominantMonth(fresh));
     }
+
+    // A card statement period straddles a calendar boundary, so an import
+    // routinely lands rows in two months while the ledger below shows one.
+    // Say so, or the month we land on looks like it lost the other rows.
+    const byMonth = new Map<string, number>();
+    for (const txn of fresh) byMonth.set(monthOf(txn.date), (byMonth.get(monthOf(txn.date)) ?? 0) + 1);
+    const spread = [...byMonth.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, count]) => `${monthLabel(month)} (${count})`)
+      .join(", ");
 
     const parts = [
       `Imported ${fresh.length} transaction${fresh.length === 1 ? "" : "s"}; skipped ${ruled.length - fresh.length} duplicate${ruled.length - fresh.length === 1 ? "" : "s"}.`,
+      byMonth.size > 1 ? `They span ${byMonth.size} months: ${spread}.` : "",
       needsReview ? `${needsReview} need a category — see the review queue under Transactions.` : "",
       ...extraNotes,
       ...failures,
@@ -141,7 +443,7 @@ export default function App() {
     setData((previous) => {
       const removed = previous.settings.members.filter((m) => !members.some((next) => next.id === m.id)).map((m) => m.id);
       if (!removed.length) {
-        return { ...previous, settings: { ...previous.settings, members } };
+        return { ...previous, incomeReceipts: pruneReceipts(previous.incomeReceipts, members), settings: { ...previous.settings, members } };
       }
       // Reassign anything that pointed at a removed member so no data is orphaned.
       const removedCategories = new Set<CategoryKey>(removed.map(personalCategory));
@@ -152,13 +454,23 @@ export default function App() {
         removedCategories.has(cost.category) ? { ...cost, category: "uncategorized" as CategoryKey } : cost,
       );
       const merchantRules = Object.fromEntries(
-        Object.entries(previous.merchantRules).filter(([, category]) => !removedCategories.has(category)),
+        Object.entries(previous.merchantRules).filter(([, rule]) => !removedCategories.has(rule.category)),
       );
       const accounts = previous.accounts.map((account) =>
         removed.includes(account.owner) ? { ...account, owner: "joint" } : account,
       );
-      return { ...previous, transactions, fixedCosts, merchantRules, accounts, settings: { ...previous.settings, members } };
+      return { ...previous, transactions, fixedCosts, merchantRules, accounts, incomeReceipts: pruneReceipts(previous.incomeReceipts, members), settings: { ...previous.settings, members } };
     });
+  }
+
+  function recordIncomeReceipt(receipt: IncomeReceipt) {
+    setData((previous) => ({ ...previous, incomeReceipts: upsertReceipt(previous.incomeReceipts, receipt) }));
+    setIncomeConfirm(null);
+  }
+
+  function removeIncomeConfirmation(monthValue: string, portionId: string) {
+    setData((previous) => ({ ...previous, incomeReceipts: removeReceipt(previous.incomeReceipts, monthValue, portionId) }));
+    setIncomeConfirm(null);
   }
 
   function saveSplit(id: string, split: Split) {
@@ -180,15 +492,107 @@ export default function App() {
   }
 
   function removeTransaction(id: string) {
-    setData((previous) => ({ ...previous, transactions: previous.transactions.filter((txn) => txn.id !== id) }));
+    setData((previous) => ({
+      ...previous,
+      transactions: previous.transactions.filter((txn) => txn.id !== id),
+      incomeReceipts: unlinkTransaction(previous.incomeReceipts, id),
+    }));
   }
 
   function deleteRule(merchant: string) {
+    rememberUndo(`Rule for ${merchant}`);
     setData((previous) => {
+      const key = merchant;
       const merchantRules = { ...previous.merchantRules };
-      delete merchantRules[merchant];
-      return { ...previous, merchantRules };
+      delete merchantRules[key];
+      const reset = previous.transactions.map((txn) => {
+        if (matchingRuleKey(txn.description, previous.merchantRules) !== key) return txn;
+        const next: Transaction = {
+          ...txn,
+          category: "uncategorized",
+          kind: defaultKind(txn.direction),
+        };
+        delete next.counterpartyId;
+        return next;
+      });
+      return { ...previous, merchantRules, transactions: applyRules(reset, merchantRules) };
     });
+    setNotice(`Removed the rule for ${merchant}; affected rows returned to review.`);
+  }
+
+  function resetTransactionClassification(id: string) {
+    const current = data.transactions.find((txn) => txn.id === id);
+    if (!current) return;
+    rememberUndo(`Classification for ${current.description}`);
+    setData((previous) => {
+      const txn = previous.transactions.find((item) => item.id === id);
+      if (!txn) return previous;
+      const key = matchingRuleKey(txn.description, previous.merchantRules);
+      const merchantRules = { ...previous.merchantRules };
+      if (key) delete merchantRules[key];
+      const reset = previous.transactions.map((item) => {
+        if (key ? matchingRuleKey(item.description, previous.merchantRules) !== key : item.id !== id) return item;
+        const next: Transaction = {
+          ...item,
+          category: "uncategorized",
+          kind: defaultKind(item.direction),
+        };
+        delete next.counterpartyId;
+        return next;
+      });
+      return { ...previous, merchantRules, transactions: applyRules(reset, merchantRules) };
+    });
+    setNotice(`${current.description} returned to review${matchingRuleKey(current.description, data.merchantRules) ? ", including matching rows" : ""}.`);
+  }
+
+  function updateCounterparties(counterparties: Counterparty[]) {
+    setData((previous) => {
+      const ids = new Set(counterparties.map((cp) => cp.id));
+      // Detach transactions/rules pointing at a removed counterparty so none dangle.
+      const transactions = previous.transactions.map((txn) =>
+        txn.counterpartyId && !ids.has(txn.counterpartyId) ? { ...txn, counterpartyId: undefined } : txn,
+      );
+      const merchantRules = Object.fromEntries(
+        Object.entries(previous.merchantRules).map(([key, rule]) =>
+          rule.counterpartyId && !ids.has(rule.counterpartyId) ? [key, { category: rule.category, kind: rule.kind }] : [key, rule],
+        ),
+      );
+      return { ...previous, transactions, merchantRules, settings: { ...previous.settings, counterparties } };
+    });
+  }
+
+  function updateCustomCategories(customCategories: CustomCategory[]) {
+    setData((previous) => {
+      const keep = new Set(customCategories.map((c) => `custom:${c.id}`));
+      const reassign = (category: CategoryKey): CategoryKey =>
+        category.startsWith("custom:") && !keep.has(category) ? "uncategorized" : category;
+      const transactions = previous.transactions.map((txn) =>
+        txn.category === reassign(txn.category) ? txn : { ...txn, category: reassign(txn.category) },
+      );
+      const fixedCosts = previous.fixedCosts.map((cost) =>
+        cost.category === reassign(cost.category) ? cost : { ...cost, category: reassign(cost.category) },
+      );
+      const merchantRules = Object.fromEntries(
+        Object.entries(previous.merchantRules)
+          .map(([key, rule]) => [key, { ...rule, category: reassign(rule.category) }] as const)
+          .filter(([, rule]) => rule.category !== "uncategorized"),
+      );
+      return { ...previous, transactions, fixedCosts, merchantRules, settings: { ...previous.settings, customCategories } };
+    });
+  }
+
+  /** Confirm a suggested transfer pair: mark both legs internal_transfer (not spend). */
+  function confirmTransfer(debitId: string, creditId: string) {
+    const debit = data.transactions.find((txn) => txn.id === debitId);
+    rememberUndo(`Transfer${debit ? ` for ${debit.description}` : ""}`);
+    setData((previous) => ({
+      ...previous,
+      transactions: previous.transactions.map((txn) =>
+        txn.id === debitId || txn.id === creditId
+          ? { ...txn, kind: "internal_transfer", category: "uncategorized" as CategoryKey }
+          : txn,
+      ),
+    }));
   }
 
   function exportBackup() {
@@ -201,157 +605,515 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
+  function finishLegacyMigration() {
+    clearLegacyLocalData();
+    setLegacyData(null);
+    setLegacyPresent(false);
+  }
+
   function importBackup(file: File) {
+    if (!repository) {
+      setNotice("Create or join a Firestore household before importing a backup.");
+      return;
+    }
     if (
       !window.confirm(
-        "Import this backup? It will replace everything currently in Mizan — transactions, rules, and your account registry (owners and match patterns). Export a backup first if in doubt.",
+        "Import this backup? It will replace the active Firestore household data - transactions, rules, and your account registry. Export a backup first if in doubt.",
       )
     ) {
       return;
     }
+    const activeRepository = repository;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
-        setData(parseBackup(String(reader.result)));
-        setNotice("Backup imported.");
-      } catch {
-        setNotice("That backup file could not be read.");
+        const nextData = parseBackup(String(reader.result));
+        await activeRepository.save(nextData);
+        skipNextSave.current = true;
+        setData(nextData);
+        setNotice("Backup imported to Firestore.");
+      } catch (error) {
+        setNotice(`That backup file could not be imported: ${(error as Error).message}`);
       }
     };
     reader.readAsText(file);
   }
 
   function clearAllData() {
-    if (!window.confirm("Clear all Mizan data from this browser? Export a JSON backup first if in doubt.")) return;
-    clearData();
-    setData(loadData());
-    setMonth("");
-    setNotice("Local data cleared.");
+    if (!legacyPresent && !hasLegacyLocalData()) {
+      setNotice("No legacy browser financial data was found.");
+      return;
+    }
+    if (!window.confirm("Clear old browser-stored Mizan data from this device? The active Firestore household will not be changed.")) return;
+    finishLegacyMigration();
+    setNotice("Legacy browser financial data cleared.");
   }
 
+  function cancelPendingAutosave() {
+    if (saveTimer.current == null) return;
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+  }
+
+  async function resetActiveHousehold(confirmation: string): Promise<void> {
+    if (confirmation !== RESET_CONFIRMATION) throw new Error(`Type ${RESET_CONFIRMATION} exactly to continue.`);
+    if (auth.status !== "signed-in" || !repository || !householdMeta) {
+      throw new Error("An active Firestore household is required.");
+    }
+    if (householdMeta.ownerUid !== auth.user.uid) {
+      throw new Error("Only the household owner can reset its data.");
+    }
+
+    const activeRepository = repository;
+    const activeHousehold = householdMeta;
+    cancelPendingAutosave();
+    setSyncStatus("Resetting household data");
+
+    try {
+      // Let any save that already entered the queue finish, then make the reset
+      // the final write. The cancelled debounce above prevents a not-yet-queued
+      // stale save from restoring the old household after this completes.
+      await saveQueue.current.catch(() => undefined);
+      const nextData = emptyData();
+      await activeRepository.save(nextData);
+
+      skipNextSave.current = true;
+      const version = ++saveVersion.current;
+      completedSaveVersion.current = version;
+      saveQueue.current = Promise.resolve();
+      setData(nextData);
+      setUndoChange(null);
+      setDismissedTransfers(new Set());
+      setMonth("");
+      setOwner("all");
+      setCategoryFilter("all");
+      setView("home");
+      setSplitTxn(null);
+      setCsvFile(null);
+      setLastCheckInByHousehold((previous) => {
+        const next = { ...previous };
+        delete next[activeHousehold.id];
+        return next;
+      });
+      if (legacyPresent || hasLegacyLocalData()) finishLegacyMigration();
+      setSyncStatus(`Household reset. Ready to set up ${activeHousehold.name}`);
+      setNotice(`${activeHousehold.name} was reset. The household and invite are still active.`);
+      setModal(null);
+    } catch (error) {
+      const message = (error as Error).message;
+      try {
+        const serverData = await activeRepository.load();
+        skipNextSave.current = true;
+        const version = ++saveVersion.current;
+        completedSaveVersion.current = version;
+        setData(serverData);
+      } catch {
+        // Keep the current local snapshot if Firestore is unavailable. A later
+        // sync or retry will reconcile it without claiming reset success.
+      }
+      setSyncStatus(`Reset failed: ${message}`);
+      throw new Error(`Could not reset ${activeHousehold.name}: ${message}`);
+    }
+  }
+
+  async function activateHousehold(meta: HouseholdMeta, options: { migrateLegacy: boolean }) {
+    if (auth.status !== "signed-in" || !services) return false;
+    try {
+      const repo = new FirestoreHouseholdRepository(services.db, meta.id, auth.user.uid);
+      const cloudData = await repo.load();
+      let nextData = cloudData;
+      let migrated = false;
+
+      if (options.migrateLegacy && legacyData && hasLocalFinancialData(legacyData)) {
+        await repo.save(legacyData);
+        nextData = legacyData;
+        finishLegacyMigration();
+        migrated = true;
+      }
+
+      skipNextSave.current = true;
+      saveVersion.current += 1;
+      completedSaveVersion.current = saveVersion.current;
+      setData(nextData);
+      setUndoChange(null);
+      setRepository(repo);
+      setHouseholdMeta(meta);
+      writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, meta.id);
+      await saveUserProfile(services.db, auth.user.uid, { activeHouseholdId: meta.id });
+      setSyncStatus(`Synced with ${meta.name}`);
+      setNotice(migrated ? `Migrated browser data to ${meta.name} and cleared local financial storage.` : `Using household: ${meta.name}.`);
+      return true;
+    } catch (error) {
+      setNotice((error as Error).message);
+      return false;
+    }
+  }
+
+  async function createHousehold() {
+    if (auth.status !== "signed-in" || !services) {
+      setNotice("Sign in with Google before creating a household.");
+      return;
+    }
+    const initialData = legacyData && hasLocalFinancialData(legacyData) ? legacyData : data;
+    const prompt = legacyData && hasLocalFinancialData(legacyData)
+      ? "Create a Firestore household and migrate this browser's old Mizan data?"
+      : "Create a Firestore household for Mizan data?";
+    if (!window.confirm(prompt)) return;
+    const name = window.prompt("Household name", initialData.settings.members.map((member) => member.name).join(" + ") || "Household");
+    if (name === null) return;
+    try {
+      const meta = await createFirestoreHousehold(services.db, auth.user, name, initialData);
+      await activateHousehold(meta, { migrateLegacy: Boolean(legacyData && hasLocalFinancialData(legacyData)) });
+      setNotice(`Household created. Invite code: ${meta.inviteCode}`);
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
+  }
+
+  async function joinHousehold() {
+    if (auth.status !== "signed-in" || !services) {
+      setNotice("Sign in with Google before joining a household.");
+      return;
+    }
+    const inviteCode = window.prompt("Paste the household invite code");
+    if (!inviteCode) return;
+    try {
+      const meta = await joinFirestoreHousehold(services.db, auth.user, inviteCode);
+      await activateHousehold(meta, { migrateLegacy: true });
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
+  }
+
+  async function switchHousehold(householdId: string) {
+    if (auth.status !== "signed-in" || !services || !householdId) return;
+    try {
+      const meta = await loadHouseholdMeta(services.db, householdId);
+      await activateHousehold(meta, { migrateLegacy: true });
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
+  }
+
+  async function rotateInvite() {
+    if (!householdMeta || !services) return;
+    try {
+      const meta = await rotateFirestoreInvite(services.db, householdMeta.id);
+      setHouseholdMeta(meta);
+      setNotice(`New invite code: ${meta.inviteCode}`);
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
+  }
+
+  async function handleSignIn() {
+    setNotice("");
+    try {
+      await signInWithGoogle();
+      setNotice("Signed in with Google.");
+    } catch (error) {
+      setNotice(authErrorMessage(error));
+    }
+  }
+
+  async function handleSignOut() {
+    await signOutUser();
+    setRepository(null);
+    setHouseholdMeta(null);
+    setAvailableHouseholds([]);
+    setData(emptyData());
+    setLastCheckInByHousehold({});
+    restoredHousehold.current = "";
+    profileLoaded.current = false;
+    setSyncStatus("Signed out");
+  }
+
+  function completeWeeklyCheckIn() {
+    if (!householdMeta) return;
+    const checkedAt = new Date().toISOString();
+    setLastCheckInByHousehold((previous) => ({ ...previous, [householdMeta.id]: checkedAt }));
+    setNotice("Weekly money check-in recorded. Come back after your next statement update, or within seven days.");
+  }
+
+  const canResetHousehold =
+    auth.status === "signed-in" && Boolean(householdMeta) && householdMeta?.ownerUid === auth.user.uid;
+  const hasResettableData = hasLocalFinancialData(data);
+  const resetModal =
+    modal === "reset" && householdMeta && canResetHousehold ? (
+      <ResetHouseholdModal
+        householdName={householdMeta.name}
+        data={data}
+        onExport={exportBackup}
+        onReset={resetActiveHousehold}
+        onClose={() => setModal(null)}
+      />
+    ) : null;
+
   const monthIndex = months.indexOf(currentMonth);
-  const streakExtending = summary.saveRate >= summary.targetSaveRate;
+  const syncHasError = /failed|could not/i.test(syncStatus);
+  const syncLabel = syncHasError
+    ? "Sync issue"
+    : syncStatus.startsWith("Synced")
+      ? "Synced"
+      : /saving|loading|listening/i.test(syncStatus)
+        ? "Syncing"
+        : "Firestore";
+
+  if (auth.status !== "signed-in") {
+    return <AuthGate auth={auth} notice={notice} onSignIn={handleSignIn} />;
+  }
+
+  if (!repository) {
+    return (
+      <main className="app onboarding">
+        <section className="home-hero tight onboard-wide auth-gate">
+          <div className="onboard-intro">
+            <div className="wordmark"><span className="wordmark-mark">M</span><span>Mizan</span></div>
+            <h2>Choose a Firestore household</h2>
+            <p>
+              Mizan stores financial data in a signed-in Firestore household. Create one for this budget or join an
+              existing household with an invite code.
+            </p>
+            {legacyPresent && (
+              <div className="notice">
+                Legacy browser financial data was found. It will be uploaded to the selected household and then cleared
+                from this browser.
+              </div>
+            )}
+            {notice && <div className="notice">{notice}</div>}
+          </div>
+          <div className="auth-panel">
+            <span className="soft-label">Firestore</span>
+            <strong>{syncStatus}</strong>
+            <p className="muted">Raw statement files and passwords stay on this device while imports are processed.</p>
+            <div className="sync-actions sync-main-actions">
+              <button onClick={createHousehold}>Create household</button>
+              <button className="secondary" onClick={joinHousehold}>Join with invite</button>
+            </div>
+            {availableHouseholds.length > 0 && (
+              <label className="field">
+                <span>Existing household</span>
+                <select defaultValue="" onChange={(event) => switchHousehold(event.target.value)}>
+                  <option value="" disabled>Choose household</option>
+                  {availableHouseholds.map((household) => (
+                    <option key={household.householdId} value={household.householdId}>
+                      {household.name} ({household.role})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+        </section>
+      </main>
+    );
+  }
 
   if (!data.settings.members.length) {
     return (
-      <OnboardingView
-        onComplete={(result) => setData((previous) => ({ ...previous, settings: { ...previous.settings, ...result } }))}
-      />
+      <>
+        <OnboardingView
+          sync={{
+            auth,
+            mode: repository.mode,
+            status: syncStatus,
+            household: householdMeta,
+            households: availableHouseholds,
+          }}
+          onSignIn={handleSignIn}
+          onOpenSettings={() => setModal("settings")}
+          onComplete={(result) => setData((previous) => ({ ...previous, settings: { ...previous.settings, ...result } }))}
+        />
+        {modal === "settings" && (
+          <SettingsModal
+            data={data}
+            onUpdateMembers={updateMembers}
+            onUpdateTarget={(targetSaveRate) =>
+              setData((previous) => ({ ...previous, settings: { ...previous.settings, targetSaveRate } }))
+            }
+            onUpdateCurrency={(currency, locale) =>
+              setData((previous) => ({ ...previous, settings: { ...previous.settings, currency, locale } }))
+            }
+            onUpdateFxRates={(fxRates) => setData((previous) => ({ ...previous, settings: { ...previous.settings, fxRates } }))}
+            onUpdateFixedCosts={(fixedCosts) => setData((previous) => ({ ...previous, fixedCosts }))}
+            onUpdateAccounts={(accounts) =>
+              setData((previous) => ({
+                ...previous,
+                accounts,
+                transactions: applyAccounts(previous.transactions, accounts),
+              }))
+            }
+            onDeleteRule={deleteRule}
+            onUpdateCounterparties={updateCounterparties}
+            onUpdateCustomCategories={updateCustomCategories}
+            sync={{
+              auth,
+              mode: repository.mode,
+              status: syncStatus,
+              household: householdMeta,
+              households: availableHouseholds,
+            }}
+            onSignIn={handleSignIn}
+            onSignOut={handleSignOut}
+            onCreateHousehold={createHousehold}
+            onJoinHousehold={joinHousehold}
+            onSwitchHousehold={switchHousehold}
+            onRotateInvite={rotateInvite}
+            onExport={exportBackup}
+            onImportBackup={importBackup}
+            onClearData={clearAllData}
+            canResetHousehold={canResetHousehold}
+            hasResettableData={hasResettableData}
+            onResetHousehold={() => setModal("reset")}
+            onClose={() => setModal(null)}
+          />
+        )}
+        {resetModal}
+      </>
     );
   }
 
   return (
     <main className="app">
       <header className="topbar">
-        <div className="wordmark"><span className="dot" />MIZAN</div>
-        <div className="month-nav">
-          <button aria-label="Previous month" onClick={() => monthIndex > 0 && setMonth(months[monthIndex - 1]!)}>‹</button>
-          <span className="label">{monthLabel(currentMonth).toUpperCase()}</span>
-          <button
-            aria-label="Next month"
-            onClick={() => monthIndex >= 0 && monthIndex < months.length - 1 && setMonth(months[monthIndex + 1]!)}
-          >
-            ›
-          </button>
-        </div>
-        <div className="top-actions">
-          <button className="icon-btn" title="Import statements" onClick={() => setModal("import")}>↑</button>
-          <button className="icon-btn" title="Add entry" onClick={() => setModal("manual")}>+</button>
-          <button className="icon-btn" title={privacy ? "Show amounts" : "Hide amounts"} onClick={() => setPrivacy((value) => !value)}>
-            {privacy ? "◌" : "●"}
-          </button>
-          <button className="icon-btn" title="Settings" onClick={() => setModal("settings")}>⚙</button>
+        <div className="shell-inner topbar-inner">
+          <div className="wordmark"><span className="wordmark-mark">M</span><span>Mizan</span></div>
+          <nav className="primary-nav" aria-label="Primary">
+            {NAV_ITEMS.map(([id, label, Icon]) => (
+              <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>
+                <Icon size={18} strokeWidth={1.9} aria-hidden="true" />
+                <span>{label}</span>
+                {id === "transactions" && summary.reviewQueueCount > 0 && (
+                  <b className="nav-badge" aria-label={`${summary.reviewQueueCount} transactions need review`}>
+                    {summary.reviewQueueCount}
+                  </b>
+                )}
+              </button>
+            ))}
+          </nav>
+          <div className="utility-actions">
+            <button
+              className={`sync-chip ${syncHasError ? "sync-error" : ""}`}
+              title={syncStatus}
+              onClick={() => setModal("settings")}
+            >
+              {syncLabel}
+            </button>
+            <IconButton
+              label={theme === "dark" ? "Use light mode" : "Use dark mode"}
+              icon={theme === "dark" ? Sun : Moon}
+              onClick={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}
+            />
+            <IconButton
+              label={privacy ? "Show amounts" : "Hide amounts"}
+              icon={privacy ? Eye : EyeOff}
+              onClick={() => setPrivacy((value) => !value)}
+            />
+            <IconButton label="Settings" icon={Settings} onClick={() => setModal("settings")} />
+          </div>
         </div>
       </header>
 
-      <nav className="nav-strip">
-        {(
-          [
-            ["home", "Home"],
-            ["transactions", "Transactions"],
-            ["history", "History"],
-          ] as const
-        ).map(([id, label]) => (
-          <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>
-            {label}
-          </button>
-        ))}
-        <span className="spacer" />
-        <div className="person-seg" role="tablist" aria-label="Filter by person">
-          <button
-            role="tab"
-            aria-selected={owner === "all"}
-            className={`ps-btn ${owner === "all" ? "active" : ""}`}
-            onClick={() => setOwner("all")}
-          >
-            All
-          </button>
-          {data.settings.members.map((member) => (
-            <button
-              key={member.id}
-              role="tab"
-              aria-selected={owner === member.id}
-              className={`ps-btn ${owner === member.id ? "active" : ""}`}
-              style={owner === member.id ? ({ "--person": member.color } as React.CSSProperties) : undefined}
-              onClick={() => setOwner(member.id)}
-            >
-              <span className="ps-dot" style={{ background: member.color }} />
-              {member.name}
-            </button>
-          ))}
-        </div>
-        <span className="ticker">
-          {privacy && <span className="privacy-pill"><span className="dot" />PRIVACY</span>}
-          {summary.uncategorizedCount > 0 && (
-            <button className="ticker-chip uncat" onClick={() => setView("transactions")}>
-              <span className="tk-k">REVIEW </span><span className="tk-v">{summary.uncategorizedCount}</span>
-            </button>
-          )}
-          <span className="streak">
-            <span className="tk-k">SAVE </span><span className="tk-v">{Math.round(summary.saveRate)}%</span>
-            <span className={streakExtending ? "up" : "down"}>{streakExtending ? "↑ On target" : "↓ At risk"}</span>
-          </span>
-          <span><span className="tk-k">DAY </span><span className="tk-v">{summary.dayNumber}/{summary.daysInMonth}</span></span>
-          <span><span className="tk-k">TXNS </span><span className="tk-v">{data.transactions.length}</span></span>
-        </span>
-      </nav>
-
       <section className="workspace">
-        <header className="viewbar">
-          <div className="title-lockup">
-            <p className="eyebrow">{data.settings.members.map((member) => member.name).join(" + ") || "Household"}</p>
-            <h2>{VIEW_TITLES[view]}</h2>
-            <span>What needs attention, what is fine, and what changed.</span>
-          </div>
-          <div className="actions">
-            <select value={currentMonth} onChange={(event) => setMonth(event.target.value)}>
-              {months.map((item) => (
-                <option key={item} value={item}>{monthLabel(item)}</option>
+        <PageHeader
+          eyebrow={data.settings.members.map((member) => member.name).join(" + ") || "Household"}
+          title={VIEW_TITLES[view]}
+          description={VIEW_DESCRIPTIONS[view]}
+          context={
+            <div className="person-seg" role="tablist" aria-label="Filter by person">
+              <button
+                role="tab"
+                aria-selected={owner === "all"}
+                className={`ps-btn ${owner === "all" ? "active" : ""}`}
+                onClick={() => setOwner("all")}
+              >
+                All household
+              </button>
+              {data.settings.members.map((member) => (
+                <button
+                  key={member.id}
+                  role="tab"
+                  aria-selected={owner === member.id}
+                  className={`ps-btn ${owner === member.id ? "active" : ""}`}
+                  style={owner === member.id ? ({ "--person": member.color } as React.CSSProperties) : undefined}
+                  onClick={() => setOwner(member.id)}
+                >
+                  <span className="ps-dot" style={{ background: member.color }} />
+                  {member.name}
+                </button>
               ))}
-            </select>
+            </div>
+          }
+          actions={
+            <>
+            <div className="month-nav">
+              <IconButton
+                label="Previous month"
+                icon={ChevronLeft}
+                disabled={monthIndex <= 0}
+                onClick={() => monthIndex > 0 && setMonth(months[monthIndex - 1]!)}
+              />
+              <select aria-label="Month" value={currentMonth} onChange={(event) => setMonth(event.target.value)}>
+                {months.map((item) => (
+                  <option key={item} value={item}>{monthLabel(item)}</option>
+                ))}
+              </select>
+              <IconButton
+                label="Next month"
+                icon={ChevronRight}
+                disabled={monthIndex < 0 || monthIndex >= months.length - 1}
+                onClick={() => monthIndex >= 0 && monthIndex < months.length - 1 && setMonth(months[monthIndex + 1]!)}
+              />
+            </div>
             <button className="secondary" onClick={() => setModal("manual")}>+ Manual</button>
             <button onClick={() => setModal("import")}>Import</button>
-          </div>
-        </header>
+            </>
+          }
+        />
 
         {notice && <div className="notice">{notice}</div>}
 
-        {view === "home" && <HomeView summary={summary} money={money} onOpenSettings={() => setModal("settings")} />}
+        {view === "home" && (
+          <HomeView
+            summary={summary}
+            money={money}
+            lastCheckInAt={householdMeta ? (lastCheckInByHousehold[householdMeta.id] ?? "") : ""}
+            onOpenSettings={() => setModal("settings")}
+            onOpenImport={() => setModal("import")}
+            onReviewQueue={() => setView("transactions")}
+            onCompleteCheckIn={completeWeeklyCheckIn}
+            incomeCandidates={incomeCandidateMap}
+            onConfirmIncome={(item, candidate) => setIncomeConfirm({ item, ...(candidate ? { candidate } : {}) })}
+          />
+        )}
         {view === "transactions" && (
           <TransactionsView
             summary={summary}
             members={data.settings.members}
+            customCategories={data.settings.customCategories}
+            counterparties={data.settings.counterparties}
             queue={queue}
+            transferCandidates={transferCandidates}
+            undoLabel={undoChange?.householdId === (householdMeta?.id ?? "") ? undoChange.label : ""}
             categoryFilter={categoryFilter}
             onCategoryFilter={setCategoryFilter}
             money={money}
             onSetCategory={setTransactionCategory}
+            onSetKind={setTransactionKind}
+            onSetCounterparty={setTransactionCounterparty}
             onCategorizeMerchant={categorizeMerchant}
+            onUndo={undoLastLedgerChange}
+            onResetClassification={resetTransactionClassification}
+            onConfirmTransfer={confirmTransfer}
+            onDismissTransfer={(debitId, creditId) =>
+              setDismissedTransfers((previous) => new Set(previous).add(`${debitId}:${creditId}`))
+            }
             onSplit={setSplitTxn}
             onRemove={removeTransaction}
+            incomeLinkedIds={incomeLinkedIds}
           />
         )}
-        {view === "history" && <HistoryView rows={history} targetSaveRate={summary.targetSaveRate} money={money} />}
+        {view === "history" && <HistoryView rows={history} currentMonth={currentMonth} targetSaveRate={summary.targetSaveRate} money={money} />}
       </section>
 
       {modal === "import" && (
@@ -360,6 +1122,10 @@ export default function App() {
           onCsv={(file) => {
             setModal(null);
             setCsvFile(file);
+          }}
+          onReview={() => {
+            setModal(null);
+            setView("transactions");
           }}
           onClose={() => setModal(null)}
         />
@@ -384,6 +1150,8 @@ export default function App() {
         <ManualModal
           accountOptions={data.accounts.map((account) => account.label)}
           members={data.settings.members}
+          customCategories={data.settings.customCategories}
+          counterparties={data.settings.counterparties}
           onAdd={addManual}
           onClose={() => setModal(null)}
         />
@@ -398,6 +1166,7 @@ export default function App() {
           onUpdateCurrency={(currency, locale) =>
             setData((previous) => ({ ...previous, settings: { ...previous.settings, currency, locale } }))
           }
+          onUpdateFxRates={(fxRates) => setData((previous) => ({ ...previous, settings: { ...previous.settings, fxRates } }))}
           onUpdateFixedCosts={(fixedCosts) => setData((previous) => ({ ...previous, fixedCosts }))}
           onUpdateAccounts={(accounts) =>
             setData((previous) => ({
@@ -407,18 +1176,59 @@ export default function App() {
             }))
           }
           onDeleteRule={deleteRule}
+          onUpdateCounterparties={updateCounterparties}
+          onUpdateCustomCategories={updateCustomCategories}
+          sync={{
+            auth,
+            mode: repository.mode,
+            status: syncStatus,
+            household: householdMeta,
+            households: availableHouseholds,
+          }}
+          onSignIn={handleSignIn}
+          onSignOut={handleSignOut}
+          onCreateHousehold={createHousehold}
+          onJoinHousehold={joinHousehold}
+          onSwitchHousehold={switchHousehold}
+          onRotateInvite={rotateInvite}
           onExport={exportBackup}
           onImportBackup={importBackup}
           onClearData={clearAllData}
+          canResetHousehold={canResetHousehold}
+          hasResettableData={hasResettableData}
+          onResetHousehold={() => setModal("reset")}
           onClose={() => setModal(null)}
         />
       )}
+      {resetModal}
       {splitTxn && (
         <SplitModal
           txn={splitTxn}
           onSave={saveSplit}
           onClear={clearSplit}
           onClose={() => setSplitTxn(null)}
+        />
+      )}
+      {incomeConfirm && (
+        <IncomeConfirmModal
+          item={incomeConfirm.item}
+          candidate={incomeConfirm.candidate}
+          linkedTransaction={data.transactions.find(
+            (transaction) => transaction.id === (incomeConfirm.item.receipt?.transactionId ?? incomeConfirm.candidate?.transaction.id),
+          )}
+          alternatives={eligibleCredits(
+            incomeConfirm.item.portion,
+            incomeConfirm.item.memberId,
+            data.transactions,
+            data.accounts,
+            data.incomeReceipts,
+            incomeConfirm.item.month,
+          )}
+          householdCurrency={data.settings.currency}
+          money={money}
+          onSave={recordIncomeReceipt}
+          onRemove={() => removeIncomeConfirmation(incomeConfirm.item.month, incomeConfirm.item.portion.id)}
+          onClose={() => setIncomeConfirm(null)}
         />
       )}
     </main>
