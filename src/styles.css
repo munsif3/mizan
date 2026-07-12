@@ -837,6 +837,95 @@ td small {
   font-size: 13px;
 }
 
+.contribution-form {
+  display: grid;
+  gap: 14px;
+}
+
+.contribution-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.contribution-form label > span {
+  color: #aab6c8;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.contribution-preview {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid #34735b;
+  border-radius: 12px;
+  background: rgba(52, 115, 91, 0.12);
+}
+
+.contribution-preview span,
+.contribution-preview small {
+  color: #aab6c8;
+}
+
+.contribution-recoveries {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #d5cebf;
+  border-radius: 8px;
+}
+
+.contribution-recoveries legend {
+  padding: 0 6px;
+  color: #8796ad;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.contribution-recoveries label {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  padding: 9px 10px;
+  border-radius: 6px;
+  background: rgba(148, 139, 120, 0.08);
+}
+
+.contribution-recoveries label.selected {
+  background: rgba(52, 115, 91, 0.12);
+}
+
+.contribution-recoveries input {
+  margin-top: 3px;
+}
+
+.contribution-recoveries label > span {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: normal;
+  line-height: 1.4;
+  text-transform: none;
+}
+
+.contribution-allocation-list {
+  display: grid;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(52, 115, 91, 0.35);
+}
+
+.contribution-links {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  margin-top: 4px;
+}
+
 .muted {
   margin: 0 0 14px;
   color: #aab6c8;
@@ -1146,7 +1235,7 @@ td small {
 
 .account-row {
   display: grid;
-  grid-template-columns: 1.1fr 0.7fr 1.4fr 36px;
+  grid-template-columns: 1.1fr 0.7fr 0.45fr 1.4fr 36px;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -1158,6 +1247,15 @@ td small {
 
 .toolbar-filters select {
   width: 180px;
+}
+
+.account-select {
+  width: 100%;
+  min-width: 150px;
+}
+
+.account-select.unresolved {
+  border-color: var(--danger, #b84a3a);
 }
 
 @media (max-width: 720px) {

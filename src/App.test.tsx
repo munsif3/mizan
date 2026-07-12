@@ -14,6 +14,7 @@ import { OnboardingView } from "./ui/OnboardingView";
 import { isResetConfirmation, ResetHouseholdModal } from "./ui/ResetHouseholdModal";
 import { HouseholdResetAction, SettingsModal } from "./ui/SettingsModal";
 import { SplitModal } from "./ui/SplitModal";
+import { SharedContributionModal } from "./ui/SharedContributionModal";
 import { TransactionsView } from "./ui/TransactionsView";
 
 function threeMemberData(): AppData {
@@ -119,6 +120,36 @@ describe("UI render smoke", () => {
     expect(html).toContain("setting aside");
   });
 
+  it("confirms a foreign income portion in the receiving account currency", () => {
+    const data = threeMemberData();
+    data.settings.currency = "LKR";
+    data.settings.fxRates = { USD: 332 };
+    data.settings.members[0]!.portions[0] = {
+      ...data.settings.members[0]!.portions[0]!,
+      amount: 2200,
+      currency: "USD",
+      taxRate: 15,
+      taxWithheld: false,
+    };
+    const item = computeMonthSummary(data, "2026-07", "all", new Date(2026, 6, 15)).incomeItems[0]!;
+    const html = renderToString(
+      <IncomeConfirmModal
+        item={item}
+        accounts={data.accounts}
+        householdCurrency="LKR"
+        fxRates={data.settings.fxRates}
+        locale="en-LK"
+        money={(value) => `LKR ${value}`}
+        onSave={() => {}}
+        onRemove={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(html).toMatch(/Amount received .*USD/);
+    expect(html).toMatch(/FX rate .*LKR.* per .*USD/);
+    expect(html).toContain("Mizan converts it to LKR");
+  });
+
   it("pauses the forecast when the current month has no activity", () => {
     const data = threeMemberData();
     data.transactions = [];
@@ -182,6 +213,7 @@ describe("UI render smoke", () => {
       <TransactionsView
         summary={summary}
         members={data.settings.members}
+        accounts={data.accounts}
         customCategories={data.settings.customCategories}
         counterparties={data.settings.counterparties}
         queue={reviewQueue(data.transactions)}
@@ -190,9 +222,11 @@ describe("UI render smoke", () => {
         categoryFilter="all"
         onCategoryFilter={() => {}}
         money={(v) => `USD ${v}`}
+        transactionMoney={(_txn, v) => `USD ${v}`}
         onSetCategory={() => {}}
         onSetKind={() => {}}
         onSetCounterparty={() => {}}
+        onSetAccount={() => {}}
         onCategorizeMerchant={() => {}}
         onUndo={() => {}}
         onResetClassification={() => {}}
@@ -204,6 +238,7 @@ describe("UI render smoke", () => {
     );
     expect(html).toContain("Teach Mizan these merchants");
     expect(html).toContain("aria-label=\"Category for UNKNOWN SHOP\"");
+    expect(html).toContain("aria-label=\"Account for UNKNOWN SHOP\"");
     expect(html).toContain("aria-label=\"Split UNKNOWN SHOP\"");
     expect(html).toContain("transaction-cards");
   });
@@ -354,6 +389,48 @@ describe("UI render smoke", () => {
     expect(csvHtml).toContain("Import CSV");
     expect(splitHtml).toContain("Split transaction");
     expect(splitHtml).toContain("Total parts");
+  });
+
+  it("renders a guarded shared-contribution preview across partial recovery rows", () => {
+    const data = threeMemberData();
+    data.transactions = [
+      { id: "out", date: "2026-07-01", description: "BEN CAR LOAN", amount: 45_000, category: "uncategorized", account: "Ben Card", note: "", source: "imported", direction: "debit", kind: "expense" },
+      { id: "in", date: "2026-07-01", description: "BEN CAR LOAN", amount: 45_000, category: "uncategorized", account: "Ana Card", note: "", source: "imported", direction: "credit", kind: "account_credit" },
+      { id: "loan-early", date: "2026-06-30", description: "BANK RECOVERY FOR500240015943", amount: 40_000, category: "housing", account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
+      { id: "loan-late", date: "2026-07-02", description: "BANK RECOVERY FOR500240015943", amount: 50_000, category: "housing", account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
+    ];
+    const html = renderToString(
+      <SharedContributionModal
+        transactions={data.transactions}
+        accounts={data.accounts}
+        members={data.settings.members}
+        contributions={[]}
+        candidate={{
+          debit: data.transactions[0]!,
+          credit: data.transactions[1]!,
+          expenses: [data.transactions[2]!, data.transactions[3]!],
+          allocations: [{ expenseTransactionId: "loan-late", amount: 45_000 }],
+          contributorMemberId: "b",
+          amount: 45_000,
+          daysApart: 2,
+          sameMonth: true,
+        }}
+        money={(value) => `USD ${value}`}
+        onSave={() => {}}
+        onRemove={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(html).toContain("Confirm shared contribution");
+    expect(html).toContain("Ben");
+    expect(html).toContain("funded");
+    expect(html).toContain("USD 45000");
+    expect(html).toContain("Ana");
+    expect(html).toContain("USD 40000");
+    expect(html).toContain("USD 5000");
+    expect(html).toContain("Loan recovery deductions funded");
+    expect(html).toContain("Total recovered");
+    expect(html).toContain("BANK RECOVERY FOR500240015943");
   });
 
   it("App requires Firebase sign-in before any household data screen", () => {

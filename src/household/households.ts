@@ -33,6 +33,7 @@ export function householdIdFromInvite(code: string): string | null {
 export function hasLocalFinancialData(data: AppData): boolean {
   return Boolean(
     data.transactions.length ||
+      data.sharedContributions.length ||
       Object.keys(data.merchantRules).length ||
       data.accounts.length ||
       data.fixedCosts.length ||
@@ -120,6 +121,7 @@ export function appDataToCloudCollections(appData: AppData, updatedBy: string, n
   return {
     settings: createCloudSettings(appData, updatedBy, now),
     transactions: appData.transactions,
+    sharedContributions: appData.sharedContributions,
     accounts: appData.accounts,
     fixedCosts: appData.fixedCosts,
     incomeReceipts: appData.incomeReceipts,
@@ -136,6 +138,7 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
   const csvPresets = Object.fromEntries((collections.csvPresets ?? []).map((item) => [item.signature, item.mapping]));
   return migrate({
     transactions: collections.transactions ?? [],
+    sharedContributions: collections.sharedContributions ?? [],
     merchantRules,
     accounts: collections.accounts ?? [],
     fixedCosts: collections.fixedCosts ?? [],

@@ -1,5 +1,6 @@
 import { ownerOf } from "./accounts";
 import { categoryInfo, spendingCategoryOptions } from "./categories";
+import { pruneSharedContributions } from "./contributions";
 import { addMonths, daysInMonth, isoDateOf, monthOf } from "./dates";
 import { resolveMonthIncome, type PortionResolution } from "./income";
 import { SPEND_KINDS } from "./movements";
@@ -327,6 +328,20 @@ export function computeMonthSummary(data: AppData, month: string, owner: OwnerFi
   const sharedPaidByMember = new Map<MemberId, number>();
   const crossPaidByMember = new Map<MemberId, number>();
   const owedForPersonal = new Map<MemberId, number>();
+  const validContributions = pruneSharedContributions(
+    data.sharedContributions ?? [],
+    data.transactions,
+    data.accounts,
+    members,
+  );
+  const contributionsByExpense = new Map<string, { contributorMemberId: MemberId; amount: number }[]>();
+  for (const contribution of validContributions) {
+    for (const allocation of contribution.allocations) {
+      const rows = contributionsByExpense.get(allocation.expenseTransactionId) ?? [];
+      rows.push({ contributorMemberId: contribution.contributorMemberId, amount: allocation.amount });
+      contributionsByExpense.set(allocation.expenseTransactionId, rows);
+    }
+  }
   for (const id of memberIds) {
     personalByMember.set(id, categoryTotalForMonth(data, personalCategory(id), month));
   }
@@ -334,15 +349,28 @@ export function computeMonthSummary(data: AppData, month: string, owner: OwnerFi
     const payer = effectivePayer(txn, data.accounts, memberIds);
     if (!payer) continue;
     const value = netAmount(txn);
-    paidByMember.set(payer, (paidByMember.get(payer) ?? 0) + value);
     const beneficiary = personalMemberId(txn.category);
+    const contributions = beneficiary ? [] : (contributionsByExpense.get(txn.id) ?? []);
+    const contributed = contributions.reduce((sum, item) => sum + item.amount, 0);
+    const payerAmount = Math.max(0, value - contributed);
+    paidByMember.set(payer, (paidByMember.get(payer) ?? 0) + payerAmount);
+    for (const contribution of contributions) {
+      paidByMember.set(
+        contribution.contributorMemberId,
+        (paidByMember.get(contribution.contributorMemberId) ?? 0) + contribution.amount,
+      );
+      sharedPaidByMember.set(
+        contribution.contributorMemberId,
+        (sharedPaidByMember.get(contribution.contributorMemberId) ?? 0) + contribution.amount,
+      );
+    }
     if (beneficiary && memberIds.has(beneficiary)) {
       if (beneficiary !== payer) {
-        crossPaidByMember.set(payer, (crossPaidByMember.get(payer) ?? 0) + value);
+        crossPaidByMember.set(payer, (crossPaidByMember.get(payer) ?? 0) + payerAmount);
         owedForPersonal.set(beneficiary, (owedForPersonal.get(beneficiary) ?? 0) + value);
       }
     } else {
-      sharedPaidByMember.set(payer, (sharedPaidByMember.get(payer) ?? 0) + value);
+      sharedPaidByMember.set(payer, (sharedPaidByMember.get(payer) ?? 0) + payerAmount);
     }
   }
   const totalSharedPaid = [...sharedPaidByMember.values()].reduce((sum, v) => sum + v, 0);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAccounts, guessOwner, ownerOf, resolveAccountLabel, seedAccounts } from "./accounts";
+import { applyAccounts, guessOwner, ownerOf, resolveAccountLabel, seedAccounts, transactionDisplayCurrency } from "./accounts";
 import type { Account, Member, Transaction } from "./types";
 
 const MEMBERS: Member[] = [
@@ -84,7 +84,34 @@ describe("applyAccounts", () => {
   it("rewrites raw account text onto canonical labels", () => {
     const result = applyAccounts([txn("Card: 37xx 1234"), txn("Cash")], REGISTRY);
     expect(result[0]!.account).toBe("Alex AMEX");
+    expect(result[0]!.accountId).toBe("a1");
+    expect(result[0]!.rawAccount).toBe("Card: 37xx 1234");
     expect(result[1]!.account).toBe("Cash");
+  });
+
+  it("keeps existing rows attached when a registered account is renamed", () => {
+    const linked = applyAccounts([txn("Card: 37xx 1234")], REGISTRY);
+    const renamed = REGISTRY.map((account) => account.id === "a1" ? { ...account, label: "Alex USD AMEX" } : account);
+    expect(applyAccounts(linked, renamed)[0]).toMatchObject({
+      account: "Alex USD AMEX",
+      accountId: "a1",
+      rawAccount: "Card: 37xx 1234",
+    });
+  });
+
+  it("re-resolves an unmatched imported row after a matching account is added", () => {
+    const imported = applyAccounts([txn("Savings RFC 270080002250")], []);
+    const configured: Account[] = [{ id: "rfc", label: "RFC Savings", currency: "USD", owner: "sam", match: ["2250"] }];
+    expect(applyAccounts(imported, configured)[0]).toMatchObject({
+      account: "RFC Savings",
+      accountId: "rfc",
+      rawAccount: "Savings RFC 270080002250",
+    });
+  });
+
+  it("does not bind unknown rows to a blank account draft", () => {
+    const draft: Account[] = [{ id: "draft", label: "", currency: "USD", owner: "joint", match: [] }];
+    expect(applyAccounts([txn("New account")], draft)[0]).toEqual(txn("New account"));
   });
 });
 
@@ -108,5 +135,17 @@ describe("seeding", () => {
   it("seeds each account with its own label as a starter match pattern", () => {
     const seeded = seedAccounts([txn("Alex Visa")], MEMBERS);
     expect(seeded[0]!.match).toEqual(["Alex Visa"]);
+  });
+});
+
+describe("transactionDisplayCurrency", () => {
+  const accounts: Account[] = [{ id: "rfc", label: "RFC Savings", currency: "USD", owner: "sam", match: ["2250"] }];
+
+  it("uses the account currency for a native account row", () => {
+    expect(transactionDisplayCurrency({ ...txn("RFC Savings"), accountId: "rfc", direction: "credit", kind: "account_credit" }, accounts, "LKR")).toBe("USD");
+  });
+
+  it("uses household currency after explicit FX normalization", () => {
+    expect(transactionDisplayCurrency({ ...txn("RFC Savings"), accountId: "rfc", note: "FX conversion: USD 1,900 at 332 = LKR 630,800" }, accounts, "LKR")).toBe("LKR");
   });
 });

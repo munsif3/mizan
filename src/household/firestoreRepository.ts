@@ -12,9 +12,9 @@ import {
   type WriteBatch,
 } from "firebase/firestore";
 import type { AuthUser } from "../auth/authStore";
-import type { Account, AppData, Counterparty, CustomCategory, FixedCost, IncomeReceipt, Member, Transaction } from "../domain/types";
+import type { Account, AppData, Counterparty, CustomCategory, FixedCost, IncomeReceipt, Member, SharedContribution, Transaction } from "../domain/types";
 import { migrate } from "../storage/schema";
-import type { DataRepository } from "../storage/repository";
+import type { DataRepository, RepositorySubscriptionOptions } from "../storage/repository";
 import {
   appDataToCloudCollections,
   cloudCollectionsToAppData,
@@ -266,6 +266,7 @@ export async function rotateFirestoreInvite(db: Firestore, householdId: string):
 
 export class FirestoreHouseholdRepository implements DataRepository {
   readonly mode = "cloud" as const;
+  private loadedSettingsUpdatedAt = "";
 
   constructor(
     private readonly db: Firestore,
@@ -276,23 +277,50 @@ export class FirestoreHouseholdRepository implements DataRepository {
   async load(): Promise<AppData> {
     const settings = await getDoc(settingsRef(this.db, this.householdId));
     if (!settings.exists()) {
+      this.loadedSettingsUpdatedAt = "";
       const legacy = await getDoc(legacyDataRef(this.db, this.householdId));
       if (!legacy.exists()) return migrate(null);
       const cloud = legacy.data() as Partial<CloudHousehold>;
       return migrate(cloud.appData ?? null);
     }
 
+    const cloudSettings = settings.data() as CloudSettings;
+    this.loadedSettingsUpdatedAt = typeof cloudSettings.updatedAt === "string" ? cloudSettings.updatedAt : "";
+    const [
+      transactions,
+      sharedContributions,
+      accounts,
+      fixedCosts,
+      incomeReceipts,
+      members,
+      customCategories,
+      counterparties,
+      merchantRules,
+      csvPresets,
+    ] = await Promise.all([
+      orderedCollection<Transaction>(this.db, this.householdId, "transactions"),
+      orderedCollection<SharedContribution>(this.db, this.householdId, "sharedContributions"),
+      orderedCollection<Account>(this.db, this.householdId, "accounts"),
+      orderedCollection<FixedCost>(this.db, this.householdId, "fixedCosts"),
+      orderedCollection<IncomeReceipt>(this.db, this.householdId, "incomeReceipts"),
+      orderedCollection<Member>(this.db, this.householdId, "members"),
+      orderedCollection<CustomCategory>(this.db, this.householdId, "customCategories"),
+      orderedCollection<Counterparty>(this.db, this.householdId, "counterparties"),
+      keyedCollection<CloudMerchantRule>(this.db, this.householdId, "merchantRules"),
+      keyedCollection<CloudCsvPreset>(this.db, this.householdId, "csvPresets"),
+    ]);
     const collections: CloudCollections = {
-      settings: settings.data() as CloudSettings,
-      transactions: await orderedCollection<Transaction>(this.db, this.householdId, "transactions"),
-      accounts: await orderedCollection<Account>(this.db, this.householdId, "accounts"),
-      fixedCosts: await orderedCollection<FixedCost>(this.db, this.householdId, "fixedCosts"),
-      incomeReceipts: await orderedCollection<IncomeReceipt>(this.db, this.householdId, "incomeReceipts"),
-      members: await orderedCollection<Member>(this.db, this.householdId, "members"),
-      customCategories: await orderedCollection<CustomCategory>(this.db, this.householdId, "customCategories"),
-      counterparties: await orderedCollection<Counterparty>(this.db, this.householdId, "counterparties"),
-      merchantRules: await keyedCollection<CloudMerchantRule>(this.db, this.householdId, "merchantRules"),
-      csvPresets: await keyedCollection<CloudCsvPreset>(this.db, this.householdId, "csvPresets"),
+      settings: cloudSettings,
+      transactions,
+      sharedContributions,
+      accounts,
+      fixedCosts,
+      incomeReceipts,
+      members,
+      customCategories,
+      counterparties,
+      merchantRules,
+      csvPresets,
     };
     return cloudCollectionsToAppData(collections);
   }
@@ -303,6 +331,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
     const jobs: BatchJob[] = [
       (batch) => batch.set(settingsRef(this.db, this.householdId), cleanForFirestore(cloud.settings)),
       ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "transactions", cloud.transactions, (item) => item.id)),
+      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "sharedContributions", cloud.sharedContributions, (item) => item.id)),
       ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "accounts", cloud.accounts, (item) => item.id)),
       ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "fixedCosts", cloud.fixedCosts, (item) => item.id)),
       ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "incomeReceipts", cloud.incomeReceipts, (item) => item.id)),
@@ -319,12 +348,24 @@ export class FirestoreHouseholdRepository implements DataRepository {
     await commitJobs(this.db, jobs);
   }
 
-  subscribe(onData: (data: AppData) => void, onError: (message: string) => void): () => void {
+  subscribe(
+    onData: (data: AppData) => void,
+    onError: (message: string) => void,
+    options: RepositorySubscriptionOptions = {},
+  ): () => void {
     let active = true;
+    let firstSnapshot = true;
     const unsubscribe = onSnapshot(
       settingsRef(this.db, this.householdId),
       (snapshot) => {
         if (!snapshot.exists()) return;
+        const snapshotUpdatedAt = snapshot.data().updatedAt;
+        const matchesLoadedData = snapshotUpdatedAt === this.loadedSettingsUpdatedAt;
+        if (firstSnapshot && options.skipInitial && matchesLoadedData) {
+          firstSnapshot = false;
+          return;
+        }
+        firstSnapshot = false;
         this.load()
           .then((data) => active && onData(data))
           .catch((error) => active && onError((error as Error).message));

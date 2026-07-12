@@ -335,6 +335,126 @@ describe("netAmount / splits", () => {
   });
 });
 
+describe("shared loan contributions", () => {
+  function loanData(total: number): AppData {
+    const data = emptyData();
+    data.settings.currency = "LKR";
+    data.settings.members = [
+      { id: "owner", name: "Owner", color: "#5b8cff", portions: [] },
+      { id: "contributor", name: "Contributor", color: "#ff80b5", portions: [] },
+    ];
+    data.settings.customCategories = [{ id: "vehicle-loan", label: "Vehicle loan", color: "#7b8194" }];
+    data.accounts = [
+      { id: "mine", label: "Owner Savings", owner: "owner", match: [] },
+      { id: "contributor", label: "Contributor Savings", owner: "contributor", match: [] },
+    ];
+    data.transactions = [
+      txn("contributor-out", "2026-07-01", "MEMBER CAR LOAN", 125_000, "uncategorized", "Contributor Savings", "debit", "internal_transfer"),
+      txn("owner-in", "2026-07-01", "MEMBER CAR LOAN", 125_000, "uncategorized", "Owner Savings", "credit", "internal_transfer"),
+      txn("loan", "2026-07-03", "BANK STANDING ORDER", total, "custom:vehicle-loan", "Owner Savings", "debit", "loan_payment"),
+    ];
+    data.sharedContributions = [{
+      id: "contribution",
+      allocations: [{ expenseTransactionId: "loan", amount: 125_000 }],
+      transferDebitTransactionId: "contributor-out",
+      transferCreditTransactionId: "owner-in",
+      contributorMemberId: "contributor",
+      amount: 125_000,
+    }];
+    return data;
+  }
+
+  it("counts the full loan once and produces no balance when the contribution is exactly half", () => {
+    const summary = computeMonthSummary(loanData(250_000), "2026-07", "all", JULY_15);
+    expect(summary.cardSpend).toBe(250_000);
+    expect(summary.fullCategoryRows.find((row) => row.key === "custom:vehicle-loan")?.value).toBe(250_000);
+    expect(summary.fullCategoryRows.find((row) => row.key === "transport")?.value).toBe(0);
+    expect(summary.memberRows.map((row) => row.paid)).toEqual([125_000, 125_000]);
+    expect(summary.memberRows.map((row) => row.net)).toEqual([0, 0]);
+    expect(summary.transfers).toEqual([]);
+  });
+
+  it("credits the actual unequal contribution and settles only the shortfall", () => {
+    const summary = computeMonthSummary(loanData(260_000), "2026-07", "all", JULY_15);
+    expect(summary.memberRows.map((row) => row.paid)).toEqual([135_000, 125_000]);
+    expect(summary.memberRows.map((row) => row.net)).toEqual([5_000, -5_000]);
+    expect(summary.transfers).toEqual([{ fromId: "contributor", toId: "owner", fromName: "Contributor", toName: "Owner", amount: 5_000 }]);
+    expect(summary.memberRows.reduce((sum, row) => sum + row.net, 0)).toBe(0);
+  });
+
+  it("applies an adjacent-month transfer to the linked loan month", () => {
+    const data = loanData(250_000);
+    data.transactions = data.transactions.map((item) => item.id === "contributor-out" || item.id === "owner-in" ? { ...item, date: "2026-06-30" } : item);
+    const july = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(july.transfers).toEqual([]);
+    expect(july.cardSpend).toBe(250_000);
+  });
+
+  it("supports several contributors without changing the full shared cost", () => {
+    const data = loanData(300_000);
+    data.settings.members.push({ id: "alex", name: "Alex", color: "#f2b84b", portions: [] });
+    data.accounts.push({ id: "alex", label: "Alex Savings", owner: "alex", match: [] });
+    data.transactions.push(
+      txn("alex-out", "2026-07-01", "ALEX CAR LOAN", 50_000, "uncategorized", "Alex Savings", "debit", "internal_transfer"),
+      txn("alex-in", "2026-07-01", "ALEX CAR LOAN", 50_000, "uncategorized", "Owner Savings", "credit", "internal_transfer"),
+    );
+    data.sharedContributions.push({
+      id: "alex-contribution",
+      allocations: [{ expenseTransactionId: "loan", amount: 50_000 }],
+      transferDebitTransactionId: "alex-out",
+      transferCreditTransactionId: "alex-in",
+      contributorMemberId: "alex",
+      amount: 50_000,
+    });
+    data.sharedContributions[0] = { ...data.sharedContributions[0]!, allocations: [{ expenseTransactionId: "loan", amount: 100_000 }], amount: 100_000 };
+    data.transactions = data.transactions.map((item) => item.id === "contributor-out" || item.id === "owner-in" ? { ...item, amount: 100_000 } : item);
+
+    const summary = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(summary.cardSpend).toBe(300_000);
+    expect(summary.memberRows.map((row) => row.paid)).toEqual([150_000, 100_000, 50_000]);
+    expect(summary.transfers).toEqual([{ fromId: "alex", toId: "owner", fromName: "Alex", toName: "Owner", amount: 50_000 }]);
+  });
+
+  it("attributes one contribution across partial recovery rows without changing total spend", () => {
+    const data = loanData(100_000);
+    data.transactions = data.transactions.filter((item) => item.id !== "loan");
+    data.transactions.push(
+      txn("loan-early", "2026-07-01", "BANK RECOVERY FOR500240015943", 100_000, "custom:vehicle-loan", "Owner Savings", "debit", "loan_payment"),
+      txn("loan-late", "2026-07-03", "BANK RECOVERY FOR500240015943", 160_000, "custom:vehicle-loan", "Owner Savings", "debit", "loan_payment"),
+    );
+    data.sharedContributions[0] = {
+      ...data.sharedContributions[0]!,
+      allocations: [{ expenseTransactionId: "loan-late", amount: 125_000 }],
+    };
+    const summary = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(summary.cardSpend).toBe(260_000);
+    expect(summary.memberRows.map((row) => row.paid)).toEqual([135_000, 125_000]);
+    expect(summary.transfers).toEqual([{ fromId: "contributor", toId: "owner", fromName: "Contributor", toName: "Owner", amount: 5_000 }]);
+  });
+
+  it("keeps each allocation in its recovery row's posting month", () => {
+    const data = loanData(100_000);
+    data.transactions = data.transactions.filter((item) => item.id !== "loan");
+    data.transactions.push(
+      txn("june-loan", "2026-06-30", "BANK RECOVERY FOR500240015943", 80_000, "custom:vehicle-loan", "Owner Savings", "debit", "loan_payment"),
+      txn("july-loan", "2026-07-01", "BANK RECOVERY FOR500240015943", 170_000, "custom:vehicle-loan", "Owner Savings", "debit", "loan_payment"),
+    );
+    data.sharedContributions[0] = {
+      ...data.sharedContributions[0]!,
+      allocations: [
+        { expenseTransactionId: "july-loan", amount: 100_000 },
+        { expenseTransactionId: "june-loan", amount: 25_000 },
+      ],
+    };
+    const june = computeMonthSummary(data, "2026-06", "all", JULY_15);
+    const july = computeMonthSummary(data, "2026-07", "all", JULY_15);
+    expect(june.cardSpend).toBe(80_000);
+    expect(july.cardSpend).toBe(170_000);
+    expect(june.memberRows.map((row) => row.paid)).toEqual([55_000, 25_000]);
+    expect(july.memberRows.map((row) => row.paid)).toEqual([70_000, 100_000]);
+  });
+});
+
 describe("history", () => {
   it("lists months with data plus the current month, and computes per-month rates", () => {
     const months = monthsWithData(fixture(), new Date(2026, 7, 1));

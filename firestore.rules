@@ -14,6 +14,7 @@ service cloud.firestore {
       return collectionId in [
         "settings",
         "transactions",
+        "sharedContributions",
         "accounts",
         "fixedCosts",
         "incomeReceipts",

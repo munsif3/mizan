@@ -109,6 +109,12 @@ export interface IncomeReceipt {
   portionId: string;
   /** Actual received, always in the household currency. */
   amount: number;
+  /** Actual amount shown on the receiving statement, when it is foreign currency. */
+  receivedAmount?: number;
+  /** ISO 4217 currency of receivedAmount. */
+  receivedCurrency?: string;
+  /** Household-currency units used per receivedCurrency unit for this confirmation. */
+  fxRate?: number;
   date?: string;
   /** Statement-credit provenance only; income still resolves from `amount`. */
   transactionId?: string;
@@ -124,6 +130,8 @@ export interface Account {
   id: string;
   /** display label, e.g. "Everyday Visa", "Joint Savings" */
   label: string;
+  /** ISO 4217 currency of the underlying bank account; defaults to household currency. */
+  currency?: string;
   /** whose spending this account represents for settlement */
   owner: AccountOwner;
   /**
@@ -149,7 +157,12 @@ export interface Transaction {
   /** positive household-currency value; recognizable FX rows are normalized from their explicit rate */
   amount: number;
   category: CategoryKey;
+  /** Canonical account label shown in the ledger. */
   account: string;
+  /** Stable registry link, so renaming an account also updates its existing rows. */
+  accountId?: string;
+  /** Statement-detected account text retained so later match rules can re-resolve the row. */
+  rawAccount?: string;
   note: string;
   source: "imported" | "manual";
   /**
@@ -166,6 +179,28 @@ export interface Transaction {
   /** For money_lent / repayment_received / gift_or_handout: the other party. */
   counterpartyId?: string;
   split?: Split;
+}
+
+/**
+ * Confirmed statement evidence that one household member funded part of a
+ * shared expense paid from another member's account. The transfer rows remain
+ * non-spend; this record only reallocates who fronted the linked expense for
+ * settlement.
+ */
+export interface SharedContribution {
+  id: string;
+  allocations: SharedContributionAllocation[];
+  transferDebitTransactionId: string;
+  transferCreditTransactionId: string;
+  contributorMemberId: MemberId;
+  /** Household-currency amount proven by the matching transfer legs. */
+  amount: number;
+}
+
+/** The proven contribution amount assigned to one partial loan-recovery debit. */
+export interface SharedContributionAllocation {
+  expenseTransactionId: string;
+  amount: number;
 }
 
 export interface FixedCost {
@@ -231,8 +266,9 @@ export interface MerchantRule {
 export type MerchantRules = Record<string, MerchantRule>;
 
 export interface AppData {
-  schemaVersion: 7;
+  schemaVersion: 10;
   transactions: Transaction[];
+  sharedContributions: SharedContribution[];
   merchantRules: MerchantRules;
   accounts: Account[];
   fixedCosts: FixedCost[];

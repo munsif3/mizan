@@ -7,10 +7,11 @@ import type {
   IncomeReceipt,
   Member,
   MerchantRule,
+  SharedContribution,
   Transaction,
 } from "../domain/types";
 
-export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 2;
+export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 4;
 
 export type HouseholdRole = "owner" | "member";
 
@@ -58,6 +59,7 @@ export interface CloudCsvPreset {
 export interface CloudCollections {
   settings: CloudSettings | null;
   transactions: Transaction[];
+  sharedContributions: SharedContribution[];
   accounts: Account[];
   fixedCosts: FixedCost[];
   incomeReceipts: IncomeReceipt[];

@@ -39,6 +39,7 @@ describe("household helpers", () => {
     expect(hasLocalFinancialData({ ...empty, settings: { ...empty.settings, members: [{ id: "a", name: "A", color: "#fff", portions: [] }] } })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, merchantRules: { SHOP: { category: "food", kind: "expense" } } })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, incomeReceipts: [{ id: "rcpt_2026-07_p", month: "2026-07", memberId: "m", portionId: "p", amount: 1 }] })).toBe(true);
+    expect(hasLocalFinancialData({ ...empty, sharedContributions: [{ id: "c", allocations: [{ expenseTransactionId: "e", amount: 1 }], transferDebitTransactionId: "d", transferCreditTransactionId: "i", contributorMemberId: "m", amount: 1 }] })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, settings: { ...empty.settings, fxRates: { USD: 305 } } })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, settings: { ...empty.settings, csvPresets: { abc: { hasHeader: true, dateColumn: 0, dateOrder: "dmy", descriptionColumn: 1, amountMode: "single", amountColumn: 2 } } } })).toBe(true);
   });
@@ -55,7 +56,10 @@ describe("household helpers", () => {
 
   it("round-trips AppData through split cloud collections", () => {
     const data = emptyData();
-    data.settings.members = [{ id: "owner", name: "Owner", color: "#5b8cff", portions: [{ id: "por_owner", label: "Monthly income", amount: 1000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] }];
+    data.settings.members = [
+      { id: "owner", name: "Owner", color: "#5b8cff", portions: [{ id: "por_owner", label: "Monthly income", amount: 1000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
+      { id: "contributor", name: "Contributor", color: "#ff80b5", portions: [] },
+    ];
     data.settings.currency = "USD";
     data.settings.locale = "en-US";
     data.settings.fxRates = { LKR: 0.0032 };
@@ -64,19 +68,28 @@ describe("household helpers", () => {
     };
     data.settings.customCategories = [{ id: "cat1", label: "Pets", color: "#7b8194" }];
     data.settings.counterparties = [{ id: "cp1", name: "Friend" }];
-    data.accounts = [{ id: "acc1", label: "Card", owner: "owner", match: ["1234"] }];
+    data.accounts = [
+      { id: "acc1", label: "Card", currency: "USD", owner: "owner", match: ["1234"] },
+      { id: "acc2", label: "Contributor Card", currency: "USD", owner: "contributor", match: ["5678"] },
+    ];
     data.fixedCosts = [{ id: "fixed1", label: "Rent", amount: 100, category: "housing" }];
     data.incomeReceipts = [{ id: "rcpt_2026-07_por_owner", month: "2026-07", memberId: "owner", portionId: "por_owner", amount: 1100, transactionId: "txn1" }];
     data.merchantRules = { SHOP: { category: "custom:cat1", kind: "expense" } };
     data.transactions = [
       { id: "txn1", date: "2026-07-01", description: "SHOP", amount: 10, category: "custom:cat1", account: "Card", note: "", source: "imported", direction: "debit", kind: "expense" },
+      { id: "out", date: "2026-07-02", description: "LOAN SHARE", amount: 40, category: "uncategorized", account: "Contributor Card", note: "", source: "imported", direction: "debit", kind: "internal_transfer" },
+      { id: "in", date: "2026-07-02", description: "LOAN SHARE", amount: 40, category: "uncategorized", account: "Card", note: "", source: "imported", direction: "credit", kind: "internal_transfer" },
+      { id: "loan", date: "2026-07-03", description: "LOAN FOR500240015943", amount: 60, category: "custom:cat1", account: "Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
+      { id: "loan2", date: "2026-07-04", description: "LOAN FOR500240015943", amount: 60, category: "custom:cat1", account: "Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
     ];
+    data.sharedContributions = [{ id: "c1", allocations: [{ expenseTransactionId: "loan", amount: 20 }, { expenseTransactionId: "loan2", amount: 20 }], transferDebitTransactionId: "out", transferCreditTransactionId: "in", contributorMemberId: "contributor", amount: 40 }];
 
     const cloud = appDataToCloudCollections(data, "user_1", "2026-07-09T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(2);
+    expect(cloud.settings?.schemaVersion).toBe(4);
     expect(cloud.merchantRules[0]?.key).toBe("SHOP");
     expect(cloud.csvPresets[0]?.signature).toBe("signature_1");
     expect(cloud.incomeReceipts).toEqual(data.incomeReceipts);
+    expect(cloud.sharedContributions).toEqual(data.sharedContributions);
     expect(cloud.settings?.fxRates).toEqual({ LKR: 0.0032 });
     expect(cloudCollectionsToAppData(cloud)).toEqual(data);
   });
@@ -84,8 +97,9 @@ describe("household helpers", () => {
   it("maps a full reset to empty split collections with valid settings", () => {
     const reset = emptyData();
     const cloud = appDataToCloudCollections(reset, "user_1", "2026-07-10T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(2);
+    expect(cloud.settings?.schemaVersion).toBe(4);
     expect(cloud.transactions).toEqual([]);
+    expect(cloud.sharedContributions).toEqual([]);
     expect(cloud.accounts).toEqual([]);
     expect(cloud.fixedCosts).toEqual([]);
     expect(cloud.incomeReceipts).toEqual([]);

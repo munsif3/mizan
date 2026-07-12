@@ -44,20 +44,23 @@ One deterministic system for a household's financial awareness.
 | 13 | Generic CSV import is a separate route, not a `StatementParser` | CSV needs an interactive column-mapping step (which columns, date order, sign convention), which doesn't fit the file-in / transactions-out parser contract. It lives in `src/import/csv.ts` + `src/import/csvMap.ts` with its own modal; mappings are remembered per header signature in `settings.csvPresets`. |
 | 14 | N-member household with data-driven personal categories | Members are a list in settings (`Member { id, name, color, portions }`), not a hardcoded pair. Each member has a personal spending category keyed `personal:<memberId>`, so `CategoryKey` is the fixed taxonomy plus a per-member template. All category lookups go through `categoryInfo` / `categoryOptions` (member-aware) rather than a static record. |
 | 25 | Income portions resolve through one pure seam | Each member can have several expected deposits with currency, tax treatment, and an arrival window. `resolveMonthIncome` converts expectations, applies tax, prefers household-currency monthly receipts, and supplies Home and History so UI code performs no finance arithmetic. |
-| 26 | Income reconciliation is a suggestion; the link is provenance | `detectIncomeCandidates` proposes an unlinked registered-account credit within an FX-aware tolerance and the portion's arrival window. The user confirms it, and `IncomeReceipt.transactionId` records the statement evidence. `resolveMonthIncome` still reads only `receipt.amount`, so the credit is never a second income source and can never count as spend. |
+| 26 | Income reconciliation is a suggestion; the link is provenance | `detectIncomeCandidates` proposes an unlinked registered-account credit within an FX-aware tolerance and the portion's arrival window. Foreign-account credits match in their native currency. Confirmation retains the received amount/currency/rate for audit and stores `receipt.amount` in household currency; `transactionId` remains evidence, never a second income source. |
+| 27 | Account identity is stable and keeps import provenance | Accounts have a stable id and their own currency. Transactions retain `rawAccount` from the statement plus `accountId`; later match rules and label edits can repair existing rows without losing the source text. Native rows display in the account currency; explicitly normalized FX rows retain their household-currency ledger value and audit note. |
+| 28 | Shared contributions are confirmed statement evidence | A `SharedContribution` links one member's outgoing transfer, the matching credit into another member's account, and explicit allocations across one or more partial loan-recovery debits. Transfer legs stay non-spend and every recovery remains a single spend source; settlement reallocates only the proven amount. Suggestions never create links silently. |
 | 15 | Fair-split settlement, computed in `summary.ts` | Each member's own personal spend on their own account is their own cost; only shared spend a member fronts is split equally, and one member fronting another's personal spend is owed back directly. Net positions sum to zero, and `settleUp` greedily produces at most N−1 deterministic transfers. |
 | 16 | Currency/locale as a setting | `formatMoney(amount, { currency, locale })` uses `Intl.NumberFormat`, so the currency code and grouping follow the household's choice. No currency is assumed; onboarding requires one. |
 
-## Data model (schema v7)
+## Data model (schema v10)
 
 ```
 AppData
-├── schemaVersion: 7
-├── transactions: Transaction[]   { id, date, description, amount, category, account, note, source, direction, kind, counterpartyId?, split? }
+├── schemaVersion: 10
+├── transactions: Transaction[]   { id, date, description, amount, category, account, accountId?, rawAccount?, note, source, direction, kind, counterpartyId?, split? }
+├── sharedContributions: SharedContribution[] { id, allocations: { expenseTransactionId, amount }[], transferDebitTransactionId, transferCreditTransactionId, contributorMemberId, amount }
 ├── merchantRules: { CLEANED_MERCHANT: { category, kind, counterpartyId? } }
-├── accounts: Account[]           { id, label, owner, match[] }   // owner = memberId | "joint"
+├── accounts: Account[]           { id, label, currency, owner, match[] }   // owner = memberId | "joint"
 ├── fixedCosts: FixedCost[]       { id, label, amount, category, until? }   // until = "YYYY-MM", inclusive
-├── incomeReceipts: IncomeReceipt[] { id, month, memberId, portionId, amount, date?, transactionId? }
+├── incomeReceipts: IncomeReceipt[] { id, month, memberId, portionId, amount, receivedAmount?, receivedCurrency?, fxRate?, date?, transactionId? }
 └── settings:
     ├── members: Member[]         { id, name, color, portions: IncomePortion[] }
     ├── fxRates: { [ISO currency]: householdCurrencyPerUnit }
@@ -71,8 +74,9 @@ AppData
 
 Schema v7 replaces the old scalar `Member.income` with `Member.portions: IncomePortion[]`.
 Each portion stores the expected deposit, its currency, tax rate/treatment, and an optional
-arrival-day window. `AppData.incomeReceipts` stores confirmed monthly actuals in the household
-currency, while `settings.fxRates` converts foreign expected portions for projections.
+arrival-day window. `AppData.incomeReceipts.amount` stores confirmed monthly actuals in the household
+currency; foreign confirmations also retain the statement-native received amount/currency and the
+rate used. `settings.fxRates` converts foreign expected portions for projections and prefills confirmations.
 
 - `category` is a fixed key (`housing`, `food`, `transport`, `lifestyle`, `family_support`,
   `investments`, `uncategorized`), a personal key `personal:<memberId>`, or a
@@ -87,7 +91,7 @@ currency, while `settings.fxRates` converts foreign expected portions for projec
   `gift_or_handout`. Counterparties are a **label only** — Mizan tracks no running
   outstanding balance (deliberate: keeps to three screens).
 
-## Cloud household model (sync v2)
+## Cloud household model (sync v4)
 
 Firestore stores household data in split collections while `AppData` remains the canonical in-app
 shape. The repository hydrates collections into `AppData` and writes `AppData` back out to
@@ -97,6 +101,7 @@ collections:
 households/{householdId}/meta/current  HouseholdMeta
 households/{householdId}/settings/current  CloudSettings
 households/{householdId}/transactions/{transactionId}
+households/{householdId}/sharedContributions/{contributionId}
 households/{householdId}/accounts/{accountId}
 households/{householdId}/fixedCosts/{fixedCostId}
 households/{householdId}/incomeReceipts/{receiptId}
@@ -119,13 +124,18 @@ sign-in, the user must create or join a household before onboarding or dashboard
 If a legacy `mizan_v2` or `trackr_v1` browser payload is found, the first selected household receives
 that payload and the browser financial keys are cleared only after the Firestore save succeeds.
 
-**Migration.** `migrate()` normalizes any known shape into v7 and never throws (junk degrades to
+**Migration.** `migrate()` normalizes any known shape into v9 and never throws (junk degrades to
 empty data). Legacy data (schema v4, or a v1 "trackr" backup) seeds members from ids already present
 in the backup, remaps `<member>_personal` category keys to `personal:<id>`,
 and pins the previous currency — so existing installs carry forward losslessly. v5 → v6 defaults
 each transaction's `kind` from its `direction` and upgrades bare-string merchant rules to
 `{ category, kind: "expense" }`. v6 to v7 converts each positive `Member.income` into one tax-withheld
-monthly portion with the same net value. Fresh data with no member list triggers onboarding.
+monthly portion with the same net value. v7 to v8 gives each account the household currency by default;
+newly matched transactions retain their raw statement account text and stable account id. v8 to v9 adds
+the shared-contribution collection. v9 to v10 converts each single loan target into one explicit allocation;
+new confirmations may allocate one proven contribution across several partial recoveries. Migration preserves
+only records whose transfer evidence, account ownership, allocation totals, and loan targets remain valid.
+Fresh data with no member list triggers onboarding.
 
 History uses confirmed receipts in the month where they were recorded. Months without receipts use
 the current expected portions, so projections remain useful before actuals are confirmed.
@@ -135,7 +145,7 @@ the current expected portions, so projections remain useful before actuals are c
 - Same statement/CSV + same rules/settings ⇒ identical import result (dedupe by
   date|merchant|amount|account signature).
 - Rule application is order-independent (longest-match-wins, alphabetical tiebreak).
-- Settlement is a pure function of the month's transactions; `settleUp` is deterministic.
+- Settlement is a pure function of the month's transactions and confirmed shared-contribution evidence; `settleUp` is deterministic.
 - App access requires Firebase Auth. Financial data is written only to the active Firestore
   household; browser financial payloads are legacy migration inputs, not live storage.
 
@@ -144,7 +154,7 @@ the current expected portions, so projections remain useful before actuals are c
 ```
 src/
 ├── auth/            Firebase Auth wrapper + Google sign-in state
-├── domain/          pure, tested: types, income, incomeMatch, categories, movements, money, dates, rules, dedupe, accounts, transfers, summary
+├── domain/          pure, tested: types, income, incomeMatch, categories, movements, money, dates, rules, dedupe, accounts, transfers, contributions, summary
 ├── firebase/        Firebase client initialization from Vite env vars
 ├── household/       household metadata, invite helpers, Firestore repository
 ├── import/          pure-ish, tested: statement parser registry + CSV importer

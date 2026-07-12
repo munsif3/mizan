@@ -401,18 +401,25 @@ export function SettingsModal({
               </div>
               <button
                 className="secondary"
-                onClick={() => onUpdateAccounts([...data.accounts, { id: uid("acc"), label: "New account", owner: "joint", match: [] }])}
+                onClick={() => onUpdateAccounts([...data.accounts, { id: uid("acc"), label: "", currency, owner: "joint", match: [] }])}
               >
                 Add account
               </button>
             </div>
             {data.accounts.map((account) => (
               <div className="account-row" key={account.id}>
-                <input value={account.label} onChange={(event) => patchAccount(account.id, { label: event.target.value })} />
+                <input value={account.label} placeholder="Account label" onChange={(event) => patchAccount(account.id, { label: event.target.value })} />
                 <select value={account.owner} onChange={(event) => patchAccount(account.id, { owner: event.target.value })}>
                   {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
                   <option value="joint">Joint</option>
                 </select>
+                <input
+                  aria-label={`${account.label || "Account"} currency`}
+                  list="account-currencies"
+                  value={account.currency || currency}
+                  placeholder={currency || "Currency"}
+                  onChange={(event) => patchAccount(account.id, { currency: event.target.value.toUpperCase().trim() })}
+                />
                 <input
                   value={account.match.join(", ")}
                   placeholder="match: 37xx 1234, amex"
@@ -423,6 +430,7 @@ export function SettingsModal({
                 <IconButton label={`Remove ${account.label}`} icon={Trash2} danger onClick={() => onUpdateAccounts(data.accounts.filter((item) => item.id !== account.id))} />
               </div>
             ))}
+            <datalist id="account-currencies">{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
             {!data.accounts.length && <p className="muted">No accounts yet. They also appear automatically when you import data.</p>}
           </div>
 

@@ -1,6 +1,6 @@
-import { ownerOf, resolveAccountLabel } from "./accounts";
+import { ownerOf, resolveAccountLabel, transactionDisplayCurrency } from "./accounts";
 import { monthOf } from "./dates";
-import { expectedDeposit, receiptFor, windowDaysFor } from "./income";
+import { expectedDeposit, fxRateFor, receiptFor, windowDaysFor } from "./income";
 import { cleanMerchant } from "./rules";
 import type { Account, IncomePortion, IncomeReceipt, Member, MemberId, Transaction } from "./types";
 
@@ -10,6 +10,11 @@ export interface IncomeCandidate {
   transaction: Transaction;
   /** Household-currency credit amount. */
   amount: number;
+  /** Amount and currency exactly as shown on the receiving statement. */
+  sourceAmount: number;
+  sourceCurrency: string;
+  /** Household-currency units per source-currency unit. */
+  fxRate: number;
   /** (amount - expected) / expected; negative means the deposit came in short. */
   variance: number;
   /** Zero inside the configured window (or when unscheduled). */
@@ -96,9 +101,27 @@ export function detectIncomeCandidates(
       if (receiptFor(receipts, month, portion.id)) continue;
       const expected = expectedDeposit(portion, householdCurrency, fxRates);
       if (expected.missingRate || expected.amount <= 0) continue;
+      const portionCurrency = portion.currency.trim().toUpperCase() || householdCurrency.trim().toUpperCase();
+      const rate = fxRateFor(portionCurrency, householdCurrency, fxRates);
+      if (rate === null) continue;
       for (const transaction of eligibleCreditsWithin(portion, member.id, transactions, accounts, receipts, month, windowSlackDays)) {
-        const amount = Number(transaction.amount) || 0;
-        const variance = (amount - expected.amount) / expected.amount;
+        const creditCurrency = transactionDisplayCurrency(transaction, accounts, householdCurrency).trim().toUpperCase();
+        let sourceAmount: number;
+        let amount: number;
+        let variance: number;
+        if (creditCurrency === portionCurrency) {
+          sourceAmount = Number(transaction.amount) || 0;
+          amount = sourceAmount * rate;
+          const expectedSource = Number(portion.amount) || 0;
+          if (expectedSource <= 0) continue;
+          variance = (sourceAmount - expectedSource) / expectedSource;
+        } else if (creditCurrency === householdCurrency.trim().toUpperCase()) {
+          sourceAmount = Number(transaction.amount) || 0;
+          amount = sourceAmount;
+          variance = (amount - expected.amount) / expected.amount;
+        } else {
+          continue;
+        }
         const outside = daysOutsideWindow(portion, month, transaction);
         if (Math.abs(variance) > tolerance || outside > windowSlackDays) continue;
         pairs.push({
@@ -106,6 +129,9 @@ export function detectIncomeCandidates(
           portionId: portion.id,
           transaction,
           amount,
+          sourceAmount,
+          sourceCurrency: creditCurrency,
+          fxRate: creditCurrency === householdCurrency.trim().toUpperCase() ? 1 : rate,
           variance,
           daysOutsideWindow: outside,
         });

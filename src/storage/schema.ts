@@ -1,5 +1,6 @@
 import { seedAccounts } from "../domain/accounts";
 import { isCategoryKey } from "../domain/categories";
+import { pruneSharedContributions } from "../domain/contributions";
 import { normalizeFxTransaction } from "../domain/fx";
 import { defaultIncomePortion, receiptId } from "../domain/income";
 import { cleanMerchant } from "../domain/rules";
@@ -19,12 +20,13 @@ import type {
   MerchantRule,
   MerchantRules,
   MovementKind,
+  SharedContribution,
   Split,
   Transaction,
 } from "../domain/types";
 import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-export const SCHEMA_VERSION = 7 as const;
+export const SCHEMA_VERSION = 10 as const;
 
 const MOVEMENT_KINDS = new Set<MovementKind>([
   "expense",
@@ -45,6 +47,7 @@ export function emptyData(): AppData {
   return {
     schemaVersion: SCHEMA_VERSION,
     transactions: [],
+    sharedContributions: [],
     merchantRules: {},
     accounts: [],
     fixedCosts: [],
@@ -59,6 +62,38 @@ export function emptyData(): AppData {
       counterparties: [],
       customCategories: [],
     },
+  };
+}
+
+function asSharedContribution(value: unknown): SharedContribution | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const transferDebitTransactionId = String(raw.transferDebitTransactionId ?? "").trim();
+  const transferCreditTransactionId = String(raw.transferCreditTransactionId ?? "").trim();
+  const contributorMemberId = String(raw.contributorMemberId ?? "").trim();
+  const amount = Number(raw.amount);
+  const allocations = Array.isArray(raw.allocations)
+    ? raw.allocations.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const allocation = item as Record<string, unknown>;
+        const expenseTransactionId = String(allocation.expenseTransactionId ?? "").trim();
+        const allocationAmount = Number(allocation.amount);
+        return expenseTransactionId && Number.isFinite(allocationAmount) && allocationAmount > 0
+          ? [{ expenseTransactionId, amount: allocationAmount }]
+          : [];
+      })
+    : (() => {
+        const expenseTransactionId = String(raw.expenseTransactionId ?? "").trim();
+        return expenseTransactionId && Number.isFinite(amount) && amount > 0 ? [{ expenseTransactionId, amount }] : [];
+      })();
+  if (!allocations.length || !transferDebitTransactionId || !transferCreditTransactionId || !contributorMemberId || !Number.isFinite(amount) || amount <= 0) return null;
+  return {
+    id: String(raw.id ?? "").trim() || `contrib_${allocations.map((item) => item.expenseTransactionId).sort().join("_")}_${transferDebitTransactionId}_${transferCreditTransactionId}`,
+    allocations,
+    transferDebitTransactionId,
+    transferCreditTransactionId,
+    contributorMemberId,
+    amount,
   };
 }
 
@@ -91,6 +126,8 @@ function asTransaction(value: unknown, splits: Record<string, unknown>): Transac
   // pre-v4 data has no direction: every stored transaction was debit-only by construction
   const direction = raw.direction === "credit" ? "credit" : "debit";
   const counterpartyId = typeof raw.counterpartyId === "string" && raw.counterpartyId ? raw.counterpartyId : undefined;
+  const accountId = typeof raw.accountId === "string" && raw.accountId ? raw.accountId : undefined;
+  const rawAccount = typeof raw.rawAccount === "string" && raw.rawAccount ? raw.rawAccount : undefined;
   return {
     id,
     date,
@@ -99,6 +136,8 @@ function asTransaction(value: unknown, splits: Record<string, unknown>): Transac
     category: asCategory(raw.category),
     // v1 stored the paying account under `card`
     account: String(raw.account ?? raw.card ?? "Unknown"),
+    ...(accountId ? { accountId } : {}),
+    ...(rawAccount ? { rawAccount } : {}),
     note: String(raw.note ?? ""),
     source: raw.source === "manual" ? "manual" : "imported",
     direction,
@@ -112,12 +151,13 @@ function asTransaction(value: unknown, splits: Record<string, unknown>): Transac
 function asFixedCost(value: unknown): FixedCost | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
+  const until = String(raw.until ?? "");
   return {
     id: String(raw.id ?? "") || `fixed_${Math.random().toString(36).slice(2, 11)}`,
     label: String(raw.label ?? "Fixed cost"),
     amount: Number(raw.amount) || 0,
     category: asCategory(raw.category),
-    until: String(raw.until ?? "") || undefined,
+    ...(until ? { until } : {}),
   };
 }
 
@@ -132,6 +172,7 @@ function asAccount(value: unknown): Account | null {
   return {
     id: String(raw.id ?? "") || uid("acc"),
     label,
+    currency: String(raw.currency ?? "").trim().toUpperCase(),
     owner,
     match,
   };
@@ -202,12 +243,19 @@ function asReceipt(value: unknown, portionOwners: Map<string, MemberId>): Income
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || !portionId || !owner || owner !== memberId || !Number.isFinite(amount) || amount < 0) return null;
   const date = String(raw.date ?? "");
   const transactionId = typeof raw.transactionId === "string" ? raw.transactionId.trim() : "";
+  const receivedAmount = Number(raw.receivedAmount);
+  const receivedCurrency = String(raw.receivedCurrency ?? "").trim().toUpperCase();
+  const fxRate = Number(raw.fxRate);
   return {
     id: receiptId(month, portionId),
     month,
     memberId,
     portionId,
     amount,
+    ...(Number.isFinite(receivedAmount) && receivedAmount >= 0 && /^[A-Z]{3}$/.test(receivedCurrency)
+      ? { receivedAmount, receivedCurrency }
+      : {}),
+    ...(Number.isFinite(fxRate) && fxRate > 0 ? { fxRate } : {}),
     ...(/^\d{4}-\d{2}-\d{2}$/.test(date) ? { date } : {}),
     ...(transactionId ? { transactionId } : {}),
   };
@@ -283,7 +331,7 @@ function asCsvPresets(value: unknown): Record<string, CsvMapping> {
  * without a lookup table.
  */
 /**
- * Normalize any known stored/backup shape into schema v5.
+ * Normalize any known stored/backup shape into the current schema.
  * Accepts Mizan v5/v4/v3/v2 data and trackr v1 backups (`splits` map, `card`
  * field, root-level `income`, `fixedNonCard`). Legacy data seeds a
  * member list; data with no member list and no legacy member markers
@@ -323,12 +371,16 @@ export function migrate(raw: unknown): AppData {
   }
   const memberIds = new Set(members.map((m) => m.id));
 
+  const currency = typeof settingsRaw.currency === "string" && settingsRaw.currency ? settingsRaw.currency.trim().toUpperCase() : legacy ? "LKR" : "";
   const accounts = (Array.isArray(source.accounts)
     ? source.accounts.map(asAccount).filter((account): account is Account => account !== null)
-    : seedAccounts(transactions, members)
-  ).map((account) => (account.owner !== "joint" && !memberIds.has(account.owner) ? { ...account, owner: "joint" } : account));
+    : seedAccounts(transactions, members, currency)
+  ).map((account) => ({
+    ...account,
+    currency: account.currency || currency,
+    ...(account.owner !== "joint" && !memberIds.has(account.owner) ? { owner: "joint" as const } : {}),
+  }));
 
-  const currency = typeof settingsRaw.currency === "string" && settingsRaw.currency ? settingsRaw.currency : legacy ? "LKR" : "";
   const locale = typeof settingsRaw.locale === "string" && settingsRaw.locale ? settingsRaw.locale : legacy ? "en-LK" : "";
   members = members.map((member) => ({
     ...member,
@@ -342,10 +394,17 @@ export function migrate(raw: unknown): AppData {
     const { transactionId: _removed, ...unlinked } = receipt;
     return unlinked;
   });
+  const sharedContributions = pruneSharedContributions(
+    asList(source.sharedContributions, asSharedContribution),
+    normalizedTransactions,
+    accounts,
+    members,
+  );
 
   return {
     schemaVersion: SCHEMA_VERSION,
     transactions: normalizedTransactions,
+    sharedContributions,
     merchantRules: asRules(source.merchantRules),
     accounts,
     fixedCosts,

@@ -60,12 +60,18 @@ export function detectTransferCandidates(
   transactions: Transaction[],
   accounts: Account[],
   windowDays = DEFAULT_WINDOW_DAYS,
+  includeConfirmed = false,
+  requireCompatibleDescriptions = true,
 ): TransferCandidate[] {
   const registeredLabels = new Set(accounts.map((account) => account.label));
   const owned = (label: string) => registeredLabels.has(label);
 
-  const debits = transactions.filter((txn) => txn.direction === "debit" && txn.kind === "expense" && owned(txn.account));
-  const credits = transactions.filter((txn) => txn.direction === "credit" && txn.kind === "account_credit" && owned(txn.account));
+  const debits = transactions.filter(
+    (txn) => txn.direction === "debit" && (txn.kind === "expense" || (includeConfirmed && txn.kind === "internal_transfer")) && owned(txn.account),
+  );
+  const credits = transactions.filter(
+    (txn) => txn.direction === "credit" && (txn.kind === "account_credit" || (includeConfirmed && txn.kind === "internal_transfer")) && owned(txn.account),
+  );
 
   const usedCredits = new Set<string>();
   const candidates: TransferCandidate[] = [];
@@ -77,7 +83,7 @@ export function detectTransferCandidates(
       if (Math.abs(netAmount(credit) - netAmount(debit)) > 0.005) continue;
       const daysApart = dayDiff(debit.date, credit.date);
       if (daysApart > windowDays) continue;
-      if (!descriptionsCompatible(debit.description, credit.description)) continue;
+      if (requireCompatibleDescriptions && !descriptionsCompatible(debit.description, credit.description)) continue;
       if (!best || daysApart < best.daysApart) best = { credit, daysApart };
     }
     if (best) {

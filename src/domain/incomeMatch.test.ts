@@ -60,6 +60,26 @@ describe("detectIncomeCandidates", () => {
     expect(detect([usd], [credit("low", 200_000)], [], "LKR", { USD: 305 })).toEqual([]);
   });
 
+  it("matches a USD salary credit in a registered USD account without treating it as LKR", () => {
+    const usdPortion = { ...BASE, amount: 2200, currency: "USD" };
+    const usdAccounts: Account[] = [
+      ...accounts,
+      { id: "rfc", label: "Mina RFC", currency: "USD", owner: "mina", match: ["2250"] },
+    ];
+    const result = detectIncomeCandidates(
+      members([usdPortion]),
+      [credit("usd-salary", 2109.8, { account: "Mina RFC", accountId: "rfc" })],
+      usdAccounts,
+      [],
+      "LKR",
+      { USD: 332 },
+      "2026-07",
+    );
+    expect(result[0]).toMatchObject({ sourceAmount: 2109.8, sourceCurrency: "USD", fxRate: 332 });
+    expect(result[0]?.amount).toBeCloseTo(700453.6, 2);
+    expect(result[0]?.variance).toBeCloseTo(-0.041, 3);
+  });
+
   it("stays silent for missing FX rates and zero expectations", () => {
     expect(detect([{ ...BASE, currency: "USD" }], [credit("fx", 1000)])).toEqual([]);
     expect(detect([{ ...BASE, amount: 0 }], [credit("zero", 1)])).toEqual([]);

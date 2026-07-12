@@ -1,7 +1,9 @@
 import { monthLabel } from "../domain/dates";
 import type { PortionResolution } from "../domain/income";
 import type { IncomeCandidate } from "../domain/incomeMatch";
+import type { SharedContributionCandidate } from "../domain/contributions";
 import type { MonthSummary } from "../domain/summary";
+import type { Member } from "../domain/types";
 import { PersonPanel } from "./bits";
 
 export function HomeView({
@@ -14,6 +16,9 @@ export function HomeView({
   onCompleteCheckIn,
   onConfirmIncome,
   incomeCandidates,
+  contributionCandidates,
+  members,
+  onConfirmContribution,
 }: {
   summary: MonthSummary;
   money: (value: number) => string;
@@ -24,9 +29,14 @@ export function HomeView({
   onCompleteCheckIn: () => void;
   onConfirmIncome: (item: PortionResolution, candidate?: IncomeCandidate) => void;
   incomeCandidates?: Map<string, IncomeCandidate>;
+  contributionCandidates?: SharedContributionCandidate[];
+  members?: Member[];
+  onConfirmContribution?: (candidate: SharedContributionCandidate) => void;
 }) {
   const s = summary;
   const candidates = incomeCandidates ?? new Map<string, IncomeCandidate>();
+  const contributionSuggestions = contributionCandidates ?? [];
+  const householdMembers = members ?? [];
   const onTrack = s.projectedSaveRate >= s.targetSaveRate;
   const hasActivity = s.monthTransactions.length > 0 || s.totalSpend > 0;
   const categoryRows = s.fullCategoryRows.filter((row) => row.value > 0);
@@ -51,6 +61,15 @@ export function HomeView({
           : `${s.dataAgeDays} days behind`;
 
   const attentionItems = [
+    ...contributionSuggestions.map((candidate) => {
+      const contributor = householdMembers.find((member) => member.id === candidate.contributorMemberId)?.name ?? "Household member";
+      const recovered = candidate.expenses.reduce((sum, expense) => sum + expense.amount, 0);
+      return {
+        title: `Confirm ${contributor}'s loan contribution`,
+        body: `${money(candidate.amount)} moved into ${candidate.credit.account} near ${candidate.expenses.length} recovery deduction${candidate.expenses.length === 1 ? "" : "s"} totalling ${money(recovered)}. Review the transfer pair and recovery group before changing settlement.`,
+        action: onConfirmContribution ? <button onClick={() => onConfirmContribution(candidate)}>Review match</button> : <span className="attention-pill">Review</span>,
+      };
+    }),
     ...s.incomeItems.filter((item) => !item.receipt && (item.status === "overdue" || candidates.has(item.portion.id))).map((item) => ({
       title: `Confirm ${item.portion.label}`,
       body: candidates.has(item.portion.id)

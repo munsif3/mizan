@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import { RotateCcw, Scissors, Trash2 } from "lucide-react";
 import { categoryOptions, spendingCategoryOptions } from "../domain/categories";
+import { contributionReferencesTransaction, recoveryRowsForContribution } from "../domain/contributions";
 import { kindAllowedFor, kindNeedsCategory, kindNeedsCounterparty, movementInfo, MOVEMENT_OPTIONS } from "../domain/movements";
 import { netAmount, spendTotal, type MonthSummary, type ReviewItem } from "../domain/summary";
 import type { TransferCandidate } from "../domain/transfers";
-import { defaultKind, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type Transaction } from "../domain/types";
+import { defaultKind, personalMemberId, type Account, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type SharedContribution, type Transaction } from "../domain/types";
 import { IconButton } from "./bits";
 
 export function TransactionsView({
   summary,
   members,
+  accounts,
   customCategories,
   counterparties,
   queue,
@@ -18,9 +20,11 @@ export function TransactionsView({
   categoryFilter,
   onCategoryFilter,
   money,
+  transactionMoney,
   onSetCategory,
   onSetKind,
   onSetCounterparty,
+  onSetAccount,
   onCategorizeMerchant,
   onUndo,
   onResetClassification,
@@ -29,9 +33,14 @@ export function TransactionsView({
   onSplit,
   onRemove,
   incomeLinkedIds,
+  allTransactions,
+  sharedContributions,
+  onLinkContribution,
+  onEditContribution,
 }: {
   summary: MonthSummary;
   members: Member[];
+  accounts: Account[];
   customCategories: CustomCategory[];
   counterparties: Counterparty[];
   queue: ReviewItem[];
@@ -40,9 +49,11 @@ export function TransactionsView({
   categoryFilter: CategoryKey | "all";
   onCategoryFilter: (value: CategoryKey | "all") => void;
   money: (value: number) => string;
+  transactionMoney: (txn: Transaction, value: number) => string;
   onSetCategory: (id: string, category: CategoryKey) => void;
   onSetKind: (id: string, kind: MovementKind) => void;
   onSetCounterparty: (id: string, counterpartyId: string | undefined) => void;
+  onSetAccount: (id: string, accountId: string) => void;
   onCategorizeMerchant: (merchant: string, rule: MerchantRule) => void;
   onUndo: () => void;
   onResetClassification: (id: string) => void;
@@ -51,9 +62,16 @@ export function TransactionsView({
   onSplit: (txn: Transaction) => void;
   onRemove: (id: string) => void;
   incomeLinkedIds?: Set<string>;
+  allTransactions?: Transaction[];
+  sharedContributions?: SharedContribution[];
+  onLinkContribution?: (expenseId: string) => void;
+  onEditContribution?: (contribution: SharedContribution) => void;
 }) {
   const linkedIncome = incomeLinkedIds ?? new Set<string>();
+  const contributions = sharedContributions ?? [];
+  const contributionTransactions = allTransactions ?? summary.monthTransactions;
   const allOptions = categoryOptions(members, customCategories);
+  const configuredAccounts = accounts.filter((account) => account.label.trim());
   const [accountFilter, setAccountFilter] = useState("all");
   const [movementFilter, setMovementFilter] = useState<MovementKind | "all">("all");
   useEffect(() => {
@@ -72,10 +90,16 @@ export function TransactionsView({
   const canReset = (txn: Transaction) =>
     txn.category !== "uncategorized" || txn.kind !== defaultKind(txn.direction) || Boolean(txn.counterpartyId);
   const confirmRemove = (txn: Transaction) => {
+    const linkedContribution = contributions.some((item) =>
+      contributionReferencesTransaction(item, txn.id, contributionTransactions),
+    );
     const linkedWarning = linkedIncome.has(txn.id)
       ? " This credit is linked to an income confirmation; deleting it will keep the receipt but remove its statement link."
       : "";
-    if (window.confirm(`Delete ${txn.description} from the household ledger?${linkedWarning} This cannot be undone.`)) {
+    const contributionWarning = linkedContribution
+      ? " This row is evidence for a shared contribution; deleting it will remove that link and recalculate settlement."
+      : "";
+    if (window.confirm(`Delete ${txn.description} from the household ledger?${linkedWarning}${contributionWarning} This cannot be undone.`)) {
       onRemove(txn.id);
     }
   };
@@ -108,6 +132,46 @@ export function TransactionsView({
       )}
     </div>
   );
+
+  const accountControl = (txn: Transaction) => {
+    const exact = configuredAccounts.find((account) => account.label.localeCompare(txn.account, undefined, { sensitivity: "accent" }) === 0);
+    const selectedId = txn.accountId && configuredAccounts.some((account) => account.id === txn.accountId) ? txn.accountId : exact?.id ?? "";
+    return (
+      <select
+        className={selectedId ? "account-select" : "account-select unresolved"}
+        aria-label={`Account for ${txn.description}`}
+        value={selectedId}
+        onChange={(event) => onSetAccount(txn.id, event.target.value)}
+      >
+        {!selectedId && <option value="">Unassigned: {txn.account}</option>}
+        {configuredAccounts.map((account) => (
+          <option key={account.id} value={account.id}>{account.label}</option>
+        ))}
+      </select>
+    );
+  };
+
+  const contributionControl = (txn: Transaction) => {
+    const funded = contributions.filter((item) => recoveryRowsForContribution(item, contributionTransactions).some((expense) => expense.id === txn.id));
+    const evidence = contributions.find((item) => item.transferDebitTransactionId === txn.id || item.transferCreditTransactionId === txn.id);
+    if (!funded.length && !evidence && !(txn.kind === "loan_payment" && !personalMemberId(txn.category))) return null;
+    return (
+      <div className="contribution-links">
+        {funded.map((item) => {
+          const member = members.find((candidate) => candidate.id === item.contributorMemberId);
+          return (
+            <button className="link-button" key={item.id} onClick={() => onEditContribution?.(item)}>
+              {member?.name ?? "Member"} funded {money(item.amount)}
+            </button>
+          );
+        })}
+        {evidence && <small className="movement-badge">Contribution evidence</small>}
+        {txn.kind === "loan_payment" && !personalMemberId(txn.category) && !funded.length && (
+          <button className="link-button" onClick={() => onLinkContribution?.(txn.id)}>+ Link contribution</button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="household-home">
@@ -238,15 +302,16 @@ export function TransactionsView({
                       <strong>{txn.description}</strong>
                       {badge && <small className="movement-badge">{badge}{counterpartyName(txn.counterpartyId) ? ` · ${counterpartyName(txn.counterpartyId)}` : ""}</small>}
                       {linkedIncome.has(txn.id) && <small className="movement-badge income-linked-badge">Counted as income</small>}
+                      {contributionControl(txn)}
                       {txn.note && <small>{txn.note}</small>}
                     </td>
-                    <td>{txn.account}</td>
+                    <td>{accountControl(txn)}</td>
                     <td>{controls(txn)}</td>
                     <td className="right">
                       <strong className={txn.direction === "credit" ? "credit-amount" : ""}>
-                        {txn.direction === "credit" ? "+" : ""}{money(netAmount(txn))}
+                        {txn.direction === "credit" ? "+" : ""}{transactionMoney(txn, netAmount(txn))}
                       </strong>
-                      {txn.split && <small>{txn.split.mine}/{txn.split.of} of {money(txn.amount)}</small>}
+                      {txn.split && <small>{txn.split.mine}/{txn.split.of} of {transactionMoney(txn, txn.amount)}</small>}
                     </td>
                     <td className="row-actions">
                       <IconButton label={`Split ${txn.description}`} icon={Scissors} onClick={() => onSplit(txn)} />
@@ -268,13 +333,15 @@ export function TransactionsView({
                   <small>{txn.date} - {txn.account}</small>
                 </div>
                 <b className={txn.direction === "credit" ? "credit-amount" : ""}>
-                  {txn.direction === "credit" ? "+" : ""}{money(netAmount(txn))}
+                  {txn.direction === "credit" ? "+" : ""}{transactionMoney(txn, netAmount(txn))}
                 </b>
               </div>
               {txn.note && <p>{txn.note}</p>}
               {linkedIncome.has(txn.id) && <small className="movement-badge income-linked-badge">Counted as income</small>}
-              {txn.split && <small>{txn.split.mine}/{txn.split.of} of {money(txn.amount)}</small>}
+              {contributionControl(txn)}
+              {txn.split && <small>{txn.split.mine}/{txn.split.of} of {transactionMoney(txn, txn.amount)}</small>}
               <div className="transaction-card-actions">
+                 {accountControl(txn)}
                  {controls(txn)}
                  <IconButton label={`Split ${txn.description}`} icon={Scissors} onClick={() => onSplit(txn)} />
                  {canReset(txn) && <IconButton label={`Return ${txn.description} to review`} icon={RotateCcw} onClick={() => onResetClassification(txn.id)} />}

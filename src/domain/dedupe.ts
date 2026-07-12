@@ -7,7 +7,7 @@ export function transactionSignature(txn: Transaction): string {
     txn.date,
     cleanMerchant(txn.description),
     Number(txn.amount || 0).toFixed(2),
-    cleanMerchant(txn.account || "Unknown"),
+    cleanMerchant(txn.rawAccount || txn.account || "Unknown"),
     txn.direction,
   ].join("|");
 }

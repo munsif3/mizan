@@ -213,7 +213,7 @@ describe("migrate (v7 income portions)", () => {
       schemaVersion: 6,
       settings: { members: [{ id: "m", name: "Member", color: "#123456", income: 1000 }], currency: "LKR" },
     });
-    expect(data.schemaVersion).toBe(7);
+    expect(data.schemaVersion).toBe(10);
     expect(data.settings.members[0]?.portions).toEqual([
       { id: "por_m", label: "Monthly income", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null },
     ]);
@@ -222,7 +222,7 @@ describe("migrate (v7 income portions)", () => {
   it("round-trips portions, receipts, and normalized FX rates", () => {
     const data = migrate({
       schemaVersion: 7,
-      incomeReceipts: [{ id: "anything", month: "2026-07", memberId: "m", portionId: "usd", amount: 305000, date: "2026-07-12" }],
+      incomeReceipts: [{ id: "anything", month: "2026-07", memberId: "m", portionId: "usd", amount: 305000, receivedAmount: 1000, receivedCurrency: "usd", fxRate: 305, date: "2026-07-12" }],
       settings: {
         members: [{
           id: "m",
@@ -236,7 +236,7 @@ describe("migrate (v7 income portions)", () => {
     });
     expect(data.settings.fxRates).toEqual({ USD: 305 });
     expect(data.settings.members[0]?.portions[0]?.window).toEqual({ startDay: 10, endDay: 15 });
-    expect(data.incomeReceipts).toEqual([{ id: "rcpt_2026-07_usd", month: "2026-07", memberId: "m", portionId: "usd", amount: 305000, date: "2026-07-12" }]);
+    expect(data.incomeReceipts).toEqual([{ id: "rcpt_2026-07_usd", month: "2026-07", memberId: "m", portionId: "usd", amount: 305000, receivedAmount: 1000, receivedCurrency: "USD", fxRate: 305, date: "2026-07-12" }]);
     expect(migrate(data)).toEqual(data);
   });
 
@@ -280,5 +280,119 @@ describe("migrate (v7 income portions)", () => {
     const dangling = migrate({ ...base, transactions: [] });
     expect(dangling.incomeReceipts.find((item) => item.month === "2026-07")).toMatchObject({ amount: 1000 });
     expect(dangling.incomeReceipts.find((item) => item.month === "2026-07")?.transactionId).toBeUndefined();
+  });
+});
+
+describe("migrate (v8 account identity and currency)", () => {
+  it("defaults old accounts to household currency and preserves explicit account currency", () => {
+    const data = migrate({
+      schemaVersion: 7,
+      accounts: [
+        { id: "lkr", label: "Savings", owner: "joint", match: ["6204"] },
+        { id: "usd", label: "RFC", currency: "usd", owner: "joint", match: ["2250"] },
+      ],
+      settings: { currency: "LKR", members: [] },
+    });
+    expect(data.accounts.map((account) => [account.id, account.currency])).toEqual([["lkr", "LKR"], ["usd", "USD"]]);
+  });
+
+  it("round-trips stable account linkage and raw statement text", () => {
+    const data = migrate({
+      schemaVersion: 8,
+      transactions: [{
+        id: "fx",
+        date: "2026-06-25",
+        description: "FUND TRANSFER USD 1900 @332",
+        amount: 630800,
+        account: "RFC",
+        accountId: "usd",
+        rawAccount: "Savings RFC 270080002250",
+        direction: "debit",
+        kind: "internal_transfer",
+      }],
+      settings: { currency: "LKR", members: [] },
+    });
+    expect(data.transactions[0]).toMatchObject({ account: "RFC", accountId: "usd", rawAccount: "Savings RFC 270080002250" });
+  });
+});
+
+describe("migrate (v9 shared contributions -> v10 allocations)", () => {
+  const source = {
+    schemaVersion: 9,
+    settings: {
+      currency: "LKR",
+      members: [
+        { id: "owner", name: "Owner", color: "#5b8cff", portions: [] },
+        { id: "contributor", name: "Contributor", color: "#ff80b5", portions: [] },
+      ],
+      customCategories: [{ id: "vehicle-loan", label: "Vehicle loan", color: "#7b8194" }],
+    },
+    accounts: [
+      { id: "mine", label: "Owner Savings", owner: "owner", match: [] },
+      { id: "contributor", label: "Contributor Savings", owner: "contributor", match: [] },
+    ],
+    transactions: [
+      { id: "out", date: "2026-07-01", description: "MEMBER CAR LOAN", amount: 125000, account: "Contributor Savings", direction: "debit", kind: "internal_transfer" },
+      { id: "in", date: "2026-07-01", description: "MEMBER CAR LOAN", amount: 125000, account: "Owner Savings", direction: "credit", kind: "internal_transfer" },
+      { id: "loan", date: "2026-07-03", description: "BANK STANDING ORDER", amount: 250000, category: "custom:vehicle-loan", account: "Owner Savings", direction: "debit", kind: "loan_payment" },
+    ],
+    sharedContributions: [{ id: "c1", expenseTransactionId: "loan", transferDebitTransactionId: "out", transferCreditTransactionId: "in", contributorMemberId: "contributor", amount: 125000 }],
+  };
+
+  it("preserves valid statement-backed contribution links", () => {
+    const data = migrate(source);
+    expect(data.schemaVersion).toBe(10);
+    expect(data.sharedContributions).toEqual([{
+      id: "c1",
+      allocations: [{ expenseTransactionId: "loan", amount: 125000 }],
+      transferDebitTransactionId: "out",
+      transferCreditTransactionId: "in",
+      contributorMemberId: "contributor",
+      amount: 125000,
+    }]);
+  });
+
+  it("drops malformed, dangling, and conflicting contribution links", () => {
+    const data = migrate({
+      ...source,
+      sharedContributions: [
+        ...source.sharedContributions,
+        { ...source.sharedContributions[0], id: "duplicate" },
+        { ...source.sharedContributions[0], id: "dangling", transferCreditTransactionId: "missing" },
+        { id: "junk" },
+      ],
+    });
+    expect(data.sharedContributions).toHaveLength(1);
+    expect(data.sharedContributions[0]?.allocations).toEqual([{ expenseTransactionId: "loan", amount: 125000 }]);
+  });
+
+  it("adds an empty contribution collection to v8 data", () => {
+    expect(migrate({ schemaVersion: 8, settings: { members: [] } }).sharedContributions).toEqual([]);
+  });
+
+  it("round-trips v10 multi-row allocations", () => {
+    const data = migrate({
+      ...source,
+      schemaVersion: 10,
+      transactions: [
+        ...source.transactions,
+        { id: "loan-2", date: "2026-07-04", description: "BANK STANDING ORDER", amount: 100000, category: "custom:vehicle-loan", account: "Owner Savings", direction: "debit", kind: "loan_payment" },
+      ],
+      sharedContributions: [{
+        id: "multi",
+        allocations: [
+          { expenseTransactionId: "loan", amount: 75000 },
+          { expenseTransactionId: "loan-2", amount: 50000 },
+        ],
+        transferDebitTransactionId: "out",
+        transferCreditTransactionId: "in",
+        contributorMemberId: "contributor",
+        amount: 125000,
+      }],
+    });
+    expect(data.sharedContributions[0]?.allocations).toEqual([
+      { expenseTransactionId: "loan", amount: 75000 },
+      { expenseTransactionId: "loan-2", amount: 50000 },
+    ]);
   });
 });
