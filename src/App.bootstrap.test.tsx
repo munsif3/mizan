@@ -230,6 +230,8 @@ describe("signed-in startup bootstrap", () => {
       taxRate: 0,
       taxWithheld: true,
       window: null,
+      schedule: { frequency: "monthly" },
+      budgetTreatment: "ordinary",
     }];
     bootstrap.loadUserProfile.mockResolvedValue(profile);
     bootstrap.loadUserHouseholds.mockResolvedValue([]);

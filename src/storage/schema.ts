@@ -17,6 +17,8 @@ import type {
   CsvMapping,
   CustomCategory,
   FixedCost,
+  FixedCostKind,
+  IncomeBudgetTreatment,
   IncomePortion,
   IncomeReceipt,
   Member,
@@ -31,7 +33,7 @@ import type {
 } from "../domain/types";
 import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-const SCHEMA_VERSION = 12 as const;
+const SCHEMA_VERSION = 14 as const;
 
 const MOVEMENT_KINDS = new Set<MovementKind>(MOVEMENT_OPTIONS.map((option) => option.kind));
 
@@ -199,6 +201,7 @@ function asFixedCost(value: unknown, sourceVersion: number, index = 0): FixedCos
     id: String(raw.id ?? "") || stableId("fixed", raw, index),
     label: String(raw.label ?? "Fixed cost"),
     amount: Number(raw.amount) || 0,
+    kind: (raw.kind === "loan_payment" ? "loan_payment" : "expense") satisfies FixedCostKind,
     ...classification,
     ...(until ? { until } : {}),
   };
@@ -238,6 +241,16 @@ function asPortion(value: unknown, index = 0): IncomePortion | null {
       window = { startDay: Math.min(first, second), endDay: Math.max(first, second) };
     }
   }
+  const scheduledMonth = String(raw.schedule && typeof raw.schedule === "object"
+    ? (raw.schedule as Record<string, unknown>).month ?? ""
+    : raw.month ?? "");
+  const frequency = raw.schedule && typeof raw.schedule === "object"
+    ? (raw.schedule as Record<string, unknown>).frequency
+    : raw.frequency;
+  const schedule: IncomePortion["schedule"] = frequency === "one_off" && /^\d{4}-(0[1-9]|1[0-2])$/.test(scheduledMonth)
+    ? { frequency: "one_off", month: scheduledMonth }
+    : { frequency: "monthly" };
+  const budgetTreatment = (raw.budgetTreatment === "protected" ? "protected" : "ordinary") satisfies IncomeBudgetTreatment;
   return {
     id: String(raw.id ?? "").trim() || stableId("por", raw, index),
     label,
@@ -246,6 +259,8 @@ function asPortion(value: unknown, index = 0): IncomePortion | null {
     taxRate: Number.isFinite(Number(raw.taxRate)) ? Math.max(0, Math.min(99.999999, Number(raw.taxRate))) : 0,
     taxWithheld: raw.taxWithheld !== false,
     window,
+    schedule,
+    budgetTreatment,
   };
 }
 
@@ -296,6 +311,12 @@ function asReceipt(value: unknown, portionOwners: Set<string>): IncomeReceipt | 
   const receivedCurrency = String(raw.receivedCurrency ?? "").trim().toUpperCase();
   const fxRate = Number(raw.fxRate);
   const currencyReview = raw.currencyReview === true;
+  const label = String(raw.label ?? "").trim();
+  const taxRate = Number(raw.taxRate);
+  const taxWithheld = typeof raw.taxWithheld === "boolean" ? raw.taxWithheld : undefined;
+  const budgetTreatment = raw.budgetTreatment === "protected" || raw.budgetTreatment === "ordinary"
+    ? raw.budgetTreatment
+    : undefined;
   return {
     id: receiptId(month, memberId, portionId),
     month,
@@ -309,6 +330,24 @@ function asReceipt(value: unknown, portionOwners: Set<string>): IncomeReceipt | 
     ...(currencyReview ? { currencyReview: true } : {}),
     ...(/^\d{4}-\d{2}-\d{2}$/.test(date) ? { date } : {}),
     ...(transactionId ? { transactionId } : {}),
+    ...(label ? { label } : {}),
+    ...(Number.isFinite(taxRate) ? { taxRate: Math.max(0, Math.min(99.999999, taxRate)) } : {}),
+    ...(taxWithheld !== undefined ? { taxWithheld } : {}),
+    ...(budgetTreatment ? { budgetTreatment } : {}),
+  };
+}
+
+function withReceiptSnapshot(receipt: IncomeReceipt, members: Member[]): IncomeReceipt {
+  const portion = members
+    .find((member) => member.id === receipt.memberId)
+    ?.portions.find((item) => item.id === receipt.portionId);
+  if (!portion) return receipt;
+  return {
+    ...receipt,
+    label: receipt.label ?? portion.label,
+    taxRate: receipt.taxRate ?? portion.taxRate,
+    taxWithheld: receipt.taxWithheld ?? portion.taxWithheld,
+    budgetTreatment: receipt.budgetTreatment ?? portion.budgetTreatment,
   };
 }
 
@@ -513,9 +552,12 @@ export function migrate(raw: unknown): AppData {
     const { transactionId: _removed, ...unlinked } = receipt;
     return unlinked;
   });
-  const incomeReceipts = sourceVersion < 11
+  const currencyRepairedReceipts = sourceVersion < 11
     ? normalizedReceipts.map((receipt) => repairLegacyReceiptCurrency(receipt, members, normalizedTransactions, accounts, currency, fxRates))
     : normalizedReceipts;
+  const incomeReceipts = sourceVersion < 14
+    ? currencyRepairedReceipts.map((receipt) => withReceiptSnapshot(receipt, members))
+    : currencyRepairedReceipts;
   const sharedContributions = pruneSharedContributions(
     asList(source.sharedContributions, asSharedContribution),
     normalizedTransactions,

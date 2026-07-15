@@ -129,8 +129,9 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
     throw new Error(`This household uses cloud schema v${cloudSchemaVersion}. Update Mizan before opening it.`);
   }
   return migrate({
-    // Split-cloud v4 stored AppData v10 semantics; v5 is the first beneficiary-aware shape.
-    schemaVersion: cloudSchemaVersion >= 5 ? 12 : 10,
+    // Split-cloud v4 stored AppData v10 semantics; v5 added beneficiaries,
+    // v6 recurring-commitment payment types, and v7 scheduled income sources.
+    schemaVersion: cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
     transactions: collections.transactions ?? [],
     sharedContributions: collections.sharedContributions ?? [],
     merchantRules,

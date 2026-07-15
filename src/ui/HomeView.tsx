@@ -274,6 +274,7 @@ export function HomeView({
   onReviewQueue,
   onCompleteCheckIn,
   onConfirmIncome,
+  onAddOneOffIncome,
   incomeCandidates,
   contributionCandidates,
   members,
@@ -289,6 +290,7 @@ export function HomeView({
   onReviewQueue: () => void;
   onCompleteCheckIn: () => void;
   onConfirmIncome: (item: PortionResolution, candidate?: IncomeCandidate) => void;
+  onAddOneOffIncome?: () => void;
   incomeCandidates?: Map<string, IncomeCandidate>;
   contributionCandidates?: SharedContributionCandidate[];
   members?: Member[];
@@ -489,33 +491,43 @@ export function HomeView({
             <span className="soft-label">Income</span>
             <h3>Expected and received</h3>
           </div>
-          <p>{money(s.incomeTotal)} available after tax</p>
+          <div className="income-heading-actions">
+            <p>{money(s.incomeTotal)} available after tax</p>
+            {s.protectedIncome > 0 && <small>{money(s.protectedIncome)} protected from the spending plan</small>}
+            {onAddOneOffIncome && <button className="secondary" onClick={onAddOneOffIncome}>Add one-off income</button>}
+          </div>
         </div>
         <div className="income-checklist">
           {s.incomeItems.map((item) => {
             const window = item.portion.window;
             const candidate = candidates.get(item.portion.id);
+            const oneOff = item.portion.schedule.frequency === "one_off";
             const statusLabel = item.receipt?.currencyReview
               ? "Check currency"
               : item.missingRate
               ? `Missing ${item.portion.currency} rate`
               : item.status === "received"
                 ? item.receipt?.transactionId ? "Received · matched" : "Received"
+                : oneOff && item.status === "overdue" && !item.countsInTotal
+                  ? "Overdue · excluded"
                 : item.status === "due"
-                  ? `Due day ${window?.startDay}-${window?.endDay}`
+                  ? `${oneOff ? "Expected · " : ""}Due day ${window?.startDay}-${window?.endDay}`
                   : item.status === "overdue"
                     ? "Overdue"
                     : item.status === "upcoming"
-                      ? `Upcoming day ${window?.startDay}-${window?.endDay}`
-                      : "No arrival date";
+                      ? `${oneOff ? "Expected · " : ""}Upcoming day ${window?.startDay}-${window?.endDay}`
+                      : oneOff ? "Expected" : "No arrival date";
             return <div className="income-check-row" key={`${item.memberId}-${item.portion.id}`}>
               <span className="color-dot" style={{ background: item.memberColor }} />
               <div>
                 <strong>{item.portion.label}</strong>
-                <small>{item.memberName}{item.portion.currency ? ` · ${item.portion.currency}` : ""}</small>
+                <small>
+                  {item.memberName}{item.portion.currency ? ` · ${item.portion.currency}` : ""}
+                  {oneOff ? ` · One-off${item.budgetTreatment === "protected" ? " · Protected" : ""}` : ""}
+                </small>
                 {candidate && <small className="income-match-hint">Matched {candidate.transaction.description} · {candidate.transaction.date}</small>}
               </div>
-              <b>{moneyIn(item.nativeNet, item.nativeCurrency)}</b>
+              <b>{moneyIn(item.nativeNet, item.nativeCurrency)}{!item.countsInTotal ? " expected" : ""}</b>
               <span className={`income-status ${item.receipt?.currencyReview || item.missingRate ? "missing" : item.status}`}>{statusLabel}</span>
               <button className="secondary" onClick={() => onConfirmIncome(item, candidate)}>{item.receipt ? "Edit income" : "Confirm income"}</button>
             </div>;
@@ -662,6 +674,7 @@ export function HomeView({
           <span className="soft-label">Spend plan</span>
           <h3>{money(Math.max(0, s.targetSpend - s.totalSpend))}</h3>
           <p>left for the month before dipping below the savings target.</p>
+          {s.protectedIncome > 0 && <p className="muted">Protected one-off income improves savings without increasing this allowance.</p>}
           <div className="mini-stats">
             <span><b>{money(s.remainingDaily)}</b> / day for {s.daysLeft} days</span>
             <span><b>{money(s.spendPerDay)}</b> / day so far</span>
@@ -722,7 +735,10 @@ export function HomeView({
               <div key={fixed.id}>
                 <span>{fixed.label}</span>
                 <strong>{money(fixed.amount)}</strong>
-                <small>{fixed.until ? `ends ${monthLabel(fixed.until)}` : "ongoing"}</small>
+                <small>
+                  {fixed.kind === "loan_payment" ? "Loan / debt · " : ""}
+                  {fixed.until ? `ends ${monthLabel(fixed.until)}` : "ongoing"}
+                </small>
               </div>
             ))}
           </div>

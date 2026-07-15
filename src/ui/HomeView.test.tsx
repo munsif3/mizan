@@ -15,13 +15,13 @@ function fixture(): AppData {
       id: "alex",
       name: "Alex",
       color: "#5b8cff",
-      portions: [{ id: "alex-income", label: "Monthly income", amount: 300_000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null }],
+      portions: [{ id: "alex-income", label: "Monthly income", amount: 300_000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }],
     },
     {
       id: "sam",
       name: "Sam",
       color: "#ff80b5",
-      portions: [{ id: "sam-income", label: "Monthly income", amount: 300_000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null }],
+      portions: [{ id: "sam-income", label: "Monthly income", amount: 300_000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }],
     },
   ];
   data.accounts = [
@@ -29,7 +29,8 @@ function fixture(): AppData {
     { id: "sam-card", label: "Sam Card", owner: "sam", beneficiaryDefault: "review", match: [] },
   ];
   data.fixedCosts = [
-    { id: "rent", label: "Rent", amount: 90_000, category: "housing", beneficiary: { type: "household" } },
+    { id: "rent", label: "Rent", amount: 90_000, kind: "expense", category: "housing", beneficiary: { type: "household" } },
+    { id: "car-loan", label: "Car loan", amount: 50_000, kind: "loan_payment", category: "transport", beneficiary: { type: "household" }, until: "2028-01" },
   ];
   data.transactions = [
     {
@@ -118,6 +119,7 @@ describe("HomeView spending attribution", () => {
     expect(container.textContent).toContain("Recorded responsibility");
     expect(container.textContent).toContain("Joint or unregistered funding");
     expect(container.textContent).toContain("Planning-only fixed commitments");
+    expect(container.textContent).toContain("Loan / debt · ends Jan 2028");
     expect(container.textContent).not.toContain("Biggest area");
     expect(container.textContent).not.toContain("Monthly categories");
 

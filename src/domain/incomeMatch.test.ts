@@ -10,6 +10,8 @@ const BASE: IncomePortion = {
   taxRate: 0,
   taxWithheld: true,
   window: null,
+  schedule: { frequency: "monthly" },
+  budgetTreatment: "ordinary",
 };
 
 const members = (portions: IncomePortion[] = [BASE]): Member[] => [
@@ -99,6 +101,20 @@ describe("detectIncomeCandidates", () => {
   it("stays silent for missing FX rates and zero expectations", () => {
     expect(detect([{ ...BASE, currency: "USD" }], [credit("fx", 1000)])).toEqual([]);
     expect(detect([{ ...BASE, amount: 0 }], [credit("zero", 1)])).toEqual([]);
+  });
+
+  it("matches one-off income only in its scheduled month", () => {
+    const bonus = { ...BASE, id: "bonus", schedule: { frequency: "one_off" as const, month: "2026-07" }, budgetTreatment: "protected" as const };
+    expect(detect([bonus], [credit("bonus", 1000)])).toHaveLength(1);
+    expect(detectIncomeCandidates(
+      members([bonus]),
+      [credit("june-bonus", 1000, { date: "2026-06-12" })],
+      accounts,
+      [],
+      "LKR",
+      {},
+      "2026-06",
+    )).toEqual([]);
   });
 
   it("accepts owned and joint registered accounts, but not other or unknown accounts", () => {

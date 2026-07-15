@@ -56,6 +56,8 @@ export function legacyMembers(ids: MemberId[], incomeRaw: Record<string, unknown
         taxRate: 0,
         taxWithheld: true,
         window: null,
+        schedule: { frequency: "monthly" },
+        budgetTreatment: "ordinary",
       }] : [],
     };
   });

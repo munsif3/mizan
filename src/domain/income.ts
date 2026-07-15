@@ -1,6 +1,6 @@
 import { daysInMonth, isoDateOf } from "./dates";
 import { normalizeCurrency } from "./money";
-import type { IncomePortion, IncomeReceipt, Member, MemberId } from "./types";
+import type { IncomeBudgetTreatment, IncomePortion, IncomeReceipt, Member, MemberId } from "./types";
 
 export type IncomeStatus = "received" | "due" | "overdue" | "upcoming" | "unscheduled";
 
@@ -23,6 +23,11 @@ export interface PortionResolution {
   receipt: IncomeReceipt | null;
   status: IncomeStatus;
   missingRate: boolean;
+  budgetTreatment: IncomeBudgetTreatment;
+  /** False for an overdue, unconfirmed one-off whose estimate is no longer trusted. */
+  countsInTotal: boolean;
+  taxRate: number;
+  taxWithheld: boolean;
 }
 
 export function windowDaysFor(
@@ -47,7 +52,13 @@ export function defaultIncomePortion(memberId: MemberId, amount: number, currenc
     taxRate: 0,
     taxWithheld: true,
     window: null,
+    schedule: { frequency: "monthly" },
+    budgetTreatment: "ordinary",
   };
+}
+
+export function portionActiveInMonth(portion: IncomePortion, month: string): boolean {
+  return portion.schedule.frequency === "monthly" || portion.schedule.month === month;
 }
 
 function taxRateOf(portion: Pick<IncomePortion, "taxRate">): number {
@@ -100,8 +111,14 @@ export function portionStatus(
 ): IncomeStatus {
   if (receipt) return "received";
   const window = windowDaysFor(portion, month);
-  if (!window) return "unscheduled";
   const currentMonth = isoDateOf(today).slice(0, 7);
+  if (!window) {
+    if (portion.schedule.frequency === "one_off") {
+      if (month < currentMonth) return "overdue";
+      if (month > currentMonth) return "upcoming";
+    }
+    return "unscheduled";
+  }
   if (month < currentMonth) return "overdue";
   if (month > currentMonth) return "upcoming";
   const day = today.getDate();
@@ -117,33 +134,51 @@ export function resolveMonthIncome(
   fxRates: Record<string, number>,
   month: string,
   today: Date,
-): { items: PortionResolution[]; total: number } {
+): { items: PortionResolution[]; total: number; ordinaryTotal: number; protectedTotal: number } {
   const items = members.flatMap((member) =>
-    member.portions.map((portion): PortionResolution => {
+    member.portions.flatMap((portion): PortionResolution[] => {
       const receipt = receiptFor(receipts, month, member.id, portion.id);
+      if (!receipt && !portionActiveInMonth(portion, month)) return [];
       const expected = expectedDeposit(portion, householdCurrency, fxRates);
-      const deposit = receipt ? Number(receipt.amount) || 0 : expected.amount;
+      const status = portionStatus(portion, receipt, month, today);
+      const countsInTotal = Boolean(receipt) || portion.schedule.frequency === "monthly" || status !== "overdue";
+      const deposit = receipt ? Number(receipt.amount) || 0 : countsInTotal ? expected.amount : 0;
+      const taxTreatment = {
+        taxRate: receipt?.taxRate ?? portion.taxRate,
+        taxWithheld: receipt?.taxWithheld ?? portion.taxWithheld,
+      };
+      const budgetTreatment = receipt?.budgetTreatment ?? portion.budgetTreatment;
       const nativeAmount = receipt?.receivedAmount ?? (receipt ? deposit : Number(portion.amount) || 0);
       const nativeCurrency = receipt?.receivedCurrency
         ?? (receipt ? normalizeCurrency(householdCurrency) : normalizeCurrency(portion.currency, householdCurrency));
-      return {
+      return [{
         month,
         memberId: member.id,
         memberName: member.name,
         memberColor: member.color,
-        portion,
+        portion: receipt?.label ? { ...portion, label: receipt.label } : portion,
         deposit,
-        net: netOf(deposit, portion),
+        net: netOf(deposit, taxTreatment),
         nativeAmount,
-        nativeNet: netOf(nativeAmount, portion),
+        nativeNet: netOf(nativeAmount, taxTreatment),
         nativeCurrency,
         receipt,
-        status: portionStatus(portion, receipt, month, today),
-        missingRate: !receipt && expected.missingRate,
-      };
+        status,
+        missingRate: !receipt && countsInTotal && expected.missingRate,
+        budgetTreatment,
+        countsInTotal,
+        taxRate: taxTreatment.taxRate,
+        taxWithheld: taxTreatment.taxWithheld,
+      }];
     }),
   );
-  return { items, total: items.reduce((sum, item) => sum + item.net, 0) };
+  const ordinaryTotal = items
+    .filter((item) => item.budgetTreatment === "ordinary")
+    .reduce((sum, item) => sum + item.net, 0);
+  const protectedTotal = items
+    .filter((item) => item.budgetTreatment === "protected")
+    .reduce((sum, item) => sum + item.net, 0);
+  return { items, total: ordinaryTotal + protectedTotal, ordinaryTotal, protectedTotal };
 }
 
 export function upsertReceipt(receipts: IncomeReceipt[], receipt: IncomeReceipt): IncomeReceipt[] {
@@ -158,6 +193,31 @@ export function upsertReceipt(receipts: IncomeReceipt[], receipt: IncomeReceipt)
   const existing = withoutClaimedCredit.findIndex((item) => item.id === normalized.id);
   if (existing < 0) return [...withoutClaimedCredit, normalized];
   return withoutClaimedCredit.map((item, index) => (index === existing ? normalized : item));
+}
+
+/** Save one intentional statement-credit allocation without letting the credit escape this group. */
+export function upsertReceiptGroup(
+  receipts: IncomeReceipt[],
+  group: IncomeReceipt[],
+): IncomeReceipt[] {
+  if (!group.length) return receipts;
+  const transactionId = group[0]?.transactionId;
+  const month = group[0]?.month;
+  const memberId = group[0]?.memberId;
+  if (!transactionId || group.some((item) => item.transactionId !== transactionId || item.month !== month || item.memberId !== memberId)) {
+    throw new Error("Income allocation receipts must share one member, month, and statement credit.");
+  }
+  const groupIds = new Set(group.map((item) => receiptId(item.month, item.memberId, item.portionId)));
+  if (groupIds.size !== group.length) throw new Error("An income allocation can contain each source only once.");
+
+  const claimedElsewhere = receipts.some((item) => item.transactionId === transactionId
+    && (item.month !== month || item.memberId !== memberId));
+  if (claimedElsewhere) throw new Error("This statement credit is already linked to another income confirmation.");
+
+  const normalizedGroup = group.map((item) => ({ ...item, id: receiptId(item.month, item.memberId, item.portionId) }));
+  const withoutReplaced = receipts.filter((item) => !groupIds.has(item.id)
+    && !(item.transactionId === transactionId && item.month === month && item.memberId === memberId));
+  return [...withoutReplaced, ...normalizedGroup];
 }
 
 /** Clear a deleted transaction's provenance link without deleting the receipt. */

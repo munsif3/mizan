@@ -8,6 +8,7 @@ import {
   removeReceipt,
   resolveMonthIncome,
   upsertReceipt,
+  upsertReceiptGroup,
   unlinkTransaction,
   windowDaysFor,
 } from "./income";
@@ -21,6 +22,8 @@ const WITHHELD: IncomePortion = {
   taxRate: 36,
   taxWithheld: true,
   window: { startDay: 10, endDay: 15 },
+  schedule: { frequency: "monthly" },
+  budgetTreatment: "ordinary",
 };
 
 const SELF_PAID: IncomePortion = {
@@ -31,9 +34,22 @@ const SELF_PAID: IncomePortion = {
   currency: "USD",
   taxRate: 15,
   taxWithheld: false,
+  schedule: { frequency: "monthly" },
+  budgetTreatment: "ordinary",
 };
 
 const members: Member[] = [{ id: "m1", name: "Mina", color: "#123456", portions: [WITHHELD, SELF_PAID] }];
+
+const BONUS: IncomePortion = {
+  ...WITHHELD,
+  id: "bonus",
+  label: "Annual bonus",
+  amount: 1000,
+  taxRate: 0,
+  window: { startDay: 10, endDay: 15 },
+  schedule: { frequency: "one_off", month: "2026-07" },
+  budgetTreatment: "protected",
+};
 
 describe("income math", () => {
   it("keeps tax-withheld deposits net and sets aside self-paid tax", () => {
@@ -70,6 +86,41 @@ describe("income timing", () => {
 });
 
 describe("income resolution and receipts", () => {
+  it("includes a one-off only in its month and drops an overdue unconfirmed estimate", () => {
+    const bonusMembers: Member[] = [{ ...members[0]!, portions: [BONUS] }];
+    expect(resolveMonthIncome(bonusMembers, [], "LKR", {}, "2026-06", new Date(2026, 5, 12)).items).toEqual([]);
+
+    const expected = resolveMonthIncome(bonusMembers, [], "LKR", {}, "2026-07", new Date(2026, 6, 9));
+    expect(expected.total).toBe(1000);
+    expect(expected.protectedTotal).toBe(1000);
+    expect(expected.items[0]).toMatchObject({ status: "upcoming", countsInTotal: true });
+
+    const missed = resolveMonthIncome(bonusMembers, [], "LKR", {}, "2026-07", new Date(2026, 6, 16));
+    expect(missed.total).toBe(0);
+    expect(missed.items[0]).toMatchObject({ status: "overdue", countsInTotal: false, nativeAmount: 1000 });
+
+    const receipt: IncomeReceipt = {
+      id: "bonus-receipt", month: "2026-07", memberId: "m1", portionId: "bonus", amount: 1200,
+      label: "Annual bonus", taxRate: 0, taxWithheld: true, budgetTreatment: "protected",
+    };
+    const received = resolveMonthIncome(bonusMembers, [receipt], "LKR", {}, "2026-07", new Date(2026, 6, 31));
+    expect(received.total).toBe(1200);
+    expect(received.protectedTotal).toBe(1200);
+    expect(received.items[0]?.status).toBe("received");
+  });
+
+  it("uses receipt snapshots instead of later source edits", () => {
+    const changed = { ...BONUS, label: "Renamed", taxRate: 0, taxWithheld: true, budgetTreatment: "ordinary" as const };
+    const receipt: IncomeReceipt = {
+      id: "snapshot", month: "2026-07", memberId: "m1", portionId: "bonus", amount: 1000,
+      label: "Original bonus", taxRate: 10, taxWithheld: false, budgetTreatment: "protected",
+    };
+    const resolved = resolveMonthIncome([{ ...members[0]!, portions: [changed] }], [receipt], "LKR", {}, "2026-07", new Date(2026, 6, 20));
+    expect(resolved.items[0]?.portion.label).toBe("Original bonus");
+    expect(resolved.total).toBe(900);
+    expect(resolved.protectedTotal).toBe(900);
+  });
+
   it("uses actual household-currency receipts instead of converted expectations", () => {
     const receipt: IncomeReceipt = { id: receiptId("2026-07", "m1", "usd"), month: "2026-07", memberId: "m1", portionId: "usd", amount: 320000 };
     const result = resolveMonthIncome(members, [receipt], "LKR", { USD: 305 }, "2026-07", new Date(2026, 6, 12));
@@ -109,5 +160,20 @@ describe("income resolution and receipts", () => {
     expect(unlinked.find((item) => item.portionId === "usd")).toMatchObject({ amount: 320000, month: "2026-07" });
     expect(unlinked.find((item) => item.portionId === "usd")?.transactionId).toBeUndefined();
     expect(resolveMonthIncome(members, unlinked, "LKR", { USD: 305 }, "2026-07", new Date(2026, 6, 12)).total).toBe(before);
+  });
+
+  it("stores and edits an intentional shared-credit allocation atomically", () => {
+    const salary: IncomeReceipt = { id: "salary", month: "2026-07", memberId: "m1", portionId: "base", amount: 700, transactionId: "combined" };
+    const bonus: IncomeReceipt = { id: "bonus", month: "2026-07", memberId: "m1", portionId: "bonus", amount: 300, transactionId: "combined" };
+    const grouped = upsertReceiptGroup([], [salary, bonus]);
+    expect(grouped).toHaveLength(2);
+    expect(grouped.every((receipt) => receipt.transactionId === "combined")).toBe(true);
+
+    const edited = upsertReceiptGroup(grouped, [{ ...salary, amount: 1000 }]);
+    expect(edited).toHaveLength(1);
+    expect(edited[0]).toMatchObject({ portionId: "base", amount: 1000, transactionId: "combined" });
+    expect(() => upsertReceiptGroup([
+      { ...salary, month: "2026-06" },
+    ], [bonus])).toThrow(/already linked/i);
   });
 });

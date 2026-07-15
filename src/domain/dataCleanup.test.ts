@@ -43,10 +43,11 @@ describe("clearTransactionHistory", () => {
     ];
     data.settings.members = [{ id: "member-1", name: "Member", color: "#5b8cff", portions: [] }];
     data.settings.currency = "LKR";
-    data.fixedCosts = [{ id: "rent", label: "Rent", amount: 1000, category: "housing", beneficiary: { type: "household" } }];
+    data.fixedCosts = [{ id: "rent", label: "Rent", amount: 1000, kind: "expense", category: "housing", beneficiary: { type: "household" } }];
     data.merchantRules = { SHOP: { category: "food", beneficiary: { type: "account_default" }, kind: "expense" } };
     data.incomeReceipts = [
       { id: "receipt-1", month: "2026-07", memberId: "member-1", portionId: "salary", amount: 5000, transactionId: "salary-credit" },
+      { id: "receipt-bonus", month: "2026-07", memberId: "member-1", portionId: "bonus", amount: 2000, transactionId: "salary-credit" },
       { id: "receipt-2", month: "2026-06", memberId: "member-1", portionId: "salary", amount: 4800 },
     ];
 
@@ -56,7 +57,8 @@ describe("clearTransactionHistory", () => {
     expect(cleared.sharedContributions).toEqual([]);
     expect(cleared.incomeReceipts).toEqual([
       { id: "receipt-1", month: "2026-07", memberId: "member-1", portionId: "salary", amount: 5000 },
-      data.incomeReceipts[1],
+      { id: "receipt-bonus", month: "2026-07", memberId: "member-1", portionId: "bonus", amount: 2000 },
+      data.incomeReceipts[2],
     ]);
     expect(cleared.accounts).toBe(data.accounts);
     expect(cleared.settings).toBe(data.settings);

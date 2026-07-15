@@ -17,7 +17,7 @@ describe("legacy local data migration helpers", () => {
     expect(loadLegacyLocalData()).toBeNull();
 
     const data = emptyData();
-    data.settings.members = [{ id: "owner", name: "Owner", color: "#5b8cff", portions: [{ id: "por_owner", label: "Monthly income", amount: 1000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] }];
+    data.settings.members = [{ id: "owner", name: "Owner", color: "#5b8cff", portions: [{ id: "por_owner", label: "Monthly income", amount: 1000, currency: "USD", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] }];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 
     expect(hasLegacyLocalData()).toBe(true);

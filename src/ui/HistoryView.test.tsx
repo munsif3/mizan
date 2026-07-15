@@ -5,8 +5,8 @@ import type { HistoryRow } from "../domain/summary";
 import { HistoryView } from "./HistoryView";
 
 const rows: HistoryRow[] = [
-  { month: "2026-06", income: 100_000, spend: 80_000, saved: 20_000, rate: 20 },
-  { month: "2026-07", income: 100_000, spend: 90_000, saved: 10_000, rate: 10 },
+  { month: "2026-06", income: 100_000, protectedIncome: 0, oneOffIncome: 0, spend: 80_000, saved: 20_000, rate: 20 },
+  { month: "2026-07", income: 100_000, protectedIncome: 0, oneOffIncome: 0, spend: 90_000, saved: 10_000, rate: 10 },
 ];
 
 describe("HistoryView selected month", () => {
@@ -56,5 +56,12 @@ describe("HistoryView selected month", () => {
     expect(container?.textContent).not.toContain("Jul 2026 save rate");
     expect(container?.textContent).toContain("Average");
     expect(container?.textContent).toContain("15.0%");
+  });
+
+  it("labels one-off and protected income in the trend", async () => {
+    rows[1] = { ...rows[1]!, income: 150_000, oneOffIncome: 50_000, protectedIncome: 50_000 };
+    await render("2026-07");
+    expect(container?.textContent).toContain("LKR 50000 one-off");
+    expect(container?.textContent).toContain("LKR 50000 protected");
   });
 });

@@ -58,7 +58,7 @@ describe("household helpers", () => {
   it("round-trips AppData through split cloud collections", () => {
     const data = emptyData();
     data.settings.members = [
-      { id: "owner", name: "Owner", color: "#5b8cff", portions: [{ id: "por_owner", label: "Monthly income", amount: 1000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
+      { id: "owner", name: "Owner", color: "#5b8cff", portions: [{ id: "por_owner", label: "Monthly income", amount: 1000, currency: "USD", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] },
       { id: "contributor", name: "Contributor", color: "#ff80b5", portions: [] },
     ];
     data.settings.currency = "USD";
@@ -73,7 +73,7 @@ describe("household helpers", () => {
       { id: "acc1", label: "Card", currency: "USD", owner: "owner", beneficiaryDefault: "owner", match: ["1234"] },
       { id: "acc2", label: "Contributor Card", currency: "USD", owner: "contributor", beneficiaryDefault: "review", match: ["5678"] },
     ];
-    data.fixedCosts = [{ id: "fixed1", label: "Rent", amount: 100, category: "housing", beneficiary: { type: "household" } }];
+    data.fixedCosts = [{ id: "fixed1", label: "Rent", amount: 100, kind: "loan_payment", category: "housing", beneficiary: { type: "household" } }];
     data.incomeReceipts = [{ id: "rcpt_2026-07_owner_por_owner", month: "2026-07", memberId: "owner", portionId: "por_owner", amount: 1100, transactionId: "txn1" }];
     data.merchantRules = { SHOP: { category: "custom:cat1", beneficiary: { type: "account_default" }, kind: "expense" } };
     data.transactions = [
@@ -86,7 +86,7 @@ describe("household helpers", () => {
     data.sharedContributions = [{ id: "c1", allocations: [{ expenseTransactionId: "loan", amount: 20 }, { expenseTransactionId: "loan2", amount: 20 }], transferDebitTransactionId: "out", transferCreditTransactionId: "in", contributorMemberId: "contributor", amount: 40 }];
 
     const cloud = appDataToCloudCollections(data, "user_1", "2026-07-09T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(5);
+    expect(cloud.settings?.schemaVersion).toBe(7);
     expect(cloud.merchantRules[0]?.key).toBe("SHOP");
     expect(cloud.csvPresets[0]?.signature).toBe("signature_1");
     expect(cloud.incomeReceipts).toEqual(data.incomeReceipts);
@@ -95,7 +95,7 @@ describe("household helpers", () => {
     expect(cloudCollectionsToAppData(cloud)).toEqual(data);
   });
 
-  it("distinguishes pre-beneficiary cloud v4 data from v5 collections", () => {
+  it("distinguishes pre-beneficiary cloud v4 data from current collections", () => {
     const data = cloudCollectionsToAppData({
       settings: {
         schemaVersion: 4 as never,
@@ -117,17 +117,66 @@ describe("household helpers", () => {
     expect(data.transactions[0]?.beneficiary).toEqual({ type: "unassigned" });
   });
 
+  it("defaults recurring commitment type when hydrating beneficiary-aware cloud v5 data", () => {
+    const data = cloudCollectionsToAppData({
+      settings: {
+        schemaVersion: 5 as never,
+        targetSaveRate: 25,
+        currency: "LKR",
+        locale: "en-LK",
+        fxRates: {},
+        updatedAt: "2026-07-01T00:00:00.000Z",
+        updatedBy: "user_1",
+      },
+      fixedCosts: [{
+        id: "rent",
+        label: "Rent",
+        amount: 100_000,
+        category: "housing",
+        beneficiary: { type: "household" },
+      } as never],
+    });
+    expect(data.fixedCosts[0]?.kind).toBe("expense");
+    expect(data.schemaVersion).toBe(14);
+  });
+
+  it("defaults cloud v6 income sources to monthly ordinary treatment", () => {
+    const data = cloudCollectionsToAppData({
+      settings: {
+        schemaVersion: 6 as never,
+        targetSaveRate: 25,
+        currency: "LKR",
+        locale: "en-LK",
+        fxRates: {},
+        updatedAt: "2026-07-01T00:00:00.000Z",
+        updatedBy: "user_1",
+      },
+      members: [{
+        id: "owner", name: "Owner", color: "#5b8cff",
+        portions: [{ id: "salary", label: "Salary", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null }],
+      } as never],
+      incomeReceipts: [{ id: "receipt", month: "2026-07", memberId: "owner", portionId: "salary", amount: 1000 }],
+    });
+    expect(data.settings.members[0]?.portions[0]).toMatchObject({
+      schedule: { frequency: "monthly" }, budgetTreatment: "ordinary",
+    });
+    expect(data.incomeReceipts[0]).toMatchObject({
+      label: "Salary", taxRate: 0, taxWithheld: true, budgetTreatment: "ordinary",
+    });
+    expect(data.schemaVersion).toBe(14);
+  });
+
   it("rejects household data written by a newer cloud schema", () => {
     const settings = appDataToCloudCollections(emptyData(), "user_1").settings!;
     expect(() => cloudCollectionsToAppData({
-      settings: { ...settings, schemaVersion: 6 as 5 },
-    })).toThrow(/cloud schema v6.*update Mizan/i);
+      settings: { ...settings, schemaVersion: 8 as 7 },
+    })).toThrow(/cloud schema v8.*update Mizan/i);
   });
 
   it("maps a full reset to empty split collections with valid settings", () => {
     const reset = emptyData();
     const cloud = appDataToCloudCollections(reset, "user_1", "2026-07-10T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(5);
+    expect(cloud.settings?.schemaVersion).toBe(7);
     expect(cloud.transactions).toEqual([]);
     expect(cloud.sharedContributions).toEqual([]);
     expect(cloud.accounts).toEqual([]);

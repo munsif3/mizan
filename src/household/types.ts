@@ -11,7 +11,7 @@ import type {
   Transaction,
 } from "../domain/types";
 
-export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 5;
+export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 7;
 export const CLOUD_SNAPSHOT_MANIFEST_VERSION = 1;
 
 type HouseholdRole = "owner" | "member";

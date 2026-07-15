@@ -1983,6 +1983,80 @@ input[type="color"] {
   border-bottom: 0;
 }
 
+.empty-commitments {
+  margin: 18px 0 0;
+}
+
+.commitment-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.fixed-cost-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--ledger-line);
+  border-left: 4px solid var(--ledger-forest-2);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ledger-surface) 76%, var(--ledger-paper));
+}
+
+.fixed-cost-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.fixed-cost-card-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.fixed-cost-card-header strong {
+  color: var(--ledger-ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 20px;
+}
+
+.fixed-cost-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.25fr) minmax(130px, 0.75fr) minmax(180px, 1fr);
+  gap: 14px;
+}
+
+.fixed-cost-grid .field {
+  min-width: 0;
+  margin: 0;
+}
+
+.fixed-purpose-guidance {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 14px;
+  border-left: 3px solid var(--ledger-amber);
+  background: var(--ledger-warning-surface);
+}
+
+.fixed-purpose-guidance > div {
+  display: grid;
+  gap: 3px;
+}
+
+.fixed-purpose-guidance span {
+  color: var(--ledger-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.fixed-purpose-guidance .link-button {
+  flex: 0 0 auto;
+}
+
 .rules-list > div,
 .sync-card {
   border-color: var(--ledger-line);
@@ -2227,6 +2301,10 @@ td small {
   .merchant-review-card .review-apply-button {
     grid-column: 2;
     width: 100%;
+  }
+
+  .fixed-cost-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2639,6 +2717,7 @@ td small {
   }
 
   .form-grid,
+  .fixed-cost-grid,
   .fixed-row,
   .member-row,
   .account-row,
@@ -2648,6 +2727,11 @@ td small {
   .sync-card,
   .invite-box {
     grid-template-columns: 1fr;
+  }
+
+  .fixed-purpose-guidance {
+    display: grid;
+    align-items: start;
   }
 
   .home-hero.onboard-wide,
@@ -2683,5 +2767,146 @@ td small {
 @media (max-width: 520px) {
   .review-fields {
     grid-template-columns: 1fr;
+  }
+}
+
+.income-schedule-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.income-schedule-choices button {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-color: var(--ledger-line);
+  background: transparent;
+  color: var(--ledger-ink);
+  text-align: left;
+}
+
+.income-schedule-choices button small {
+  font-size: 10px;
+  color: var(--ledger-muted);
+}
+
+.income-schedule-choices button.active {
+  border-color: var(--ledger-forest-2);
+  background: var(--ledger-sage);
+  color: var(--ledger-forest);
+  box-shadow: inset 0 0 0 1px var(--ledger-forest-2);
+}
+
+.income-schedule-lock {
+  display: block;
+  margin-top: 7px;
+  color: var(--ledger-muted);
+  font-size: 10px;
+}
+
+.one-off-settings-row,
+.check-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.check-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 11px 12px;
+  border: 1px solid var(--ledger-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ledger-surface) 78%, var(--ledger-paper));
+  cursor: pointer;
+}
+
+.check-row > span,
+.check-row > span small {
+  display: grid;
+  gap: 2px;
+}
+
+.check-row > span small {
+  color: var(--ledger-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.income-heading-actions {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+
+.income-heading-actions p {
+  margin: 0;
+}
+
+.income-heading-actions small {
+  color: var(--ledger-muted);
+}
+
+.income-allocation-editor {
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid var(--ledger-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ledger-surface) 78%, var(--ledger-paper));
+}
+
+.income-allocation-heading,
+.income-allocation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, .55fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.income-allocation-heading small {
+  text-align: right;
+}
+
+.income-allocation-row > span,
+.income-allocation-row > span small {
+  display: grid;
+  gap: 2px;
+}
+
+.income-allocation-row > span small {
+  color: var(--ledger-muted);
+  font-size: 10px;
+}
+
+.field-error {
+  margin: 0;
+  color: var(--ledger-red) !important;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.one-off-income-form .form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 720px) {
+  .income-schedule-choices,
+  .one-off-settings-row,
+  .one-off-income-form .form-grid.two,
+  .income-allocation-heading,
+  .income-allocation-row {
+    grid-template-columns: 1fr;
+  }
+
+  .income-heading-actions {
+    justify-items: start;
+  }
+
+  .income-allocation-heading small {
+    text-align: left;
   }
 }

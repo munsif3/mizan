@@ -23,8 +23,8 @@ import {
 function fixture(): AppData {
   const data = emptyData();
   data.settings.members = [
-    { id: "alex", name: "Alex", color: "#5b8cff", portions: [{ id: "por_alex", label: "Monthly income", amount: 600000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
-    { id: "sam", name: "Sam", color: "#ff80b5", portions: [{ id: "por_sam", label: "Monthly income", amount: 800000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
+    { id: "alex", name: "Alex", color: "#5b8cff", portions: [{ id: "por_alex", label: "Monthly income", amount: 600000, currency: "USD", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] },
+    { id: "sam", name: "Sam", color: "#ff80b5", portions: [{ id: "por_sam", label: "Monthly income", amount: 800000, currency: "USD", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] },
   ];
   data.settings.currency = "USD";
   data.settings.locale = "en-US";
@@ -33,8 +33,8 @@ function fixture(): AppData {
     { id: "sv", label: "Sam Visa", owner: "sam", beneficiaryDefault: "review", match: [] },
   ];
   data.fixedCosts = [
-    { id: "rent", label: "Rent", amount: 120000, category: "housing", beneficiary: { type: "household" } },
-    { id: "car", label: "Car loan", amount: 250000, category: "transport", beneficiary: { type: "household" }, until: "2026-09" },
+    { id: "rent", label: "Rent", amount: 120000, kind: "expense", category: "housing", beneficiary: { type: "household" } },
+    { id: "car", label: "Car loan", amount: 250000, kind: "loan_payment", category: "transport", beneficiary: { type: "household" }, until: "2026-09" },
   ];
   data.transactions = [
     txn("a", "2026-07-02", "KEELLS SUPER", 50000, "food", "Alex Visa"),
@@ -81,6 +81,23 @@ describe("computeMonthSummary", () => {
     expect(june.incomeTotal).toBe(1_400_000);
     expect(july.incomeItems).toHaveLength(2);
     expect(july.incomeItems.find((item) => item.portion.id === "por_alex")?.status).toBe("received");
+  });
+
+  it("counts protected one-off income without expanding the ordinary spending plan", () => {
+    const data = fixture();
+    data.settings.members[0]!.portions.push({
+      id: "bonus", label: "Annual bonus", amount: 600_000, currency: "USD", taxRate: 0, taxWithheld: true,
+      window: null, schedule: { frequency: "one_off", month: "2026-07" }, budgetTreatment: "protected",
+    });
+    const protectedSummary = computeMonthSummary(data, "2026-07", JULY_15);
+    expect(protectedSummary.incomeTotal).toBe(2_000_000);
+    expect(protectedSummary.ordinaryIncome).toBe(1_400_000);
+    expect(protectedSummary.protectedIncome).toBe(600_000);
+    expect(protectedSummary.targetSpend).toBe(1_400_000 * 0.75);
+
+    data.settings.members[0]!.portions.at(-1)!.budgetTreatment = "ordinary";
+    const ordinarySummary = computeMonthSummary(data, "2026-07", JULY_15);
+    expect(ordinarySummary.targetSpend).toBe(2_000_000 * 0.75);
   });
 
   it("projects month-end spend by extrapolating variable spend only, fixed costs once", () => {
@@ -347,9 +364,9 @@ describe("computeSpendingAttribution", () => {
       txn("transfer", "2026-07-07", "MOVE MONEY", 999, "uncategorized", "A Card", "debit", "internal_transfer", { type: "unassigned" }),
     ];
     data.fixedCosts = [
-      { id: "rent", label: "Planned rent", amount: 100, category: "housing", beneficiary: { type: "household" } },
-      { id: "b-membership", label: "B membership", amount: 15, category: "lifestyle", beneficiary: { type: "member", memberId: "b" } },
-      { id: "unknown", label: "Unknown commitment", amount: 5, category: "uncategorized", beneficiary: { type: "unassigned" } },
+      { id: "rent", label: "Planned rent", amount: 100, kind: "expense", category: "housing", beneficiary: { type: "household" } },
+      { id: "b-membership", label: "B membership", amount: 15, kind: "expense", category: "lifestyle", beneficiary: { type: "member", memberId: "b" } },
+      { id: "unknown", label: "Unknown commitment", amount: 5, kind: "expense", category: "uncategorized", beneficiary: { type: "unassigned" } },
     ];
     return data;
   }
@@ -708,6 +725,17 @@ describe("history", () => {
     const data = fixture();
     data.incomeReceipts = [{ id: "rcpt_2026-05_por_alex", month: "2026-05", memberId: "alex", portionId: "por_alex", amount: 600000 }];
     expect(monthsWithData(data, JULY_15)).toContain("2026-05");
+  });
+
+  it("annotates one-off and protected income in history", () => {
+    const data = fixture();
+    data.settings.members[0]!.portions.push({
+      id: "bonus", label: "Bonus", amount: 250_000, currency: "USD", taxRate: 0, taxWithheld: true,
+      window: null, schedule: { frequency: "one_off", month: "2026-07" }, budgetTreatment: "protected",
+    });
+    const [row] = computeHistory(data, ["2026-07"], JULY_15);
+    expect(row).toMatchObject({ income: 1_650_000, oneOffIncome: 250_000, protectedIncome: 250_000 });
+    expect(monthsWithData(data, JULY_15)).toContain("2026-07");
   });
 });
 

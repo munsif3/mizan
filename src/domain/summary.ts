@@ -33,6 +33,8 @@ interface MovementRow extends CategoryRow {
 export interface HistoryRow {
   month: string;
   income: number;
+  protectedIncome: number;
+  oneOffIncome: number;
   spend: number;
   saved: number;
   rate: number;
@@ -131,6 +133,8 @@ export interface MonthSummary {
   dataAgeDays: number | null;
 
   incomeTotal: number;
+  ordinaryIncome: number;
+  protectedIncome: number;
   incomeItems: PortionResolution[];
   cardSpend: number;
   fixedSpend: number;
@@ -206,7 +210,11 @@ function fixedActive(fixed: FixedCost, month: string): boolean {
 export function monthsWithData(data: AppData, today: Date): string[] {
   const months = new Set(data.transactions.map((txn) => monthOf(txn.date)).filter(Boolean));
   for (const receipt of data.incomeReceipts) months.add(receipt.month);
-  months.add(isoDateOf(today).slice(0, 7));
+  const todayMonth = isoDateOf(today).slice(0, 7);
+  for (const portion of data.settings.members.flatMap((member) => member.portions)) {
+    if (portion.schedule.frequency === "one_off" && portion.schedule.month <= todayMonth) months.add(portion.schedule.month);
+  }
+  months.add(todayMonth);
   return [...months].sort();
 }
 
@@ -222,6 +230,8 @@ export function selectableMonths(data: AppData, today: Date): string[] {
   const recordedMonths = [
     ...data.transactions.map((txn) => monthOf(txn.date)),
     ...data.incomeReceipts.map((receipt) => receipt.month),
+    ...data.settings.members.flatMap((member) => member.portions.flatMap((portion) =>
+      portion.schedule.frequency === "one_off" ? [portion.schedule.month] : [])),
   ];
 
   for (const month of recordedMonths) {
@@ -566,7 +576,9 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
         )
       : null;
 
-  const targetSpend = incomeTotal * (1 - targetSaveRate / 100);
+  // Protected windfalls improve savings without quietly expanding the normal
+  // spending plan. Users can opt an individual one-off into ordinary treatment.
+  const targetSpend = income.ordinaryTotal * (1 - targetSaveRate / 100);
   const dailyAllowance = totalDays ? targetSpend / totalDays : 0;
   const spendPerDay = dayNumber ? totalSpend / dayNumber : 0;
   const remainingDaily = daysLeft ? Math.max(0, targetSpend - totalSpend) / daysLeft : Math.max(0, targetSpend - totalSpend);
@@ -664,6 +676,8 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
     latestTransactionDate,
     dataAgeDays,
     incomeTotal,
+    ordinaryIncome: income.ordinaryTotal,
+    protectedIncome: income.protectedTotal,
     incomeItems: income.items,
     cardSpend,
     fixedSpend,
@@ -777,20 +791,32 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
  */
 export function computeHistory(data: AppData, months: string[], today: Date): HistoryRow[] {
   return months.map((month) => {
-    const incomeTotal = resolveMonthIncome(
+    const income = resolveMonthIncome(
       data.settings.members,
       data.incomeReceipts,
       data.settings.currency,
       data.settings.fxRates,
       month,
       today,
-    ).total;
+    );
+    const incomeTotal = income.total;
     const spend =
       spendTotal(data.transactions.filter((txn) => monthOf(txn.date) === month)) +
       data.fixedCosts
         .filter((fixed) => fixedActive(fixed, month))
         .reduce((sum, fixed) => sum + Number(fixed.amount || 0), 0);
     const saved = incomeTotal - spend;
-    return { month, income: incomeTotal, spend, saved, rate: incomeTotal ? (saved / incomeTotal) * 100 : 0 };
+    const oneOffIncome = income.items
+      .filter((item) => item.portion.schedule.frequency === "one_off")
+      .reduce((sum, item) => sum + item.net, 0);
+    return {
+      month,
+      income: incomeTotal,
+      protectedIncome: income.protectedTotal,
+      oneOffIncome,
+      spend,
+      saved,
+      rate: incomeTotal ? (saved / incomeTotal) * 100 : 0,
+    };
   });
 }

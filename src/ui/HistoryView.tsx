@@ -59,7 +59,11 @@ export function HistoryView({
           {rows.map((row) => (
             <div className={row.month === currentMonth ? "current" : ""} key={row.month}>
               <strong>{monthLabel(row.month)}</strong>
-              <span>Income {money(row.income)}</span>
+              <span>
+                Income {money(row.income)}
+                {row.oneOffIncome > 0 ? ` · ${money(row.oneOffIncome)} one-off` : ""}
+                {row.protectedIncome > 0 ? ` · ${money(row.protectedIncome)} protected` : ""}
+              </span>
               <span>Spend {money(row.spend)}</span>
               <span>Saved {money(row.saved)}</span>
               <span className="history-rate">

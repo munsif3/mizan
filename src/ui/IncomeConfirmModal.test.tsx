@@ -27,6 +27,8 @@ describe("IncomeConfirmModal currency resolution", () => {
       taxRate: 15,
       taxWithheld: false,
       window: null,
+      schedule: { frequency: "monthly" },
+      budgetTreatment: "ordinary",
     };
     const members: Member[] = [{ id: "sara", name: "Sara", color: "#ff80b5", portions: [portion] }];
 const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LKR", owner: "sara", beneficiaryDefault: "review", match: [] }];
@@ -78,13 +80,19 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
     const confirm = [...container.querySelectorAll("button")].find((button) => button.textContent === "Confirm income")!;
     await act(async () => confirm.click());
 
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
-      receivedAmount: 2109.8,
-      receivedCurrency: "USD",
-      fxRate: 332,
-      transactionId: "salary",
-    }));
-    expect(onSave.mock.calls[0]?.[0].amount).toBeCloseTo(700453.6, 6);
+    expect(onSave).toHaveBeenCalledWith([
+      expect.objectContaining({
+        receivedAmount: 2109.8,
+        receivedCurrency: "USD",
+        fxRate: 332,
+        transactionId: "salary",
+        label: "USD portion",
+        taxRate: 15,
+        taxWithheld: false,
+        budgetTreatment: "ordinary",
+      }),
+    ]);
+    expect(onSave.mock.calls[0]?.[0][0]?.amount).toBeCloseTo(700453.6, 6);
 
     const currencySelect = container.querySelector<HTMLSelectElement>('select[aria-label="Currency received"]')!;
     await act(async () => {
@@ -93,8 +101,8 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
     });
     expect(container.textContent).toContain("Amount received (LKR)");
     await act(async () => confirm.click());
-    expect(onSave.mock.calls[1]?.[0]).toMatchObject({ amount: 2109.8, transactionId: "salary" });
-    expect(onSave.mock.calls[1]?.[0].receivedCurrency).toBeUndefined();
+    expect(onSave.mock.calls[1]?.[0][0]).toMatchObject({ amount: 2109.8, transactionId: "salary" });
+    expect(onSave.mock.calls[1]?.[0][0]?.receivedCurrency).toBeUndefined();
     await act(async () => root.unmount());
   });
 
@@ -107,6 +115,8 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
       taxRate: 0,
       taxWithheld: true,
       window: null,
+      schedule: { frequency: "monthly" },
+      budgetTreatment: "ordinary",
     };
     const members: Member[] = [{ id: "sara", name: "Sara", color: "#ff80b5", portions: [portion] }];
     const receipt = {
@@ -137,6 +147,70 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
     expect(container.textContent).toContain("Save changes");
     expect(container.textContent).toContain("Delete income confirmation");
     expect(container.textContent).not.toContain("Confirm income");
+    await act(async () => root.unmount());
+  });
+
+  it("allocates one combined statement credit across salary and one-off bonus", async () => {
+    const salary: IncomePortion = {
+      id: "salary", label: "Salary", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true,
+      window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary",
+    };
+    const bonus: IncomePortion = {
+      id: "bonus", label: "Annual bonus", amount: 500, currency: "LKR", taxRate: 0, taxWithheld: true,
+      window: null, schedule: { frequency: "one_off", month: "2026-07" }, budgetTreatment: "protected",
+    };
+    const members: Member[] = [{ id: "sara", name: "Sara", color: "#ff80b5", portions: [salary, bonus] }];
+    const items = resolveMonthIncome(members, [], "LKR", {}, "2026-07", new Date(2026, 6, 10)).items;
+    const transaction: Transaction = {
+      id: "combined", date: "2026-07-10", description: "SALARY AND BONUS", amount: 1500,
+      category: "uncategorized", beneficiary: { type: "unassigned" }, account: "Salary account", accountId: "salary-account",
+      note: "", source: "imported", direction: "credit", kind: "account_credit",
+    };
+    const accounts: Account[] = [{ id: "salary-account", label: "Salary account", currency: "LKR", owner: "sara", beneficiaryDefault: "review", match: [] }];
+    const onSave = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <IncomeConfirmModal
+          item={items.find((item) => item.portion.id === "salary")!}
+          allocationItems={items}
+          alternatives={[transaction]}
+          accounts={accounts}
+          householdCurrency="LKR"
+          money={(value) => `LKR ${value}`}
+          onSave={onSave}
+          onRemove={() => {}}
+          onClose={() => {}}
+        />,
+      );
+    });
+
+    const statementSelect = [...container.querySelectorAll("select")].find((select) => select.textContent?.includes("SALARY AND BONUS"))!;
+    await act(async () => {
+      statementSelect.value = "combined";
+      statementSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const splitToggle = container.querySelector<HTMLInputElement>(".split-income-toggle input")!;
+    await act(async () => splitToggle.click());
+    const salaryInput = container.querySelector<HTMLInputElement>('input[aria-label="Allocation for Salary"]')!;
+    const bonusInput = container.querySelector<HTMLInputElement>('input[aria-label="Allocation for Annual bonus"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(salaryInput, "1000");
+      salaryInput.dispatchEvent(new Event("input", { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(bonusInput, "500");
+      bonusInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const confirm = [...container.querySelectorAll("button")].find((button) => button.textContent === "Confirm income")!;
+    expect(confirm.disabled).toBe(false);
+    await act(async () => confirm.click());
+
+    expect(onSave).toHaveBeenCalledWith([
+      expect.objectContaining({ portionId: "salary", amount: 1000, transactionId: "combined", budgetTreatment: "ordinary" }),
+      expect.objectContaining({ portionId: "bonus", amount: 500, transactionId: "combined", budgetTreatment: "protected" }),
+    ]);
     await act(async () => root.unmount());
   });
 });

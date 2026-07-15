@@ -1,6 +1,6 @@
 import { accountForTransaction, ownerOfTransaction, transactionDisplayCurrency } from "./accounts";
 import { monthOf } from "./dates";
-import { expectedDeposit, fxRateFor, receiptFor, windowDaysFor } from "./income";
+import { expectedDeposit, fxRateFor, portionActiveInMonth, receiptFor, windowDaysFor } from "./income";
 import { INCOME_MATCH_TOLERANCE, normalizeCurrency, relativeVariance, resolveIncomeCurrency } from "./money";
 import { maximumCardinalityMinCostMatch } from "./matching";
 import type { Account, IncomePortion, IncomeReceipt, Member, MemberId, Transaction } from "./types";
@@ -97,6 +97,7 @@ export function detectIncomeCandidates(
 
   for (const member of members) {
     for (const portion of member.portions) {
+      if (!portionActiveInMonth(portion, month)) continue;
       if (receiptFor(receipts, month, member.id, portion.id)) continue;
       const expected = expectedDeposit(portion, householdCurrency, fxRates);
       if (expected.missingRate || expected.amount <= 0) continue;

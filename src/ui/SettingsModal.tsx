@@ -2,8 +2,9 @@ import { useId, useRef, useState, type CSSProperties } from "react";
 import { Trash2 } from "lucide-react";
 import type { AuthState } from "../auth/authStore";
 import { categoryInfo, categoryOptions, nextMemberColor } from "../domain/categories";
+import { isoDateOf } from "../domain/dates";
 import { isSpendKind, movementInfo } from "../domain/movements";
-import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, FixedCost, IncomePortion, Member, MerchantRule, SpendBeneficiary } from "../domain/types";
+import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, FixedCost, FixedCostKind, IncomePortion, Member, MerchantRule, SpendBeneficiary } from "../domain/types";
 import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import type { RepositoryMode } from "../storage/repository";
 import { uid } from "../domain/types";
@@ -42,6 +43,10 @@ function beneficiaryLabel(beneficiary: MerchantRule["beneficiary"], members: Mem
   if (beneficiary.type === "household") return "Household";
   if (beneficiary.type === "unassigned") return "Unassigned";
   return members.find((member) => member.id === beneficiary.memberId)?.name ?? "Former member";
+}
+
+function looksLikeLoanCommitment(label: string): boolean {
+  return /\b(?:loan|mortgage|debt)\b/i.test(label);
 }
 
 export function HouseholdResetAction({
@@ -145,13 +150,23 @@ export function SettingsModal({
     onUpdateMembers(members.map((member) => member.id === memberId
       ? { ...member, portions: member.portions.map((portion) => portion.id === portionId ? { ...portion, ...patch } : portion) }
       : member));
-  const removePortion = (memberId: string, portionId: string) =>
+  const removePortion = (memberId: string, portionId: string) => {
+    const confirmationCount = data.incomeReceipts.filter((receipt) => receipt.memberId === memberId && receipt.portionId === portionId).length;
+    if (confirmationCount && typeof window !== "undefined" && !window.confirm(
+      `Delete this income source and ${confirmationCount} historical confirmation${confirmationCount === 1 ? "" : "s"}? This cannot be undone.`,
+    )) return;
     onUpdateMembers(members.map((member) => member.id === memberId
       ? { ...member, portions: member.portions.filter((portion) => portion.id !== portionId) }
       : member));
-  const addPortion = (memberId: string) =>
+  };
+  const addPortion = (memberId: string, frequency: "monthly" | "one_off" = "monthly") =>
     onUpdateMembers(members.map((member) => member.id === memberId
-      ? { ...member, portions: [...member.portions, { id: uid("por"), label: "Income portion", amount: 0, currency, taxRate: 0, taxWithheld: true, window: null }] }
+      ? { ...member, portions: [...member.portions, {
+          id: uid("por"), label: frequency === "one_off" ? "Annual bonus" : "Income portion", amount: 0, currency, taxRate: 0, taxWithheld: true,
+          window: null,
+          schedule: frequency === "one_off" ? { frequency: "one_off", month: isoDateOf(new Date()).slice(0, 7) } : { frequency: "monthly" },
+          budgetTreatment: frequency === "one_off" ? "protected" : "ordinary",
+        }] }
       : member));
   const foreignCurrencies = [...new Set(members.flatMap((member) => member.portions.map((portion) => portion.currency.trim().toUpperCase())))]
     .filter((code) => code && code !== currency.trim().toUpperCase())
@@ -223,7 +238,9 @@ export function SettingsModal({
                       <span>Member name</span>
                       <input aria-label={`${member.name || "Member"} name`} value={member.name} onChange={(event) => patchMember(member.id, { name: event.target.value })} />
                       </label>
-                      <small>{member.portions.length} expected deposit{member.portions.length === 1 ? "" : "s"} each month</small>
+                      <small>
+                        {member.portions.filter((portion) => portion.schedule.frequency === "monthly").length} monthly · {member.portions.filter((portion) => portion.schedule.frequency === "one_off").length} one-off
+                      </small>
                     </div>
                   </div>
                   <div className="income-member-actions">
@@ -231,7 +248,8 @@ export function SettingsModal({
                       <span>Colour</span>
                       <input aria-label={`${member.name || "Member"} colour`} type="color" value={member.color} onChange={(event) => patchMember(member.id, { color: event.target.value })} />
                     </label>
-                    <button onClick={() => addPortion(member.id)}>Add deposit</button>
+                    <button onClick={() => addPortion(member.id)}>Add monthly deposit</button>
+                    <button className="secondary" onClick={() => addPortion(member.id, "one_off")}>Add one-off income</button>
                     <IconButton label={`Delete ${member.name || "member"}`} title="Delete member" icon={Trash2} danger disabled={members.length <= 1} onClick={() => removeMember(member)} />
                   </div>
                 </div>
@@ -240,7 +258,7 @@ export function SettingsModal({
                     <section className="income-deposit-card" key={portion.id}>
                       <div className="income-deposit-header">
                         <div>
-                          <span className="income-deposit-number">Deposit {portionIndex + 1}</span>
+                          <span className="income-deposit-number">{portion.schedule.frequency === "one_off" ? "One-off income" : `Deposit ${portionIndex + 1}`}</span>
                           <strong>{portion.label.trim() || "Untitled income"}</strong>
                         </div>
                         <IconButton label={`Delete ${portion.label}`} icon={Trash2} danger onClick={() => removePortion(member.id, portion.id)} title="Delete deposit" />
@@ -250,6 +268,56 @@ export function SettingsModal({
                         <span>What should we call this deposit?</span>
                         <input aria-label={`${member.name} portion label`} value={portion.label} placeholder="e.g. Base salary or Variable allowance" onChange={(event) => patchPortion(member.id, portion.id, { label: event.target.value })} />
                       </label>
+
+                      <div className="income-schedule-choices" role="group" aria-label={`${portion.label} schedule`}>
+                        <button
+                          type="button"
+                          className={portion.schedule.frequency === "monthly" ? "active" : ""}
+                          aria-pressed={portion.schedule.frequency === "monthly"}
+                          disabled={data.incomeReceipts.some((receipt) => receipt.memberId === member.id && receipt.portionId === portion.id)}
+                          onClick={() => patchPortion(member.id, portion.id, { schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" })}
+                        >
+                          <strong>Monthly</strong><small>Expected every month.</small>
+                        </button>
+                        <button
+                          type="button"
+                          className={portion.schedule.frequency === "one_off" ? "active" : ""}
+                          aria-pressed={portion.schedule.frequency === "one_off"}
+                          disabled={data.incomeReceipts.some((receipt) => receipt.memberId === member.id && receipt.portionId === portion.id)}
+                          onClick={() => patchPortion(member.id, portion.id, {
+                            schedule: { frequency: "one_off", month: isoDateOf(new Date()).slice(0, 7) },
+                            budgetTreatment: "protected",
+                          })}
+                        >
+                          <strong>One-off</strong><small>Expected in one specific month.</small>
+                        </button>
+                      </div>
+                      {data.incomeReceipts.some((receipt) => receipt.memberId === member.id && receipt.portionId === portion.id) && (
+                        <small className="income-schedule-lock">Schedule locked after confirmation so historical income cannot move between months.</small>
+                      )}
+                      {portion.schedule.frequency === "one_off" && (
+                        <div className="one-off-settings-row">
+                          <label className="field">
+                            <span>Expected month</span>
+                            <input
+                              type="month"
+                              value={portion.schedule.month}
+                              disabled={data.incomeReceipts.some((receipt) => receipt.memberId === member.id && receipt.portionId === portion.id)}
+                              onChange={(event) => event.target.value && patchPortion(member.id, portion.id, {
+                                schedule: { frequency: "one_off", month: event.target.value },
+                              })}
+                            />
+                          </label>
+                          <label className="check-row">
+                            <input
+                              type="checkbox"
+                              checked={portion.budgetTreatment === "protected"}
+                              onChange={(event) => patchPortion(member.id, portion.id, { budgetTreatment: event.target.checked ? "protected" : "ordinary" })}
+                            />
+                            <span><strong>Protect from spending plan</strong><small>Does not increase the normal monthly allowance.</small></span>
+                          </label>
+                        </div>
+                      )}
 
                       <div className="income-deposit-sections">
                         <div className="deposit-section">
@@ -282,7 +350,7 @@ export function SettingsModal({
                         <div className="deposit-section deposit-timing-section">
                           <div className="deposit-section-heading">
                             <span>3</span>
-                            <div><strong>When does it arrive?</strong><small>Leave blank if the timing changes each month.</small></div>
+                            <div><strong>When does it arrive?</strong><small>Leave blank if the timing is unknown.</small></div>
                           </div>
                           <div className="arrival-inputs">
                             <label><span>From day</span><input aria-label={`${portion.label} arrival start day`} type="number" min="1" max="31" placeholder="e.g. 10" value={portion.window?.startDay ?? ""} onChange={(event) => { const raw = Number(event.target.value); const startDay = raw ? Math.max(1, Math.min(31, raw)) : 0; patchPortion(member.id, portion.id, { window: startDay ? { startDay, endDay: portion.window?.endDay ?? startDay } : null }); }} /></label>
@@ -293,7 +361,7 @@ export function SettingsModal({
                       </div>
                     </section>
                   ))}
-                  {!member.portions.length && <div className="income-deposit-empty"><strong>No deposits yet</strong><p>Add the salary, allowance, or other income expected each month.</p><button onClick={() => addPortion(member.id)}>Add first deposit</button></div>}
+                  {!member.portions.length && <div className="income-deposit-empty"><strong>No deposits yet</strong><p>Add regular salary or planned one-off income.</p><button onClick={() => addPortion(member.id)}>Add first deposit</button></div>}
                 </div>
               </div>
             ))}
@@ -355,10 +423,10 @@ export function SettingsModal({
           <div className="settings-section">
             <div className="section-title">
               <div>
-                <h3>Fixed costs</h3>
+                <h3>Recurring commitments</h3>
                 <p className="muted">
-                  Recurring commitments not already counted as imported transactions. Mizan warns when an exact
-                  category-and-amount match may be the same payment twice.
+                  Planning-only amounts Mizan adds each active month. Payment type says how money moves; purpose
+                  says what it paid for. Do not add a commitment already counted by imported transactions.
                 </p>
               </div>
               <button
@@ -367,38 +435,90 @@ export function SettingsModal({
                   id: uid("fixed"),
                   label: "New cost",
                   amount: 0,
+                  kind: "expense",
                   category: "housing",
                   beneficiary: { type: "household" },
                 }])}
               >
-                Add cost
+                Add commitment
               </button>
             </div>
-            {fixedCosts.map((fixed) => (
-              <div className="fixed-row" key={fixed.id}>
-                <input aria-label="Commitment name" value={fixed.label} onChange={(event) => patchFixed(fixed.id, { label: event.target.value })} />
-                <input aria-label={`Amount for ${fixed.label}`} type="number" min="0" value={fixed.amount} onChange={(event) => patchFixed(fixed.id, { amount: Math.max(0, Number(event.target.value) || 0) })} />
-                <select aria-label={`Purpose for ${fixed.label}`} value={fixed.category} onChange={(event) => patchFixed(fixed.id, { category: event.target.value as CategoryKey })}>
-                  {categoryChoices.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-                </select>
-                <select
-                  aria-label={`Beneficiary for ${fixed.label}`}
-                  value={beneficiaryValue(fixed.beneficiary)}
-                  onChange={(event) => patchFixed(fixed.id, { beneficiary: beneficiaryFromValue(event.target.value) })}
-                >
-                  <option value="household">Household</option>
-                  {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
-                  <option value="unassigned">Unassigned</option>
-                </select>
-                <input
-                  aria-label={`Last month for ${fixed.label}`}
-                  value={fixed.until ?? ""}
-                  placeholder="until YYYY-MM"
-                  onChange={(event) => patchFixed(fixed.id, { until: event.target.value || undefined })}
-                />
-                <IconButton label={`Delete ${fixed.label}`} icon={Trash2} danger onClick={() => onUpdateFixedCosts(fixedCosts.filter((item) => item.id !== fixed.id))} />
-              </div>
-            ))}
+            {fixedCosts.length === 0 && <p className="muted empty-commitments">No recurring commitments yet.</p>}
+            <div className="commitment-list">
+              {fixedCosts.map((fixed) => (
+                <article className="fixed-cost-card" key={fixed.id}>
+                  <header className="fixed-cost-card-header">
+                    <div>
+                      <span className="soft-label">{movementInfo(fixed.kind).label}</span>
+                      <strong>{fixed.label.trim() || "Untitled commitment"}</strong>
+                    </div>
+                    <IconButton label={`Delete ${fixed.label || "commitment"}`} icon={Trash2} danger onClick={() => onUpdateFixedCosts(fixedCosts.filter((item) => item.id !== fixed.id))} />
+                  </header>
+                  <div className="fixed-cost-grid">
+                    <label className="field">
+                      <span>Commitment name</span>
+                      <input aria-label="Commitment name" value={fixed.label} onChange={(event) => patchFixed(fixed.id, { label: event.target.value })} />
+                    </label>
+                    <label className="field">
+                      <span>Monthly amount</span>
+                      <input aria-label={`Amount for ${fixed.label}`} type="number" min="0" value={fixed.amount} onChange={(event) => patchFixed(fixed.id, { amount: Math.max(0, Number(event.target.value) || 0) })} />
+                    </label>
+                    <label className="field">
+                      <span>Payment type</span>
+                      <select aria-label={`Payment type for ${fixed.label}`} value={fixed.kind} onChange={(event) => patchFixed(fixed.id, { kind: event.target.value as FixedCostKind })}>
+                        <option value="expense">Bill / regular expense</option>
+                        <option value="loan_payment">Loan / debt payment</option>
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>Purpose</span>
+                      <select aria-label={`Purpose for ${fixed.label}`} value={fixed.category} onChange={(event) => patchFixed(fixed.id, { category: event.target.value as CategoryKey })}>
+                        {categoryChoices.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>For whom</span>
+                      <select
+                        aria-label={`Beneficiary for ${fixed.label}`}
+                        value={beneficiaryValue(fixed.beneficiary)}
+                        onChange={(event) => patchFixed(fixed.id, { beneficiary: beneficiaryFromValue(event.target.value) })}
+                      >
+                        <option value="household">Household</option>
+                        {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
+                        <option value="unassigned">Unassigned</option>
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>Final month (optional)</span>
+                      <input
+                        aria-label={`Last month for ${fixed.label}`}
+                        type="month"
+                        value={fixed.until ?? ""}
+                        onChange={(event) => patchFixed(fixed.id, { until: event.target.value || undefined })}
+                      />
+                    </label>
+                  </div>
+                  {fixed.kind === "loan_payment" && (
+                    <div className="fixed-purpose-guidance" role="note">
+                      <div>
+                        <strong>Purpose stays separate from the loan.</strong>
+                        <span>For a car loan, Transport is valid. Use a custom purpose such as Vehicle loan only when you want a separate reporting bucket.</span>
+                      </div>
+                      <button className="link-button" onClick={() => setActiveTab("categories")}>Manage custom purposes</button>
+                    </div>
+                  )}
+                  {fixed.kind === "expense" && looksLikeLoanCommitment(fixed.label) && (
+                    <div className="fixed-purpose-guidance" role="note">
+                      <div>
+                        <strong>This name looks like a loan.</strong>
+                        <span>Confirm the payment type so the commitment is described correctly. Its purpose can still be Transport, Housing, or another reporting bucket.</span>
+                      </div>
+                      <button className="link-button" onClick={() => patchFixed(fixed.id, { kind: "loan_payment" })}>Mark as loan / debt</button>
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
           </div>
         </>
       )}

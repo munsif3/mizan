@@ -20,7 +20,7 @@ import {
 } from "./domain/contributions";
 import { filterNew } from "./domain/dedupe";
 import { normalizeFxTransaction } from "./domain/fx";
-import { pruneReceipts, removeReceipt, unlinkTransaction, upsertReceipt, type PortionResolution } from "./domain/income";
+import { pruneReceipts, removeReceipt, unlinkTransaction, upsertReceipt, upsertReceiptGroup, type PortionResolution } from "./domain/income";
 import { detectIncomeCandidates, eligibleCredits, type IncomeCandidate } from "./domain/incomeMatch";
 import { formatMoney } from "./domain/money";
 import { directionForKind, isSpendKind } from "./domain/movements";
@@ -36,6 +36,7 @@ import {
   type Counterparty,
   type CustomCategory,
   type IncomeReceipt,
+  type IncomePortion,
   type MerchantRule,
   type Member,
   type MemberId,
@@ -73,6 +74,7 @@ import { CsvImportModal } from "./ui/CsvImportModal";
 import { ManualModal, type ManualEntry } from "./ui/ManualModal";
 import { MonthNavigator } from "./ui/MonthNavigator";
 import { OnboardingView } from "./ui/OnboardingView";
+import { OneOffIncomeModal } from "./ui/OneOffIncomeModal";
 import { RESET_CONFIRMATION, ResetHouseholdModal } from "./ui/ResetHouseholdModal";
 import { SettingsModal } from "./ui/SettingsModal";
 import { SplitModal } from "./ui/SplitModal";
@@ -80,7 +82,7 @@ import { SharedContributionModal } from "./ui/SharedContributionModal";
 import { TransactionsView, type BeneficiaryFilter, type LedgerFilters, type PayerFilter } from "./ui/TransactionsView";
 
 type View = "home" | "transactions" | "history";
-type ModalKind = null | "import" | "manual" | "settings" | "clear-transactions" | "reset";
+type ModalKind = null | "import" | "manual" | "settings" | "one-off-income" | "clear-transactions" | "reset";
 type BootstrapPhase = "idle" | "loading-profile" | "loading-household" | "needs-household" | "ready" | "error";
 
 const EMPTY_LEDGER_FILTERS: LedgerFilters = {
@@ -831,9 +833,34 @@ export default function App() {
     }
   }
 
-  function recordIncomeReceipt(receipt: IncomeReceipt) {
-    setData((previous) => ({ ...previous, incomeReceipts: upsertReceipt(previous.incomeReceipts, receipt) }));
+  function recordIncomeReceipts(receipts: IncomeReceipt[]) {
+    setData((previous) => {
+      const transactionId = receipts[0]?.transactionId;
+      const editsExistingGroup = transactionId
+        ? previous.incomeReceipts.filter((receipt) => receipt.transactionId === transactionId).length > 1
+        : false;
+      return {
+        ...previous,
+        incomeReceipts: transactionId && (receipts.length > 1 || editsExistingGroup)
+          ? upsertReceiptGroup(previous.incomeReceipts, receipts)
+          : upsertReceipt(previous.incomeReceipts, receipts[0]!),
+      };
+    });
     setIncomeConfirm(null);
+  }
+
+  function addOneOffIncome(memberId: string, portion: IncomePortion) {
+    updateMembers(data.settings.members.map((member) => member.id === memberId
+      ? { ...member, portions: [...member.portions, portion] }
+      : member));
+    setModal(null);
+    setNotice(`${portion.label} added for ${monthLabel(portion.schedule.frequency === "one_off" ? portion.schedule.month : currentMonth)}.`);
+  }
+
+  function unlinkIncomeEvidence(transactionId: string) {
+    setData((previous) => ({ ...previous, incomeReceipts: unlinkTransaction(previous.incomeReceipts, transactionId) }));
+    setIncomeConfirm(null);
+    setNotice("Statement evidence unlinked. Confirmed income amounts were preserved.");
   }
 
   function removeIncomeConfirmation(monthValue: string, memberId: MemberId, portionId: string) {
@@ -1657,6 +1684,7 @@ export default function App() {
             onCompleteCheckIn={completeWeeklyCheckIn}
             incomeCandidates={incomeCandidateMap}
             onConfirmIncome={(item, candidate) => setIncomeConfirm({ item, ...(candidate ? { candidate } : {}) })}
+            onAddOneOffIncome={() => setModal("one-off-income")}
             contributionCandidates={contributionCandidates.filter((candidate) => candidate.expenses.some((expense) => monthOf(expense.date) === currentMonth))}
             members={data.settings.members}
             onConfirmContribution={(candidate) => setContributionConfirm({ candidate })}
@@ -1812,6 +1840,7 @@ export default function App() {
       {incomeConfirm && (
         <IncomeConfirmModal
           item={incomeConfirm.item}
+          allocationItems={summary.incomeItems.filter((item) => item.memberId === incomeConfirm.item.memberId)}
           candidate={incomeConfirm.candidate}
           linkedTransaction={data.transactions.find(
             (transaction) => transaction.id === (incomeConfirm.item.receipt?.transactionId ?? incomeConfirm.candidate?.transaction.id),
@@ -1830,9 +1859,19 @@ export default function App() {
           locale={data.settings.locale}
           money={money}
           currencyMoney={currencyMoney}
-          onSave={recordIncomeReceipt}
+          onSave={recordIncomeReceipts}
           onRemove={() => removeIncomeConfirmation(incomeConfirm.item.month, incomeConfirm.item.memberId, incomeConfirm.item.portion.id)}
+          onUnlinkEvidence={unlinkIncomeEvidence}
           onClose={() => setIncomeConfirm(null)}
+        />
+      )}
+      {modal === "one-off-income" && (
+        <OneOffIncomeModal
+          members={data.settings.members}
+          month={currentMonth}
+          householdCurrency={data.settings.currency}
+          onSave={addOneOffIncome}
+          onClose={() => setModal(null)}
         />
       )}
       {contributionConfirm && (

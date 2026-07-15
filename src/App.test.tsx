@@ -21,9 +21,9 @@ import { TransactionsView } from "./ui/TransactionsView";
 function threeMemberData(): AppData {
   const data = emptyData();
   data.settings.members = [
-    { id: "a", name: "Ana", color: "#5b8cff", portions: [{ id: "pa", label: "Monthly income", amount: 500000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
-    { id: "b", name: "Ben", color: "#ff80b5", portions: [{ id: "pb", label: "Monthly income", amount: 400000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
-    { id: "c", name: "Cyd", color: "#f2b84b", portions: [{ id: "pc", label: "Monthly income", amount: 300000, currency: "USD", taxRate: 0, taxWithheld: true, window: null }] },
+    { id: "a", name: "Ana", color: "#5b8cff", portions: [{ id: "pa", label: "Monthly income", amount: 500000, currency: "USD", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] },
+    { id: "b", name: "Ben", color: "#ff80b5", portions: [{ id: "pb", label: "Monthly income", amount: 400000, currency: "USD", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] },
+    { id: "c", name: "Cyd", color: "#f2b84b", portions: [{ id: "pc", label: "Monthly income", amount: 300000, currency: "USD", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] },
   ];
   data.settings.currency = "USD";
   data.settings.locale = "en-US";
@@ -132,6 +132,8 @@ describe("UI render smoke", () => {
       currency: "USD",
       taxRate: 15,
       taxWithheld: false,
+      schedule: { frequency: "monthly" },
+      budgetTreatment: "ordinary",
     };
     const item = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15)).incomeItems[0]!;
     const html = renderToString(
@@ -325,7 +327,8 @@ describe("UI render smoke", () => {
     );
     expect(html).toContain("Household members");
     expect(html).toContain("Member name");
-    expect(html).toContain("Add deposit");
+    expect(html).toContain("Add monthly deposit");
+    expect(html).toContain("Add one-off income");
     expect(html).toContain("What reaches the account?");
     expect(html).toContain("How is tax handled?");
     expect(html).toContain("When does it arrive?");

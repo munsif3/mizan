@@ -9,20 +9,23 @@ import { Modal } from "./bits";
 
 export function IncomeConfirmModal({
   item,
+  allocationItems = [item],
   candidate,
   linkedTransaction,
-  alternatives,
+  alternatives = [],
   accounts = [],
   householdCurrency,
   fxRates = {},
-  locale = "",
+  locale,
   money,
   currencyMoney,
   onSave,
   onRemove,
+  onUnlinkEvidence,
   onClose,
 }: {
   item: PortionResolution;
+  allocationItems?: PortionResolution[];
   candidate?: IncomeCandidate;
   linkedTransaction?: Transaction;
   alternatives?: Transaction[];
@@ -32,11 +35,11 @@ export function IncomeConfirmModal({
   locale?: string;
   money: (value: number) => string;
   currencyMoney?: (value: number, currency: string) => string;
-  onSave: (receipt: IncomeReceipt) => void;
+  onSave: (receipts: IncomeReceipt[]) => void;
   onRemove: () => void;
+  onUnlinkEvidence?: (transactionId: string) => void;
   onClose: () => void;
 }) {
-  const initialTransaction = linkedTransaction ?? candidate?.transaction;
   const householdCode = normalizeCurrency(householdCurrency);
   const portionCurrency = normalizeCurrency(item.portion.currency, householdCode);
   const portionRate = fxRateFor(portionCurrency, householdCode, fxRates);
@@ -50,6 +53,7 @@ export function IncomeConfirmModal({
     portionAmount: item.portion.amount,
     fxRate: portionRate,
   });
+  const initialTransaction = linkedTransaction ?? candidate?.transaction;
   const initialResolution = initialTransaction
     ? resolveTransactionCurrency(initialTransaction, candidate?.sourceCurrency)
     : resolveIncomeCurrency({
@@ -58,24 +62,41 @@ export function IncomeConfirmModal({
         householdCurrency: householdCode,
       });
   const initialCurrency = initialResolution.currency;
-  const [receivedCurrency, setReceivedCurrency] = useState(initialCurrency);
   const initialRate = item.receipt?.fxRate ?? candidate?.fxRate ?? fxRateFor(initialCurrency, householdCurrency, fxRates) ?? 0;
-  const [rate, setRate] = useState(initialRate);
-  const foreignReceipt = receivedCurrency !== householdCode;
   const initialReceivedAmount = item.receipt?.receivedAmount
     ?? candidate?.sourceAmount
     ?? (initialCurrency !== householdCode && initialRate > 0
       ? (item.receipt?.amount ?? item.deposit) / initialRate
       : (item.receipt?.amount ?? item.deposit));
+  const eligibleAllocationItems = allocationItems.filter((target) => target.memberId === item.memberId
+    && target.month === item.month
+    && (!target.receipt?.transactionId || target.receipt.transactionId === initialTransaction?.id || target.portion.id === item.portion.id));
+  const initialGroupItems = initialTransaction
+    ? eligibleAllocationItems.filter((target) => target.receipt?.transactionId === initialTransaction.id)
+    : [];
+
+  const [receivedCurrency, setReceivedCurrency] = useState(initialCurrency);
+  const [rate, setRate] = useState(initialRate);
   const [amount, setAmount] = useState(initialReceivedAmount);
   const [date, setDate] = useState(item.receipt?.date ?? candidate?.transaction.date ?? "");
   const [transactionId, setTransactionId] = useState(item.receipt?.transactionId ?? candidate?.transaction.id ?? "");
-  const householdAmount = foreignReceipt ? amount * rate : amount;
-  const net = netOf(householdAmount, item.portion);
-  const moneyIn = currencyMoney ?? ((value: number, currency: string) => formatMoney(value, { currency, locale }));
-  const receivedMoney = (value: number) => moneyIn(value, receivedCurrency);
+  const [splitCredit, setSplitCredit] = useState(initialGroupItems.length > 1);
+  const [allocations, setAllocations] = useState<Record<string, number>>(() => Object.fromEntries(
+    eligibleAllocationItems.map((target) => {
+      const receipt = target.receipt;
+      if (receipt && initialTransaction && receipt.transactionId === initialTransaction.id) {
+        return [target.portion.id, receipt.receivedAmount
+          ?? (initialCurrency !== householdCode && (receipt.fxRate ?? initialRate) > 0
+            ? receipt.amount / (receipt.fxRate ?? initialRate)
+            : receipt.amount)];
+      }
+      return [target.portion.id, target.portion.id === item.portion.id ? initialReceivedAmount : 0];
+    }),
+  ));
+
+  const moneyIn = currencyMoney ?? ((value: number, currency: string) => formatMoney(value, { currency, locale: locale ?? "" }));
   const available = [...new Map(
-    [linkedTransaction, candidate?.transaction, ...(alternatives ?? [])]
+    [linkedTransaction, candidate?.transaction, ...alternatives]
       .filter((transaction): transaction is Transaction => Boolean(transaction))
       .map((transaction) => [transaction.id, transaction]),
   ).values()];
@@ -83,7 +104,18 @@ export function IncomeConfirmModal({
   const selectedResolution = selectedTransaction
     ? resolveTransactionCurrency(selectedTransaction, candidate?.transaction.id === selectedTransaction.id ? candidate.sourceCurrency : undefined)
     : initialResolution;
+  const foreignReceipt = receivedCurrency !== householdCode;
+  const householdAmount = foreignReceipt ? amount * rate : amount;
+  const net = netOf(householdAmount, {
+    taxRate: item.taxRate,
+    taxWithheld: item.taxWithheld,
+  });
   const currencyChoices = [...new Set([portionCurrency, selectedResolution.currency, householdCode])].filter(Boolean);
+  const allocationTotal = Object.values(allocations).reduce((sum, value) => sum + (Number(value) || 0), 0);
+  const allocationDifference = selectedTransaction ? selectedTransaction.amount - allocationTotal : 0;
+  const allocationTolerance = selectedTransaction ? Math.max(0.01, Math.abs(selectedTransaction.amount) * 1e-9) : 0.01;
+  const allocationBalanced = Boolean(selectedTransaction) && Math.abs(allocationDifference) <= allocationTolerance;
+
   const statementMoney = (transaction: Transaction, value: number) => {
     const resolution = resolveTransactionCurrency(
       transaction,
@@ -93,33 +125,68 @@ export function IncomeConfirmModal({
   };
 
   const selectTransaction = (id: string) => {
-    const transaction = available.find((item) => item.id === id);
+    const transaction = available.find((candidateTransaction) => candidateTransaction.id === id);
     setTransactionId(id);
+    setSplitCredit(false);
     if (transaction) {
       const currency = resolveTransactionCurrency(
         transaction,
         candidate?.transaction.id === transaction.id ? candidate.sourceCurrency : undefined,
       ).currency;
+      const nextRate = fxRateFor(currency, householdCurrency, fxRates) ?? 0;
       setReceivedCurrency(currency);
-      setRate(fxRateFor(currency, householdCurrency, fxRates) ?? 0);
+      setRate(nextRate);
       setAmount(transaction.amount);
       setDate(transaction.date);
+      setAllocations(Object.fromEntries(eligibleAllocationItems.map((target) => [
+        target.portion.id,
+        target.portion.id === item.portion.id ? transaction.amount : 0,
+      ])));
     }
   };
 
-  const save = () => {
-    if (!Number.isFinite(amount) || amount <= 0 || (foreignReceipt && (!Number.isFinite(rate) || rate <= 0))) return;
-    const receipt: IncomeReceipt = {
-      id: receiptId(item.month, item.memberId, item.portion.id),
-      month: item.month,
-      memberId: item.memberId,
-      portionId: item.portion.id,
-      amount: Number(householdAmount) || 0,
-      ...(foreignReceipt ? { receivedAmount: Number(amount) || 0, receivedCurrency, fxRate: Number(rate) || 0 } : {}),
+  const receiptForAllocation = (target: PortionResolution, receivedAmount: number): IncomeReceipt => {
+    const convertedAmount = foreignReceipt ? receivedAmount * rate : receivedAmount;
+    return {
+      id: receiptId(target.month, target.memberId, target.portion.id),
+      month: target.month,
+      memberId: target.memberId,
+      portionId: target.portion.id,
+      amount: Number(convertedAmount) || 0,
+      ...(foreignReceipt ? { receivedAmount: Number(receivedAmount) || 0, receivedCurrency, fxRate: Number(rate) || 0 } : {}),
       ...(date ? { date } : {}),
       ...(transactionId ? { transactionId } : {}),
+      label: target.receipt?.label ?? target.portion.label,
+      taxRate: target.taxRate,
+      taxWithheld: target.taxWithheld,
+      budgetTreatment: target.receipt?.budgetTreatment ?? target.budgetTreatment,
     };
-    onSave(receipt);
+  };
+
+  const save = () => {
+    if (splitCredit && selectedTransaction) {
+      if (!allocationBalanced || (foreignReceipt && (!Number.isFinite(rate) || rate <= 0))) return;
+      const next = eligibleAllocationItems
+        .map((target) => ({ target, amount: Number(allocations[target.portion.id]) || 0 }))
+        .filter((allocation) => allocation.amount > 0)
+        .map((allocation) => receiptForAllocation(allocation.target, allocation.amount));
+      if (!next.length) return;
+      const removedExisting = initialGroupItems.filter((target) => !next.some((receipt) => receipt.portionId === target.portion.id));
+      if (removedExisting.length && typeof window !== "undefined" && !window.confirm(
+        `Remove ${removedExisting.length} income allocation${removedExisting.length === 1 ? "" : "s"} from this statement credit? Their monthly confirmations will be deleted.`,
+      )) return;
+      onSave(next);
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || (foreignReceipt && (!Number.isFinite(rate) || rate <= 0))) return;
+    onSave([receiptForAllocation(item, amount)]);
+  };
+
+  const removeConfirmation = () => {
+    if (initialGroupItems.length > 1 && typeof window !== "undefined" && !window.confirm(
+      `Remove ${item.portion.label} from this combined statement credit? Other income allocations will remain.`,
+    )) return;
+    onRemove();
   };
 
   return (
@@ -135,7 +202,9 @@ export function IncomeConfirmModal({
             <span className="soft-label">From your statement</span>
             <strong>{selectedTransaction.description}</strong>
             <small>{selectedTransaction.account} · {selectedTransaction.date} · {statementMoney(selectedTransaction, selectedTransaction.amount)}</small>
-            <button type="button" className="link-button" onClick={() => setTransactionId("")}>Unlink statement credit</button>
+            {onUnlinkEvidence && (
+              <button type="button" className="link-button" onClick={() => onUnlinkEvidence(transactionId)}>Unlink statement evidence</button>
+            )}
           </div>
         )}
         {available.length > 0 && (
@@ -149,10 +218,39 @@ export function IncomeConfirmModal({
             </select>
           </label>
         )}
-        <label className="field">
-          <span>Amount received ({receivedCurrency})</span>
-          <input autoFocus type="number" min="0" step="any" value={amount || ""} onChange={(event) => setAmount(Math.max(0, Number(event.target.value) || 0))} />
-        </label>
+        {selectedTransaction && eligibleAllocationItems.length > 1 && (
+          <label className="check-row split-income-toggle">
+            <input type="checkbox" checked={splitCredit} onChange={(event) => setSplitCredit(event.target.checked)} />
+            <span><strong>Split this credit across income sources</strong><small>Use this when salary and a bonus arrived as one bank deposit.</small></span>
+          </label>
+        )}
+        {splitCredit && selectedTransaction ? (
+          <div className="income-allocation-editor">
+            <div className="income-allocation-heading">
+              <strong>Deposit breakdown</strong>
+              <small>{moneyIn(allocationTotal, receivedCurrency)} allocated · {moneyIn(Math.abs(allocationDifference), receivedCurrency)} {allocationDifference >= 0 ? "left" : "over"}</small>
+            </div>
+            {eligibleAllocationItems.map((target) => (
+              <label className="income-allocation-row" key={target.portion.id}>
+                <span><strong>{target.portion.label}</strong><small>{target.portion.schedule.frequency === "one_off" ? "One-off income" : "Monthly income"}</small></span>
+                <input
+                  aria-label={`Allocation for ${target.portion.label}`}
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={allocations[target.portion.id] || ""}
+                  onChange={(event) => setAllocations((current) => ({ ...current, [target.portion.id]: Math.max(0, Number(event.target.value) || 0) }))}
+                />
+              </label>
+            ))}
+            {!allocationBalanced && <p className="field-error">Allocations must equal the statement credit before saving.</p>}
+          </div>
+        ) : (
+          <label className="field">
+            <span>Amount received ({receivedCurrency})</span>
+            <input autoFocus type="number" min="0" step="any" value={amount || ""} onChange={(event) => setAmount(Math.max(0, Number(event.target.value) || 0))} />
+          </label>
+        )}
         {selectedResolution.conflict && (
           <label className="field">
             <span>Currency received</span>
@@ -162,12 +260,12 @@ export function IncomeConfirmModal({
               onChange={(event) => {
                 const currency = normalizeCurrency(event.target.value, householdCode);
                 setReceivedCurrency(currency);
-                setRate(fxRateFor(currency, householdCode, fxRates) ?? 0);
+                setRate(fxRateFor(currency, householdCurrency, fxRates) ?? 0);
               }}
             >
               {currencyChoices.map((currency) => <option key={currency} value={currency}>{currency}</option>)}
             </select>
-            <small>The account and income portion use different currencies. Confirm the currency shown on the statement.</small>
+            <small>The account and income source use different currencies. Confirm the currency shown on the statement.</small>
           </label>
         )}
         {foreignReceipt && (
@@ -177,22 +275,27 @@ export function IncomeConfirmModal({
           </label>
         )}
         <label className="field">
-          <span>Date received (optional)</span>
+          <span>Date received</span>
           <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
         </label>
-        {!item.portion.taxWithheld && item.portion.taxRate > 0 && (
+        {!splitCredit && !item.taxWithheld && item.taxRate > 0 && (
           <p className="income-net-caption">
-            {foreignReceipt && <>{receivedMoney(amount)} × {rate || 0} = {money(householdAmount)}. </>}
-            {money(net)} counts as available after setting aside {item.portion.taxRate}% tax.
+            {foreignReceipt && <>{moneyIn(amount, receivedCurrency)} × {rate || 0} = {money(householdAmount)}. </>}
+            {money(net)} counts as available after setting aside {item.taxRate}% tax.
           </p>
         )}
-        {foreignReceipt && (item.portion.taxWithheld || item.portion.taxRate <= 0) && (
-          <p className="income-net-caption">{receivedMoney(amount)} × {rate || 0} = {money(householdAmount)} for household totals.</p>
+        {foreignReceipt && !splitCredit && (item.taxWithheld || item.taxRate <= 0) && (
+          <p className="income-net-caption">{moneyIn(amount, receivedCurrency)} × {rate || 0} = {money(householdAmount)} for household totals.</p>
         )}
         <div className="modal-actions">
-          {item.receipt && <button className="secondary danger" onClick={onRemove}>Delete income confirmation</button>}
+          {item.receipt && <button className="secondary danger" onClick={removeConfirmation}>Delete income confirmation</button>}
           <button className="secondary" onClick={onClose}>Cancel</button>
-          <button disabled={amount <= 0 || (foreignReceipt && rate <= 0)} onClick={save}>{item.receipt ? "Save changes" : "Confirm income"}</button>
+          <button
+            disabled={splitCredit ? !allocationBalanced || (foreignReceipt && rate <= 0) : amount <= 0 || (foreignReceipt && rate <= 0)}
+            onClick={save}
+          >
+            {item.receipt ? "Save changes" : "Confirm income"}
+          </button>
         </div>
       </div>
     </Modal>

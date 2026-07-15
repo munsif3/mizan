@@ -52,6 +52,9 @@ export type MovementKind =
   | "investment_transfer"
   | "account_credit";
 
+/** Recurring commitments are forecast spend, but retain whether they are an ordinary bill or debt repayment. */
+export type FixedCostKind = Extract<MovementKind, "expense" | "loan_payment">;
+
 /** The default movement kind for a freshly imported/entered row, from its sign. */
 export function defaultKind(direction: "debit" | "credit"): MovementKind {
   return direction === "credit" ? "account_credit" : "expense";
@@ -82,6 +85,12 @@ export type SpendBeneficiary =
 /** Reserved owner/filter sentinels that a member id may never take. */
 export const RESERVED_IDS = ["all", "joint"] as const;
 
+export type IncomeSchedule =
+  | { frequency: "monthly" }
+  | { frequency: "one_off"; month: string };
+
+export type IncomeBudgetTreatment = "ordinary" | "protected";
+
 export interface IncomePortion {
   id: string;
   label: string;
@@ -93,6 +102,10 @@ export interface IncomePortion {
   /** True when tax was already deducted before the deposit arrived. */
   taxWithheld: boolean;
   window: { startDay: number; endDay: number } | null;
+  /** Monthly deposits recur; one-off deposits exist only in their scheduled month. */
+  schedule: IncomeSchedule;
+  /** Protected income counts toward savings but does not loosen the spending plan. */
+  budgetTreatment: IncomeBudgetTreatment;
 }
 
 export interface Member {
@@ -122,6 +135,11 @@ export interface IncomeReceipt {
   date?: string;
   /** Statement-credit provenance only; income still resolves from `amount`. */
   transactionId?: string;
+  /** Confirmation-time snapshots keep history stable when the source is edited later. */
+  label?: string;
+  taxRate?: number;
+  taxWithheld?: boolean;
+  budgetTreatment?: IncomeBudgetTreatment;
 }
 
 /** Who pays from an account: a member id, or "joint" for shared/unknown. */
@@ -220,6 +238,8 @@ export interface FixedCost {
   id: string;
   label: string;
   amount: number;
+  /** Payment semantics, kept separate from the purpose/category. */
+  kind: FixedCostKind;
   category: CategoryKey;
   beneficiary: SpendBeneficiary;
   /** last month this cost applies, "YYYY-MM" inclusive; empty/undefined = ongoing */
@@ -282,7 +302,7 @@ export interface MerchantRule {
 export type MerchantRules = Record<string, MerchantRule>;
 
 export interface AppData {
-  schemaVersion: 12;
+  schemaVersion: 14;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
   merchantRules: MerchantRules;

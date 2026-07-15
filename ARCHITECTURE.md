@@ -51,20 +51,22 @@ One deterministic system for a household's financial awareness.
 | 28 | Shared contributions are confirmed statement evidence | A `SharedContribution` links one member's outgoing transfer, the matching credit into another member's account, and explicit allocations across one or more partial loan-recovery debits. Transfer legs stay non-spend and every recovery remains a single spend source; settlement reallocates only the proven amount. Suggestions never create links silently. |
 | 29 | Beneficiary precedence is explicit | A locked one-row override wins, then an explicit merchant beneficiary, then the registered account's beneficiary default, then Unassigned. Merchant rules may select `account_default`, so one merchant can stay personal to whichever member card paid while a household merchant overrides every account. |
 | 30 | Transaction clearing preserves reusable household setup | The owner may delete every ledger row without rebuilding the household. Transaction-backed contribution records are removed and income-receipt statement links are detached, while accounts, card/bank matching, members, income confirmations, rules, fixed costs, categories, presets, settings, household access, and the invite remain. Like a full reset, the clear is serialized after queued saves so stale autosaves cannot restore deleted rows. |
+| 31 | Recurring commitment type is separate from purpose | A fixed commitment stores `kind: expense | loan_payment` independently from `category`. The settings editor labels both fields, so a car loan can be a Loan / debt payment for the Transport purpose without treating Transport as the loan type. Both remain forecast spend; imported statement rows remain the actual ledger evidence. Legacy loan-like names get a user-confirmed suggestion, never silent reclassification. |
+| 32 | One-off income is scheduled and protected by default | An income portion has a monthly or exact-month one-off schedule plus an ordinary/protected budget treatment. Confirmed bonuses count in income, savings, and save rate, while protected amounts do not expand target spend or daily allowance. A combined salary-and-bonus credit may evidence several atomically saved receipts; the credit remains provenance only and is never counted again. |
 
-## Data model (schema v12)
+## Data model (schema v14)
 
 ```
 AppData
-├── schemaVersion: 12
+├── schemaVersion: 14
 ├── transactions: Transaction[]   { id, date, description, amount, category, beneficiary, beneficiarySource?, classificationLocked?, account, accountId?, rawAccount?, note, source, direction, kind, counterpartyId?, split? }
 ├── sharedContributions: SharedContribution[] { id, allocations: { expenseTransactionId, amount }[], transferDebitTransactionId, transferCreditTransactionId, contributorMemberId, amount }
 ├── merchantRules: { CLEANED_MERCHANT: { category, beneficiary | account_default, kind, counterpartyId? } }
 ├── accounts: Account[]           { id, label, currency, owner, beneficiaryDefault, match[] }
-├── fixedCosts: FixedCost[]       { id, label, amount, category, beneficiary, until? }   // until = "YYYY-MM", inclusive
-├── incomeReceipts: IncomeReceipt[] { id, month, memberId, portionId, amount, receivedAmount?, receivedCurrency?, fxRate?, currencyReview?, date?, transactionId? }
+├── fixedCosts: FixedCost[]       { id, label, amount, kind, category, beneficiary, until? }   // kind = expense | loan_payment; until = "YYYY-MM", inclusive
+├── incomeReceipts: IncomeReceipt[] { id, month, memberId, portionId, amount, receivedAmount?, receivedCurrency?, fxRate?, currencyReview?, date?, transactionId?, label?, taxRate?, taxWithheld?, budgetTreatment? }
 └── settings:
-    ├── members: Member[]         { id, name, color, portions: IncomePortion[] }
+    ├── members: Member[]         { id, name, color, portions: IncomePortion[] { schedule: monthly | one_off(YYYY-MM), budgetTreatment: ordinary | protected } }
     ├── fxRates: { [ISO currency]: householdCurrencyPerUnit }
     ├── targetSaveRate: number
     ├── currency: string          // ISO 4217, e.g. "USD"
@@ -75,10 +77,12 @@ AppData
 ```
 
 Schema v7 replaces the old scalar `Member.income` with `Member.portions: IncomePortion[]`.
-Each portion stores the expected deposit, its currency, tax rate/treatment, and an optional
-arrival-day window. `AppData.incomeReceipts.amount` stores confirmed monthly actuals in the household
+Each portion stores the expected deposit, its currency, tax rate/treatment, schedule, budget treatment,
+and an optional arrival-day window. One-offs exist only in their scheduled month; an overdue unconfirmed
+one-off contributes zero rather than leaving a stale estimate in history. `AppData.incomeReceipts.amount` stores confirmed monthly actuals in the household
 currency; foreign confirmations also retain the statement-native received amount/currency and the
-rate used. `settings.fxRates` converts foreign expected portions for projections and prefills confirmations.
+rate used. Confirmations snapshot label, tax, and budget treatment so later source edits cannot rewrite
+history. `settings.fxRates` converts foreign expected portions for projections and prefills confirmations.
 
 - `category` is purpose only: a fixed key (`housing`, `food`, `transport`, `lifestyle`,
   `family_support`, `investments`, `uncategorized`) or a user-defined key
@@ -99,7 +103,7 @@ rate used. `settings.fxRates` converts foreign expected portions for projections
   `gift_or_handout`. Counterparties are a **label only** — Mizan tracks no running
   outstanding balance (deliberate: keeps to three screens).
 
-## Cloud household model (sync v5)
+## Cloud household model (sync v7)
 
 `AppData` remains the canonical in-app shape. Firestore publishes one active snapshot revision
 through a small manifest; each revision keeps the same split-collection layout:
@@ -141,7 +145,7 @@ If a legacy `mizan_v2` or `trackr_v1` browser payload is found, only an explicit
 household receives it. Joining or switching never overwrites an existing household, and the browser
 financial keys are cleared only after the Firestore save succeeds.
 
-**Migration.** `migrate()` normalizes any known shape into v12; unrelated junk degrades to empty
+**Migration.** `migrate()` normalizes any known shape into v14; unrelated junk degrades to empty
 data, while a newer schema fails loudly so an older client cannot discard unknown fields. Legacy
 data (schema v4, or a v1 "trackr" backup) seeds members from ids already present
 and pins the previous currency. v5 → v6 adds movement kinds, v6 → v7 adds income portions, v7 → v8
@@ -152,12 +156,16 @@ merchant rules: a valid `personal:<memberId>` becomes `category: "uncategorized"
 previously classified shared-purpose categories remain Household, and uncategorized/missing beneficiaries
 remain Unassigned. Existing accounts start with `beneficiaryDefault: "review"`; choosing a policy fills only
 unlocked Unassigned rows, while explicit Household/member history stays untouched. Split-cloud v4 hydrates
-as pre-beneficiary data and v5 round-trips account policies, rule policies, and beneficiary provenance.
+as pre-beneficiary data, v5 round-trips account policies, rule policies, and beneficiary provenance,
+v12 → v13 defaults existing fixed commitments to `kind: "expense"`, and v13 → v14 defaults income
+portions to monthly/ordinary while conservatively snapshotting receipt metadata. Split-cloud v7 retains
+scheduled income and protected-budget semantics.
 The migrator preserves statement provenance, movement semantics, contribution evidence, and locked one-row
 classifications. Fresh data with no member list triggers onboarding.
 
-History uses confirmed receipts in the month where they were recorded. Months without receipts use
-the current expected portions, so projections remain useful before actuals are confirmed.
+History uses confirmed receipts in the month where they were recorded. Monthly sources without receipts
+use current expectations; scheduled one-offs use their estimate only before the arrival deadline and zero
+after becoming overdue. History annotates one-off and protected amounts explicitly.
 
 ## Determinism guarantees
 
