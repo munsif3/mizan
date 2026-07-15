@@ -1,5 +1,13 @@
-import { cleanMerchant as normalize } from "./rules";
-import type { Account, AccountOwner, Member, Transaction } from "./types";
+import { hasFxConversionEvidence } from "./fx";
+import { beneficiaryEquals } from "./beneficiaries";
+import { isSpendKind } from "./movements";
+import type { Account, AccountOwner, Member, SpendBeneficiary, Transaction } from "./types";
+
+const UNASSIGNED_BENEFICIARY: SpendBeneficiary = { type: "unassigned" };
+
+function normalize(value: unknown): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim().toUpperCase();
+}
 
 /**
  * Resolve raw statement text (detected card/account number, or a file name)
@@ -30,6 +38,14 @@ export function resolveAccount(raw: string, accounts: Account[]): Account | unde
   return candidates[0]!.account;
 }
 
+/** Resolve a transaction through its stable account id before trying imported text. */
+export function accountForTransaction(txn: Transaction, accounts: Account[]): Account | undefined {
+  const linked = txn.accountId ? accounts.find((account) => account.id === txn.accountId) : undefined;
+  return linked
+    ?? resolveAccount(txn.rawAccount ?? txn.account, accounts)
+    ?? resolveAccount(txn.account, accounts);
+}
+
 /**
  * Map transactions onto registered accounts while retaining the statement's
  * original account text. A stable account id makes label edits follow through
@@ -51,6 +67,69 @@ export function applyAccounts(transactions: Transaction[], accounts: Account[]):
   });
 }
 
+/** Resolve one account's configured beneficiary without guessing for joint/invalid owners. */
+export function beneficiaryForAccount(account: Account | undefined, members: Member[]): SpendBeneficiary {
+  if (!account || account.beneficiaryDefault === "review") return UNASSIGNED_BENEFICIARY;
+  if (account.beneficiaryDefault === "household") return { type: "household" };
+  if (account.owner !== "joint" && members.some((member) => member.id === account.owner)) {
+    return { type: "member", memberId: account.owner };
+  }
+  return UNASSIGNED_BENEFICIARY;
+}
+
+/** The configured account beneficiary for a transaction, resolved account-id first. */
+function accountBeneficiaryForTransaction(
+  txn: Transaction,
+  accounts: Account[],
+  members: Member[],
+): SpendBeneficiary {
+  return beneficiaryForAccount(accountForTransaction(txn, accounts), members);
+}
+
+/** Force one spend row back to its current account-default baseline. */
+export function withAccountBeneficiaryDefault(
+  txn: Transaction,
+  accounts: Account[],
+  members: Member[],
+): Transaction {
+  if (txn.direction === "credit" || !isSpendKind(txn.kind)) {
+    if (txn.beneficiary.type === "unassigned" && !txn.beneficiarySource) return txn;
+    const next = { ...txn, beneficiary: UNASSIGNED_BENEFICIARY };
+    delete next.beneficiarySource;
+    return next;
+  }
+  const beneficiary = accountBeneficiaryForTransaction(txn, accounts, members);
+  if (beneficiary.type === "unassigned") {
+    if (txn.beneficiary.type === "unassigned" && !txn.beneficiarySource) return txn;
+    const next = { ...txn, beneficiary };
+    delete next.beneficiarySource;
+    return next;
+  }
+  if (beneficiaryEquals(txn.beneficiary, beneficiary) && txn.beneficiarySource === "account_default") return txn;
+  return { ...txn, beneficiary, beneficiarySource: "account_default" };
+}
+
+/**
+ * Apply account defaults only where provenance says it is safe: previously
+ * inferred rows, plus unlocked unresolved rows when filling is requested.
+ */
+export function applyAccountBeneficiaryDefaults(
+  transactions: Transaction[],
+  accounts: Account[],
+  members: Member[],
+  options: { fillUnassigned?: boolean; accountIds?: ReadonlySet<string> } = {},
+): Transaction[] {
+  const fillUnassigned = options.fillUnassigned !== false;
+  return transactions.map((txn) => {
+    const account = accountForTransaction(txn, accounts);
+    if (options.accountIds && (!account || !options.accountIds.has(account.id))) return txn;
+    const inferred = txn.beneficiarySource === "account_default";
+    const unresolved = fillUnassigned && txn.beneficiary.type === "unassigned" && !txn.classificationLocked;
+    if (!inferred && !unresolved) return txn;
+    return withAccountBeneficiaryDefault(txn, accounts, members);
+  });
+}
+
 /** Explicitly bind a row to a registered account without losing its import provenance. */
 export function assignAccount(txn: Transaction, account: Account): Transaction {
   return {
@@ -64,17 +143,14 @@ export function assignAccount(txn: Transaction, account: Account): Transaction {
 /** Currency used to display a row without changing its household-ledger value. */
 export function transactionDisplayCurrency(txn: Transaction, accounts: Account[], householdCurrency: string): string {
   // Explicit FX normalization replaces amount with the household-currency value.
-  if (txn.note.startsWith("FX conversion:")) return householdCurrency;
-  const account = (txn.accountId ? accounts.find((item) => item.id === txn.accountId) : undefined)
-    ?? accounts.find((item) => normalize(item.label) === normalize(txn.account));
+  if (hasFxConversionEvidence(txn)) return householdCurrency;
+  const account = accountForTransaction(txn, accounts);
   return account?.currency || householdCurrency;
 }
 
-/** Who pays from this account. Unknown accounts are treated as joint. */
-export function ownerOf(accountLabel: string, accounts: Account[]): AccountOwner {
-  const resolved = resolveAccountLabel(accountLabel, accounts);
-  const account = accounts.find((item) => normalize(item.label) === normalize(resolved));
-  return account ? account.owner : "joint";
+/** Who funded this transaction, resolving stable account identity first. */
+export function ownerOfTransaction(txn: Transaction, accounts: Account[]): AccountOwner {
+  return accountForTransaction(txn, accounts)?.owner ?? "joint";
 }
 
 /**
@@ -99,6 +175,7 @@ export function seedAccounts(transactions: Transaction[], members: Member[], cur
     label,
     currency,
     owner: guessOwner(label, members),
+    beneficiaryDefault: "review",
     match: [label],
   }));
 }

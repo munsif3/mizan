@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { MEMBER_PALETTE, nextMemberColor } from "../domain/categories";
 import { defaultIncomePortion } from "../domain/income";
@@ -27,6 +27,7 @@ export function OnboardingView({
   onOpenSettings: () => void;
   onComplete: (result: OnboardingResult) => void;
 }) {
+  const currenciesId = useId();
   const [members, setMembers] = useState<OnboardingMember[]>([{ id: uid("mem"), name: "", color: MEMBER_PALETTE[0]!, income: 0 }]);
   const [currency, setCurrency] = useState("");
   const [locale, setLocale] = useState(typeof navigator !== "undefined" ? navigator.language : "en-US");
@@ -122,8 +123,8 @@ export function OnboardingView({
             <div className="form-grid">
               <label className="field">
                 <span>Currency code</span>
-                <input list="mizan-currencies" placeholder="e.g. USD" value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} />
-                <datalist id="mizan-currencies">
+                <input list={currenciesId} placeholder="e.g. USD" value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} />
+                <datalist id={currenciesId}>
                   {COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}
                 </datalist>
               </label>

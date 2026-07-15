@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from "react";
+import { useEffect, useId, useRef, type ComponentType, type KeyboardEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 
 export function Modal({
@@ -12,11 +12,57 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const panel = panelRef.current;
+    const focusable = panel?.querySelector<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    );
+    (focusable ?? panel)?.focus();
+    return () => previousFocus?.focus();
+  }, []);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...(panelRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ) ?? [])];
+    if (!focusable.length) {
+      event.preventDefault();
+      panelRef.current?.focus();
+      return;
+    }
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <section className={`modal ${wide ? "wide" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section
+        ref={panelRef}
+        className={`modal ${wide ? "wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+      >
         <header>
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <IconButton label={`Close ${title}`} icon={X} onClick={onClose} />
         </header>
         {children}
@@ -82,40 +128,36 @@ export function PageHeader({
   );
 }
 
-export function StatusStrip({
-  children,
-}: {
-  children: ReactNode;
-}) {
-  return (
-    <section className="status-strip" aria-label="Current month status">
-      <div className="shell-inner status-strip-inner">{children}</div>
-    </section>
-  );
-}
-
-export function PersonPanel({
-  name,
-  paid,
-  personal,
-  color,
+/**
+ * A money value that drills into the ledger when a target is available.
+ *
+ * The accessible label deliberately uses the formatted value rather than the
+ * raw number, so privacy mode never leaks a hidden amount to assistive tech.
+ */
+export function DrilldownAmount({
+  value,
   money,
+  label,
+  onClick,
+  className = "",
 }: {
-  name: string;
-  paid: number;
-  personal: number;
-  color: string;
+  value: number;
   money: (value: number) => string;
+  label: string;
+  onClick?: () => void;
+  className?: string;
 }) {
+  const formatted = money(value);
+  if (!onClick) return <strong className={className}>{formatted}</strong>;
+
   return (
-    <div className="person-panel" style={{ "--person": color } as React.CSSProperties}>
-      <span className="soft-label">{name}</span>
-      <h3>{money(paid)}</h3>
-      <p>paid from {name}'s accounts this month.</p>
-      <div className="person-row">
-        <span>Personal spend</span>
-        <strong>{money(personal)}</strong>
-      </div>
-    </div>
+    <button
+      type="button"
+      className={`drilldown-amount ${className}`.trim()}
+      aria-label={`${label}: ${formatted}. Open matching transactions`}
+      onClick={onClick}
+    >
+      {formatted}
+    </button>
   );
 }

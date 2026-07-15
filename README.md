@@ -30,7 +30,7 @@ Firestore household before any financial data screen is available.
 
 ## Prerequisites
 
-- Node.js 20.19+ (or 22+) and npm.
+- Node.js 22.13+ and npm 11.
 - Firebase project with Authentication (Google provider) and Cloud Firestore enabled.
 
 ## Run
@@ -39,6 +39,7 @@ Firestore household before any financial data screen is available.
 npm install
 npm run dev        # http://localhost:5173
 npm test           # domain, import, migration, and render test suites
+npm run test:rules # Firestore authorization suite (requires Java; starts a local emulator)
 npm run build      # typecheck + production build to dist/
 ```
 
@@ -55,8 +56,8 @@ VITE_FIREBASE_APP_ID=...
 ```
 
 After sign-in, create a household or join one with an invite code. If old browser-local Mizan data is
-found, the first selected household receives that data and the browser financial payload is cleared
-after the Firestore save succeeds.
+found, only creating a new household migrates it; joining or switching cannot overwrite an existing
+household. The browser financial payload is cleared after the new household save succeeds.
 
 ## First Run
 
@@ -95,12 +96,14 @@ and a rule is created and applied everywhere.
 - Browser storage may keep non-financial convenience state such as the last active household and
   privacy toggle; the user profile stores a cloud counterpart for cross-device continuity.
 - Raw statement files and passwords are not uploaded by Mizan.
-- Back up and restore via Settings -> Export / Import JSON. Import replaces the active Firestore
-  household data, so export first if in doubt.
+- Back up and restore via Settings -> Export / Import JSON. Backups have an explicit product/version
+  envelope; import validates the file and previews record counts before asking to replace the active
+  Firestore household.
 - During setup/testing, the household owner can use Settings -> Sync & backup -> Reset household
   data. The typed-confirmation reset clears all AppData and returns to onboarding while preserving
   the Firestore household, invite, and Google access.
-- The service worker only caches the app shell for offline use.
+- The service worker uses network-first navigation with an offline app-shell fallback and safely
+  caches immutable build assets.
 
 ## Deploy
 
@@ -119,7 +122,7 @@ firebase deploy --only hosting,firestore:rules
 
 ## Roadmap
 
-- Fine-grained multi-device conflict handling beyond last-write-wins household saves.
+- Per-record conflict merging beyond the current stale-write rejection and authoritative reload.
 - Longer-term income and tax reporting beyond monthly confirmations.
 - More built-in bank parsers.
 

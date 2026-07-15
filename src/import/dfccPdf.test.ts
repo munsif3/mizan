@@ -26,6 +26,7 @@ describe("parseLines", () => {
     const txns = parseLines(lines, "fallback");
     expect(txns).toHaveLength(4);
     expect(txns.every((t) => t.account === "DFCC 489099******0001")).toBe(true);
+    expect(txns.every((t) => t.beneficiary.type === "unassigned")).toBe(true);
 
     expect(txns[0]).toMatchObject({ date: "2026-06-05", description: "THE FAB COLOMBO 03", amount: 1100 });
     expect(txns[1]).toMatchObject({

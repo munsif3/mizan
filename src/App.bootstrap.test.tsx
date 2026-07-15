@@ -77,8 +77,9 @@ const profile: UserProfile = {
   theme: "light",
   lastView: "home",
   lastMonth: "",
-  ownerFilter: "all",
   categoryFilter: "all",
+  beneficiaryFilter: "all",
+  payerFilter: "all",
   lastCheckInByHousehold: {},
   updatedAt: "2026-07-12T00:00:00.000Z",
 };

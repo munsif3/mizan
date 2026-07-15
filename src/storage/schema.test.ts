@@ -61,7 +61,9 @@ describe("migrate (trackr v1 -> mizan v5)", () => {
   });
 
   it("normalizes rule keys, upgrades v5 string rules to payloads, drops unknown categories", () => {
-    expect(data.merchantRules).toEqual({ "KEELLS SUPER": { category: "food", kind: "expense" } });
+    expect(data.merchantRules).toEqual({
+      "KEELLS SUPER": { category: "food", beneficiary: { type: "household" }, kind: "expense" },
+    });
   });
 
   it("defaults kind from direction: debits → expense, credits → account_credit", () => {
@@ -102,6 +104,17 @@ describe("migrate (trackr v1 -> mizan v5)", () => {
   });
 });
 
+describe("current schema boundaries", () => {
+  it("preserves a valid zero-percent savings target and rejects invalid rates", () => {
+    expect(migrate({ ...emptyData(), settings: { ...emptyData().settings, targetSaveRate: 0 } }).settings.targetSaveRate).toBe(0);
+    expect(migrate({ ...emptyData(), settings: { ...emptyData().settings, targetSaveRate: 101 } }).settings.targetSaveRate).toBe(25);
+  });
+
+  it("fails closed for data written by a newer schema", () => {
+    expect(() => migrate({ ...emptyData(), schemaVersion: 99 })).toThrow("Update Mizan");
+  });
+});
+
 describe("migrate (legacy member data -> v5 members)", () => {
   const v4 = {
     schemaVersion: 4,
@@ -120,10 +133,12 @@ describe("migrate (legacy member data -> v5 members)", () => {
   };
   const data = migrate(v4);
 
-  it("maps legacy per-person categories to personal:<id> in transactions and rules", () => {
-    expect(data.transactions[0]!.category).toBe("personal:primary");
-    expect(data.transactions[1]!.category).toBe("personal:secondary");
-    expect(data.merchantRules).toEqual({ GYM: { category: "personal:primary", kind: "expense" } });
+  it("separates legacy per-person categories into an unresolved purpose and member beneficiary", () => {
+    expect(data.transactions[0]).toMatchObject({ category: "uncategorized", beneficiary: { type: "member", memberId: "primary" } });
+    expect(data.transactions[1]).toMatchObject({ category: "uncategorized", beneficiary: { type: "member", memberId: "secondary" } });
+    expect(data.merchantRules).toEqual({
+      GYM: { category: "uncategorized", beneficiary: { type: "member", memberId: "primary" }, kind: "expense" },
+    });
   });
 
   it("keeps owners that match members and forces unknown owners to joint", () => {
@@ -138,7 +153,7 @@ describe("migrate (legacy member data -> v5 members)", () => {
 });
 
 describe("migrate (v5 passthrough and fresh data)", () => {
-  it("passes a v5 member list through and preserves an orphaned personal category", () => {
+  it("passes a v5 member list through and marks an orphaned personal category unassigned", () => {
     const v5 = {
       schemaVersion: 5,
       transactions: [
@@ -158,8 +173,8 @@ describe("migrate (v5 passthrough and fresh data)", () => {
     const data = migrate(v5);
     expect(data.settings.members).toEqual([{ id: "kai", name: "Kai", color: "#5b8cff", portions: [{ id: "por_kai", label: "Monthly income", amount: 1000, currency: "EUR", taxRate: 0, taxWithheld: true, window: null }] }]);
     expect(data.settings.currency).toBe("EUR");
-    // A personal category with no matching member is valid data — kept, not dropped.
-    expect(data.transactions[0]!.category).toBe("personal:ghost");
+    // The amount stays, while an unknown former member becomes an honest unresolved beneficiary.
+    expect(data.transactions[0]).toMatchObject({ category: "uncategorized", beneficiary: { type: "unassigned" } });
   });
 
   it("yields an empty member list (triggers onboarding) for data with no legacy member markers", () => {
@@ -193,7 +208,12 @@ describe("migrate (v6 movement kinds, counterparties, custom categories)", () =>
   it("preserves movement kind, counterparty, and object rules", () => {
     expect(data.transactions[0]!.kind).toBe("money_lent");
     expect(data.transactions[0]!.counterpartyId).toBe("sam");
-    expect(data.merchantRules["CASH TO SAM"]).toEqual({ category: "uncategorized", kind: "money_lent", counterpartyId: "sam" });
+    expect(data.merchantRules["CASH TO SAM"]).toEqual({
+      category: "uncategorized",
+      beneficiary: { type: "unassigned" },
+      kind: "money_lent",
+      counterpartyId: "sam",
+    });
   });
 
   it("keeps custom categories and the custom: category key on a transaction", () => {
@@ -213,7 +233,7 @@ describe("migrate (v7 income portions)", () => {
       schemaVersion: 6,
       settings: { members: [{ id: "m", name: "Member", color: "#123456", income: 1000 }], currency: "LKR" },
     });
-    expect(data.schemaVersion).toBe(10);
+    expect(data.schemaVersion).toBe(12);
     expect(data.settings.members[0]?.portions).toEqual([
       { id: "por_m", label: "Monthly income", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null },
     ]);
@@ -236,7 +256,7 @@ describe("migrate (v7 income portions)", () => {
     });
     expect(data.settings.fxRates).toEqual({ USD: 305 });
     expect(data.settings.members[0]?.portions[0]?.window).toEqual({ startDay: 10, endDay: 15 });
-    expect(data.incomeReceipts).toEqual([{ id: "rcpt_2026-07_usd", month: "2026-07", memberId: "m", portionId: "usd", amount: 305000, receivedAmount: 1000, receivedCurrency: "USD", fxRate: 305, date: "2026-07-12" }]);
+    expect(data.incomeReceipts).toEqual([{ id: "rcpt_2026-07_m_usd", month: "2026-07", memberId: "m", portionId: "usd", amount: 305000, receivedAmount: 1000, receivedCurrency: "USD", fxRate: 305, date: "2026-07-12" }]);
     expect(migrate(data)).toEqual(data);
   });
 
@@ -316,6 +336,139 @@ describe("migrate (v8 account identity and currency)", () => {
   });
 });
 
+describe("migrate (v11 -> v12 purpose and beneficiary classification)", () => {
+  const source = {
+    schemaVersion: 11,
+    transactions: [
+      { id: "shared", date: "2026-07-01", description: "MARKET", amount: 5_000, category: "food", account: "Cash", direction: "debit", kind: "expense", source: "imported" },
+      { id: "personal", date: "2026-07-02", description: "GYM", amount: 3_000, category: "personal:sam", account: "Cash", direction: "debit", kind: "expense", source: "imported" },
+      { id: "former", date: "2026-07-03", description: "OLD SHOP", amount: 2_000, category: "personal:former", account: "Cash", direction: "debit", kind: "expense", source: "imported" },
+      { id: "unmatched", date: "2026-07-04", description: "UNKNOWN", amount: 1_000, account: "Cash", direction: "debit", kind: "expense", source: "imported" },
+    ],
+    fixedCosts: [
+      { id: "rent", label: "Rent", amount: 100_000, category: "housing" },
+      { id: "membership", label: "Membership", amount: 10_000, category: "personal:sam" },
+      { id: "former-cost", label: "Former", amount: 500, category: "personal:former" },
+    ],
+    merchantRules: {
+      MARKET: { category: "food", kind: "expense" },
+      GYM: { category: "personal:sam", kind: "expense" },
+      "OLD SHOP": { category: "personal:former", kind: "expense" },
+    },
+    accounts: [{ id: "cash", label: "Cash", owner: "sam", match: [] }],
+    settings: {
+      currency: "LKR",
+      members: [{ id: "sam", name: "Sam", color: "#5b8cff", portions: [] }],
+    },
+  };
+
+  it("preserves purpose categories and separates valid legacy personal beneficiaries", () => {
+    const data = migrate(source);
+    expect(data.schemaVersion).toBe(12);
+    expect(data.transactions.map(({ id, category, beneficiary }) => ({ id, category, beneficiary }))).toEqual([
+      { id: "shared", category: "food", beneficiary: { type: "household" } },
+      { id: "personal", category: "uncategorized", beneficiary: { type: "member", memberId: "sam" } },
+      { id: "former", category: "uncategorized", beneficiary: { type: "unassigned" } },
+      { id: "unmatched", category: "uncategorized", beneficiary: { type: "unassigned" } },
+    ]);
+    expect(data.accounts[0]?.beneficiaryDefault).toBe("review");
+  });
+
+  it("migrates fixed costs and merchant defaults without retaining personal purpose keys", () => {
+    const data = migrate(source);
+    expect(data.fixedCosts.map(({ id, category, beneficiary }) => ({ id, category, beneficiary }))).toEqual([
+      { id: "rent", category: "housing", beneficiary: { type: "household" } },
+      { id: "membership", category: "uncategorized", beneficiary: { type: "member", memberId: "sam" } },
+      { id: "former-cost", category: "uncategorized", beneficiary: { type: "unassigned" } },
+    ]);
+    expect(data.merchantRules).toEqual({
+      MARKET: { category: "food", beneficiary: { type: "household" }, kind: "expense" },
+      GYM: { category: "uncategorized", beneficiary: { type: "member", memberId: "sam" }, kind: "expense" },
+      "OLD SHOP": { category: "uncategorized", beneficiary: { type: "unassigned" }, kind: "expense" },
+    });
+  });
+
+  it("round-trips v12 beneficiaries and one-row locks losslessly", () => {
+    const data = migrate({
+      ...source,
+      schemaVersion: 12,
+      transactions: [
+        { ...source.transactions[0], beneficiary: { type: "member", memberId: "sam" }, classificationLocked: true },
+        {
+          ...source.transactions[3],
+          category: "uncategorized",
+          accountId: "cash",
+          beneficiary: { type: "member", memberId: "sam" },
+          beneficiarySource: "account_default",
+        },
+      ],
+      accounts: [{ id: "cash", label: "Cash", owner: "sam", beneficiaryDefault: "owner", match: [] }],
+      fixedCosts: [{ ...source.fixedCosts[0], beneficiary: { type: "household" } }],
+      merchantRules: {
+        MARKET: { category: "food", beneficiary: { type: "account_default" }, kind: "expense" },
+      },
+    });
+
+    expect(data.transactions[0]).toMatchObject({
+      beneficiary: { type: "member", memberId: "sam" },
+      classificationLocked: true,
+    });
+    expect(data.transactions[1]).toMatchObject({
+      beneficiary: { type: "member", memberId: "sam" },
+      beneficiarySource: "account_default",
+    });
+    expect(data.accounts[0]?.beneficiaryDefault).toBe("owner");
+    expect(data.merchantRules.MARKET?.beneficiary).toEqual({ type: "account_default" });
+    expect(migrate(data)).toEqual(data);
+  });
+});
+
+describe("migrate (v10 -> v11 income receipt currency repair)", () => {
+  const source = {
+    schemaVersion: 10,
+    transactions: [{
+      id: "salary", date: "2026-06-24", description: "INWARD TT", amount: 2109.8,
+      account: "RFC", accountId: "rfc", direction: "credit", kind: "account_credit",
+    }],
+    accounts: [{ id: "rfc", label: "RFC", currency: "LKR", owner: "sara", match: [] }],
+    incomeReceipts: [{
+      month: "2026-06", memberId: "sara", portionId: "usd", amount: 2109.8, transactionId: "salary",
+    }],
+    settings: {
+      currency: "LKR",
+      fxRates: { USD: 332 },
+      members: [{
+        id: "sara", name: "Sara", portions: [{
+          id: "usd", label: "USD portion", amount: 2200, currency: "USD", taxRate: 15, taxWithheld: false, window: null,
+        }],
+      }],
+    },
+  };
+
+  it("repairs a decisive native amount and remains idempotent", () => {
+    const data = migrate(source);
+    expect(data.incomeReceipts[0]).toMatchObject({
+      receivedAmount: 2109.8,
+      receivedCurrency: "USD",
+      fxRate: 332,
+    });
+    expect(data.incomeReceipts[0]?.amount).toBeCloseTo(700453.6, 6);
+    expect(data.incomeReceipts[0]?.currencyReview).toBeUndefined();
+    expect(migrate(data)).toEqual(data);
+  });
+
+  it("preserves and flags an ambiguous household-currency receipt", () => {
+    const data = migrate({
+      ...source,
+      transactions: [{ ...source.transactions[0], amount: 700000 }],
+      incomeReceipts: [{ ...source.incomeReceipts[0], amount: 700000 }],
+    });
+    expect(data.incomeReceipts[0]).toMatchObject({ amount: 700000, currencyReview: true });
+    expect(data.incomeReceipts[0]?.receivedCurrency).toBeUndefined();
+    expect(migrate(data)).toEqual(data);
+  });
+});
+
 describe("migrate (v9 shared contributions -> v10 allocations)", () => {
   const source = {
     schemaVersion: 9,
@@ -341,7 +494,7 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
 
   it("preserves valid statement-backed contribution links", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(10);
+    expect(data.schemaVersion).toBe(12);
     expect(data.sharedContributions).toEqual([{
       id: "c1",
       allocations: [{ expenseTransactionId: "loan", amount: 125000 }],
@@ -394,5 +547,31 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
       { expenseTransactionId: "loan", amount: 75000 },
       { expenseTransactionId: "loan-2", amount: 50000 },
     ]);
+  });
+});
+
+describe("deterministic legacy identities", () => {
+  it("assigns the same fallback ids every time a known id-less payload is migrated", () => {
+    const legacy = {
+      schemaVersion: 8,
+      transactions: [{ date: "2026-07-01", description: "SHOP", amount: 100, account: "Card" }],
+      fixedCosts: [{ label: "Rent", amount: 500, category: "housing" }],
+      accounts: [{ label: "Card", owner: "joint", match: [] }],
+      settings: {
+        members: [{ id: "member", name: "Member", portions: [{ label: "Salary", amount: 1000 }] }],
+        counterparties: [{ name: "Friend" }],
+        customCategories: [{ label: "Pets" }],
+      },
+    };
+
+    const first = migrate(legacy);
+    const second = migrate(legacy);
+    expect(second).toEqual(first);
+    expect(first.transactions[0]?.id).toMatch(/^txn_/);
+    expect(first.fixedCosts[0]?.id).toMatch(/^fixed_/);
+    expect(first.accounts[0]?.id).toMatch(/^acc_/);
+    expect(first.settings.members[0]?.portions[0]?.id).toMatch(/^por_/);
+    expect(first.settings.counterparties[0]?.id).toMatch(/^cp_/);
+    expect(first.settings.customCategories[0]?.id).toMatch(/^cat_/);
   });
 });

@@ -1,5 +1,7 @@
-import type { MerchantRule, MerchantRules, Transaction } from "./types";
-import { kindAllowedFor } from "./movements";
+import { withAccountBeneficiaryDefault } from "./accounts";
+import { beneficiaryEquals } from "./beneficiaries";
+import type { Account, Member, MerchantRule, MerchantRules, Transaction } from "./types";
+import { isSpendKind, kindAllowedFor } from "./movements";
 
 /** Normalize a merchant/description string for rule matching. */
 export function cleanMerchant(value: unknown): string {
@@ -19,15 +21,16 @@ export function matchingRuleKey(description: string, rules: MerchantRules): stri
   if (!cleaned) return null;
   if (rules[cleaned]) return cleaned;
 
-  let best: string | null = null;
+  let best: { stored: string; canonical: string } | null = null;
   for (const key of Object.keys(rules)) {
     const candidate = cleanMerchant(key);
     if (!candidate || !cleaned.includes(candidate)) continue;
-    if (!best || candidate.length > best.length || (candidate.length === best.length && candidate < best)) {
-      best = candidate;
+    if (!best || candidate.length > best.canonical.length
+      || (candidate.length === best.canonical.length && candidate < best.canonical)) {
+      best = { stored: key, canonical: candidate };
     }
   }
-  return best;
+  return best?.stored ?? null;
 }
 
 /** The rule selected by `matchingRuleKey`, or null when nothing matches. */
@@ -36,26 +39,41 @@ export function matchRule(description: string, rules: MerchantRules): MerchantRu
   return key ? (rules[key] ?? null) : null;
 }
 
-/** True when a matched rule would change any of a transaction's classified fields. */
-function ruleChanges(txn: Transaction, rule: MerchantRule): boolean {
-  return (
-    rule.category !== txn.category || rule.kind !== txn.kind || (rule.counterpartyId ?? undefined) !== (txn.counterpartyId ?? undefined)
-  );
-}
-
 /**
- * Re-apply rules across transactions. Rules are the source of truth for a merchant's
- * classification: categorizing a merchant once recategorizes every occurrence — its
- * category, movement kind, and counterparty — past and future.
+ * Re-apply a merchant's purpose, beneficiary, movement kind, and counterparty
+ * across unlocked past and future rows. Ledger-only overrides remain untouched.
  */
-export function applyRules(transactions: Transaction[], rules: MerchantRules): Transaction[] {
+export function applyRules(
+  transactions: Transaction[],
+  rules: MerchantRules,
+  accounts: Account[] = [],
+  members: Member[] = [],
+): Transaction[] {
   if (!Object.keys(rules).length) return transactions;
   return transactions.map((txn) => {
+    if (txn.classificationLocked) return txn;
     const rule = matchRule(txn.description, rules);
-    if (!rule || !kindAllowedFor(rule.kind, txn.direction) || !ruleChanges(txn, rule)) return txn;
-    const next: Transaction = { ...txn, category: rule.category, kind: rule.kind };
+    if (!rule || !kindAllowedFor(rule.kind, txn.direction)) return txn;
+    let next: Transaction = { ...txn, category: rule.category, kind: rule.kind };
+    if (rule.beneficiary.type === "account_default") {
+      next = withAccountBeneficiaryDefault(next, accounts, members);
+    } else {
+      next.beneficiary = rule.beneficiary;
+      delete next.beneficiarySource;
+    }
+    if (txn.direction === "credit" || !isSpendKind(rule.kind)) {
+      next.beneficiary = { type: "unassigned" };
+      delete next.beneficiarySource;
+    }
     if (rule.counterpartyId) next.counterpartyId = rule.counterpartyId;
     else delete next.counterpartyId;
+    if (
+      next.category === txn.category
+      && beneficiaryEquals(next.beneficiary, txn.beneficiary)
+      && next.beneficiarySource === txn.beneficiarySource
+      && next.kind === txn.kind
+      && (next.counterpartyId ?? undefined) === (txn.counterpartyId ?? undefined)
+    ) return txn;
     return next;
   });
 }

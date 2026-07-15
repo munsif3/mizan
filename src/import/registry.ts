@@ -24,7 +24,7 @@ const dfccPdfParser: StatementParser = {
   parse: async (file, password) => (await import("./dfccPdf")).dfccPdfParser.parse(file, password),
 };
 
-export const statementParsers: StatementParser[] = [ntbHtmlParser, dfccPdfParser];
+const statementParsers: StatementParser[] = [ntbHtmlParser, dfccPdfParser];
 
 /** Parsers willing to handle this file, in registration order. */
 export function parsersFor(file: File): StatementParser[] {

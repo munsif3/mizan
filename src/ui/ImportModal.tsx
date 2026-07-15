@@ -69,9 +69,18 @@ export function ImportModal({
       <div className="import-flow">
         <div className="import-choice" role="tablist" aria-label="Import type">
           <button
+            id="import-tab-statement"
             className={mode === "statement" ? "active" : ""}
             role="tab"
             aria-selected={mode === "statement"}
+            aria-controls="import-panel-statement"
+            tabIndex={mode === "statement" ? 0 : -1}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+              event.preventDefault();
+              setMode("csv");
+              requestAnimationFrame(() => document.getElementById("import-tab-csv")?.focus());
+            }}
             onClick={() => {
               setMode("statement");
               setFiles([]);
@@ -82,9 +91,18 @@ export function ImportModal({
             Bank statement
           </button>
           <button
+            id="import-tab-csv"
             className={mode === "csv" ? "active" : ""}
             role="tab"
             aria-selected={mode === "csv"}
+            aria-controls="import-panel-csv"
+            tabIndex={mode === "csv" ? 0 : -1}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+              event.preventDefault();
+              setMode("statement");
+              requestAnimationFrame(() => document.getElementById("import-tab-statement")?.focus());
+            }}
             onClick={() => {
               setMode("csv");
               setFiles([]);
@@ -96,7 +114,12 @@ export function ImportModal({
           </button>
         </div>
 
-        <label className="dropzone">
+        <label
+          className="dropzone"
+          id={`import-panel-${mode}`}
+          role="tabpanel"
+          aria-labelledby={`import-tab-${mode}`}
+        >
           <input
             type="file"
             accept={mode === "csv" ? ".csv" : ".html,.htm,.pdf"}

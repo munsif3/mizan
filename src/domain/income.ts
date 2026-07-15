@@ -1,4 +1,5 @@
 import { daysInMonth, isoDateOf } from "./dates";
+import { normalizeCurrency } from "./money";
 import type { IncomePortion, IncomeReceipt, Member, MemberId } from "./types";
 
 export type IncomeStatus = "received" | "due" | "overdue" | "upcoming" | "unscheduled";
@@ -13,6 +14,12 @@ export interface PortionResolution {
   deposit: number;
   /** Amount available to the household after the portion's tax treatment. */
   net: number;
+  /** Amount represented in the receipt/portion's native display currency. */
+  nativeAmount: number;
+  /** Native amount after the portion's tax treatment. */
+  nativeNet: number;
+  /** ISO currency used for nativeAmount/nativeNet. */
+  nativeCurrency: string;
   receipt: IncomeReceipt | null;
   status: IncomeStatus;
   missingRate: boolean;
@@ -53,11 +60,6 @@ export function netOf(amount: number, portion: Pick<IncomePortion, "taxRate" | "
   return portion.taxWithheld ? value : value * (1 - taxRateOf(portion) / 100);
 }
 
-export function grossOf(portion: IncomePortion): number {
-  const amount = Number.isFinite(Number(portion.amount)) ? Number(portion.amount) : 0;
-  return portion.taxWithheld ? amount / (1 - taxRateOf(portion) / 100) : amount;
-}
-
 export function fxRateFor(
   currency: string,
   householdCurrency: string,
@@ -80,13 +82,14 @@ export function expectedDeposit(
   return { amount: (Number(portion.amount) || 0) * rate, missingRate: false };
 }
 
-export function receiptId(month: string, portionId: string): string {
-  return `rcpt_${month}_${portionId}`;
+export function receiptId(month: string, memberId: MemberId, portionId: string): string {
+  return `rcpt_${month}_${memberId}_${portionId}`;
 }
 
-export function receiptFor(receipts: IncomeReceipt[], month: string, portionId: string): IncomeReceipt | null {
-  const id = receiptId(month, portionId);
-  return receipts.find((receipt) => receipt.id === id || (receipt.month === month && receipt.portionId === portionId)) ?? null;
+export function receiptFor(receipts: IncomeReceipt[], month: string, memberId: MemberId, portionId: string): IncomeReceipt | null {
+  const id = receiptId(month, memberId, portionId);
+  return receipts.find((receipt) => receipt.id === id
+    || (receipt.month === month && receipt.memberId === memberId && receipt.portionId === portionId)) ?? null;
 }
 
 export function portionStatus(
@@ -117,9 +120,12 @@ export function resolveMonthIncome(
 ): { items: PortionResolution[]; total: number } {
   const items = members.flatMap((member) =>
     member.portions.map((portion): PortionResolution => {
-      const receipt = receiptFor(receipts, month, portion.id);
+      const receipt = receiptFor(receipts, month, member.id, portion.id);
       const expected = expectedDeposit(portion, householdCurrency, fxRates);
       const deposit = receipt ? Number(receipt.amount) || 0 : expected.amount;
+      const nativeAmount = receipt?.receivedAmount ?? (receipt ? deposit : Number(portion.amount) || 0);
+      const nativeCurrency = receipt?.receivedCurrency
+        ?? (receipt ? normalizeCurrency(householdCurrency) : normalizeCurrency(portion.currency, householdCurrency));
       return {
         month,
         memberId: member.id,
@@ -128,6 +134,9 @@ export function resolveMonthIncome(
         portion,
         deposit,
         net: netOf(deposit, portion),
+        nativeAmount,
+        nativeNet: netOf(nativeAmount, portion),
+        nativeCurrency,
         receipt,
         status: portionStatus(portion, receipt, month, today),
         missingRate: !receipt && expected.missingRate,
@@ -138,7 +147,7 @@ export function resolveMonthIncome(
 }
 
 export function upsertReceipt(receipts: IncomeReceipt[], receipt: IncomeReceipt): IncomeReceipt[] {
-  const normalized = { ...receipt, id: receiptId(receipt.month, receipt.portionId) };
+  const normalized = { ...receipt, id: receiptId(receipt.month, receipt.memberId, receipt.portionId) };
   const withoutClaimedCredit = normalized.transactionId
     ? receipts.map((item) => {
         if (item.id === normalized.id || item.transactionId !== normalized.transactionId) return item;
@@ -160,12 +169,13 @@ export function unlinkTransaction(receipts: IncomeReceipt[], transactionId: stri
   });
 }
 
-export function removeReceipt(receipts: IncomeReceipt[], month: string, portionId: string): IncomeReceipt[] {
-  const id = receiptId(month, portionId);
-  return receipts.filter((receipt) => receipt.id !== id && !(receipt.month === month && receipt.portionId === portionId));
+export function removeReceipt(receipts: IncomeReceipt[], month: string, memberId: MemberId, portionId: string): IncomeReceipt[] {
+  const id = receiptId(month, memberId, portionId);
+  return receipts.filter((receipt) => receipt.id !== id
+    && !(receipt.month === month && receipt.memberId === memberId && receipt.portionId === portionId));
 }
 
 export function pruneReceipts(receipts: IncomeReceipt[], members: Member[]): IncomeReceipt[] {
-  const portions = new Map(members.flatMap((member) => member.portions.map((portion) => [portion.id, member.id] as const)));
-  return receipts.filter((receipt) => portions.get(receipt.portionId) === receipt.memberId);
+  const portions = new Set(members.flatMap((member) => member.portions.map((portion) => `${member.id}\u0000${portion.id}`)));
+  return receipts.filter((receipt) => portions.has(`${receipt.memberId}\u0000${receipt.portionId}`));
 }

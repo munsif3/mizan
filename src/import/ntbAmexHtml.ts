@@ -1,4 +1,5 @@
-import { defaultKind, uid, type Transaction } from "../domain/types";
+import type { Transaction } from "../domain/types";
+import { makeImportedTransaction } from "./importedTransaction";
 
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
@@ -33,9 +34,22 @@ function extractJsonArray(html: string, varName: string): unknown[] | null {
   const start = html.indexOf("[", declIndex);
   if (start < 0) return null;
   let depth = 0;
+  let inString = false;
+  let escaped = false;
   for (let i = start; i < html.length; i++) {
-    if (html[i] === "[") depth++;
-    else if (html[i] === "]") {
+    const character = html[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "[") depth++;
+    else if (character === "]") {
       depth--;
       if (depth === 0) {
         try {
@@ -118,6 +132,7 @@ export function parseCardStatement(html: string, fallbackAccount: string): Trans
   const monthYears = period ? monthYearsInPeriod(period) : new Map<number, number>();
 
   const transactions: Transaction[] = [];
+  let rejectedRows = 0;
   for (const block of cardBlocks) {
     const account = block.cardNo ? `NTB ${block.cardNo}` : fallbackAccount;
     for (const txn of block.consumerTransactions ?? []) {
@@ -125,21 +140,23 @@ export function parseCardStatement(html: string, fallbackAccount: string): Trans
       const date = resolveShortDate(txn.txDate, monthYears);
       const description = (txn.description ?? "").trim();
       const amount = Math.abs(Number(txn.txConvertedAmount));
-      if (!date || !description || !amount || amount < 0) continue;
+      if (!date || !description || !Number.isFinite(amount) || amount <= 0) {
+        rejectedRows += 1;
+        continue;
+      }
       const direction = txn.crDr === "Cr" ? "credit" : "debit";
-      transactions.push({
-        id: uid("txn"),
+      transactions.push(makeImportedTransaction({
         date,
         description,
         amount: Number(amount.toFixed(2)),
-        category: "uncategorized",
         account,
-        note: "",
-        source: "imported",
         direction,
-        kind: defaultKind(direction),
-      });
+      }));
     }
+  }
+
+  if (rejectedRows) {
+    throw new Error(`Found ${rejectedRows} card transaction${rejectedRows === 1 ? "" : "s"} that could not be read safely.`);
   }
 
   if (!transactions.length) {

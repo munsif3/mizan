@@ -89,6 +89,9 @@ async function parse(file: File, dob: string): Promise<Transaction[]> {
     }
   }
 
+  if (errors.length) {
+    throw new Error(errors.join(" "));
+  }
   if (!transactions.length) {
     throw new Error(
       errors.length ? errors.join(" ") : "This is a valid NTB statement, but not a format Mizan recognizes yet (card or savings/current).",

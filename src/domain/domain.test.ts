@@ -12,6 +12,7 @@ function txn(overrides: Partial<Transaction>): Transaction {
     description: "KEELLS SUPER",
     amount: 1000,
     category: "uncategorized",
+    beneficiary: { type: "unassigned" },
     account: "Everyday Visa",
     note: "",
     source: "imported",
@@ -23,7 +24,7 @@ function txn(overrides: Partial<Transaction>): Transaction {
 
 /** A plain expense rule for the given category — the common test shape. */
 function rule(category: CategoryKey, extra: Partial<MerchantRule> = {}): MerchantRule {
-  return { category, kind: "expense", ...extra };
+  return { category, beneficiary: { type: "household" }, kind: "expense", ...extra };
 }
 
 describe("money", () => {
@@ -42,6 +43,7 @@ describe("money", () => {
     expect(parseAmount("(300.00)")).toBe(-300);
     expect(parseAmount("450.00 CR")).toBe(-450);
     expect(parseAmount("600.00-")).toBe(-600);
+    expect(parseAmount("-700.00")).toBe(-700);
     expect(parseAmount("garbage")).toBe(0);
   });
 });
@@ -51,6 +53,9 @@ describe("dates", () => {
     expect(toISODate("14/07/2026")).toBe("2026-07-14");
     expect(toISODate("5-3-26")).toBe("2026-03-05");
     expect(toISODate("2026-7-4")).toBe("2026-07-04");
+    expect(toISODate("31/02/2026")).toBe("");
+    expect(toISODate("2024-02-29")).toBe("2024-02-29");
+    expect(toISODate("2026-02-29")).toBe("");
     expect(toISODate("not a date")).toBe("");
   });
 
@@ -60,6 +65,7 @@ describe("dates", () => {
     expect(toISODateOrdered("2026-07-13", "dmy")).toBe("2026-07-13"); // ISO always wins
     expect(toISODateOrdered("13.07.26", "dmy")).toBe("2026-07-13");
     expect(toISODateOrdered("31/31/2026", "dmy")).toBe(""); // invalid month
+    expect(toISODateOrdered("02/31/2026", "mdy")).toBe("");
     expect(toISODateOrdered("not a date", "dmy")).toBe("");
   });
 

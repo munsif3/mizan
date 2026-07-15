@@ -1,9 +1,12 @@
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
   onSnapshot,
+  runTransaction,
+  serverTimestamp,
   setDoc,
   updateDoc,
   writeBatch,
@@ -18,16 +21,16 @@ import type { DataRepository, RepositorySubscriptionOptions } from "../storage/r
 import {
   appDataToCloudCollections,
   cloudCollectionsToAppData,
+  createCloudSnapshotManifest,
   createHouseholdMeta,
   householdIdFromInvite,
   makeInviteCode,
   safeDocId,
 } from "./households";
 import type {
-  CloudCollections,
   CloudCsvPreset,
-  CloudHousehold,
   CloudMerchantRule,
+  CloudSnapshotManifest,
   CloudSettings,
   HouseholdMeta,
   UserHouseholdLink,
@@ -36,7 +39,7 @@ import type {
 
 const META_DOC = "current";
 const SETTINGS_DOC = "current";
-const LEGACY_DATA_DOC = "current";
+const SNAPSHOT_MANIFEST_DOC = "current";
 const PROFILE_DOC = "current";
 const ORDER_FIELD = "__order";
 const BATCH_LIMIT = 450;
@@ -47,12 +50,20 @@ function metaRef(db: Firestore, householdId: string) {
   return doc(db, "households", householdId, "meta", META_DOC);
 }
 
+function joinRequestRef(db: Firestore, householdId: string, uid: string) {
+  return doc(db, "households", householdId, "joinRequests", uid);
+}
+
 function settingsRef(db: Firestore, householdId: string) {
   return doc(db, "households", householdId, "settings", SETTINGS_DOC);
 }
 
-function legacyDataRef(db: Firestore, householdId: string) {
-  return doc(db, "households", householdId, "data", LEGACY_DATA_DOC);
+function snapshotManifestRef(db: Firestore, householdId: string) {
+  return doc(db, "households", householdId, "snapshotManifest", SNAPSHOT_MANIFEST_DOC);
+}
+
+function snapshotRef(db: Firestore, householdId: string, revision: string) {
+  return doc(db, "households", householdId, "snapshots", revision);
 }
 
 function userHouseholdRef(db: Firestore, uid: string, householdId: string) {
@@ -67,8 +78,34 @@ function householdCollection(db: Firestore, householdId: string, name: string) {
   return collection(db, "households", householdId, name);
 }
 
+function snapshotCollection(db: Firestore, householdId: string, revision: string, name: string) {
+  return collection(db, "households", householdId, "snapshots", revision, name);
+}
+
+function makeRevision(): string {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID().replace(/-/g, "")
+    : `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+  return `rev_${random.slice(0, 24)}`;
+}
+
+function manifestVersion(manifest: Partial<CloudSnapshotManifest>): string {
+  return typeof manifest.versionToken === "string" && manifest.versionToken
+    ? manifest.versionToken
+    : `${manifest.activeRevision ?? ""}|${manifest.updatedAt ?? ""}`;
+}
+
 function cleanForFirestore(value: unknown): DocumentData {
   return JSON.parse(JSON.stringify(value)) as DocumentData;
+}
+
+function sameDocument(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function withoutWriteMetadata(value: DocumentData): DocumentData {
+  const { updatedAt: _updatedAt, updatedBy: _updatedBy, ...rest } = value;
+  return rest;
 }
 
 function stripOrder<T>(data: DocumentData): T {
@@ -100,8 +137,9 @@ function emptyProfile(): UserProfile {
     privacy: false,
     lastView: "home",
     lastMonth: "",
-    ownerFilter: "all",
     categoryFilter: "all",
+    beneficiaryFilter: "all",
+    payerFilter: "all",
     lastCheckInByHousehold: {},
     updatedAt: "",
   };
@@ -123,8 +161,12 @@ function coerceProfile(value: unknown): UserProfile {
     theme: raw.theme === "light" || raw.theme === "dark" ? raw.theme : undefined,
     lastView: typeof raw.lastView === "string" ? raw.lastView : "home",
     lastMonth: typeof raw.lastMonth === "string" ? raw.lastMonth : "",
-    ownerFilter: typeof raw.ownerFilter === "string" ? raw.ownerFilter : "all",
     categoryFilter: typeof raw.categoryFilter === "string" ? raw.categoryFilter : "all",
+    // The old ownerFilter mixed account ownership with personal-category
+    // membership. It has no honest v12 equivalent, so start both explicit
+    // dimensions unfiltered when the new fields are absent.
+    beneficiaryFilter: typeof raw.beneficiaryFilter === "string" ? raw.beneficiaryFilter : "all",
+    payerFilter: typeof raw.payerFilter === "string" ? raw.payerFilter : "all",
     lastCheckInByHousehold: checkIns,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
   };
@@ -138,28 +180,28 @@ async function commitJobs(db: Firestore, jobs: BatchJob[]): Promise<void> {
   }
 }
 
-async function orderedCollection<T>(db: Firestore, householdId: string, name: string): Promise<T[]> {
-  const snapshot = await getDocs(householdCollection(db, householdId, name));
+type FirestoreCollectionRef = ReturnType<typeof collection>;
+
+async function orderedCollection<T>(ref: FirestoreCollectionRef): Promise<T[]> {
+  const snapshot = await getDocs(ref);
   return snapshot.docs
     .map((item) => ({ order: Number(item.data()[ORDER_FIELD] ?? 0), data: stripOrder<T>(item.data()) }))
     .sort((a, b) => a.order - b.order)
     .map((item) => item.data);
 }
 
-async function keyedCollection<T>(db: Firestore, householdId: string, name: string): Promise<T[]> {
-  const snapshot = await getDocs(householdCollection(db, householdId, name));
+async function keyedCollection<T>(ref: FirestoreCollectionRef): Promise<T[]> {
+  const snapshot = await getDocs(ref);
   return snapshot.docs.map((item) => item.data() as T);
 }
 
 async function replaceOrderedCollectionJobs<T>(
-  db: Firestore,
-  householdId: string,
-  name: string,
+  ref: FirestoreCollectionRef,
   items: T[],
   idOf: (item: T) => string,
 ): Promise<BatchJob[]> {
-  const ref = householdCollection(db, householdId, name);
   const existing = await getDocs(ref);
+  const existingById = new Map(existing.docs.map((item) => [item.id, item.data()]));
   const nextIds = new Set(items.map(idOf));
   const jobs: BatchJob[] = existing.docs
     .filter((item) => !nextIds.has(item.id))
@@ -167,29 +209,53 @@ async function replaceOrderedCollectionJobs<T>(
 
   items.forEach((item, order) => {
     const id = idOf(item);
-    jobs.push((batch) => batch.set(doc(ref, id), cleanForFirestore({ ...item, [ORDER_FIELD]: order })));
+    const next = cleanForFirestore({ ...item, [ORDER_FIELD]: order });
+    const current = existingById.get(id);
+    if (!current || !sameDocument(current, next)) jobs.push((batch) => batch.set(doc(ref, id), next));
   });
   return jobs;
 }
 
 async function replaceKeyedCollectionJobs<T>(
-  db: Firestore,
-  householdId: string,
-  name: string,
+  ref: FirestoreCollectionRef,
   items: T[],
   idOf: (item: T) => string,
 ): Promise<BatchJob[]> {
-  const ref = householdCollection(db, householdId, name);
   const existing = await getDocs(ref);
+  const existingById = new Map(existing.docs.map((item) => [item.id, item.data()]));
   const nextIds = new Set(items.map(idOf));
   const jobs: BatchJob[] = existing.docs
     .filter((item) => !nextIds.has(item.id))
     .map((item) => (batch) => batch.delete(item.ref));
 
   for (const item of items) {
-    jobs.push((batch) => batch.set(doc(ref, idOf(item)), cleanForFirestore(item)));
+    const id = idOf(item);
+    const next = cleanForFirestore(item);
+    const current = existingById.get(id);
+    if (!current || !sameDocument(withoutWriteMetadata(current), withoutWriteMetadata(next))) {
+      jobs.push((batch) => batch.set(doc(ref, id), next));
+    }
   }
   return jobs;
+}
+
+function appendOrderedCollectionJobs<T>(
+  ref: FirestoreCollectionRef,
+  items: T[],
+  idOf: (item: T) => string,
+): BatchJob[] {
+  return items.map((item, order) => (batch) => batch.set(
+    doc(ref, idOf(item)),
+    cleanForFirestore({ ...item, [ORDER_FIELD]: order }),
+  ));
+}
+
+function appendKeyedCollectionJobs<T>(
+  ref: FirestoreCollectionRef,
+  items: T[],
+  idOf: (item: T) => string,
+): BatchJob[] {
+  return items.map((item) => (batch) => batch.set(doc(ref, idOf(item)), cleanForFirestore(item)));
 }
 
 export async function loadUserHouseholds(db: Firestore, uid: string): Promise<UserHouseholdLink[]> {
@@ -233,27 +299,36 @@ export async function createFirestoreHousehold(
 export async function joinFirestoreHousehold(db: Firestore, user: AuthUser, inviteCode: string): Promise<HouseholdMeta> {
   const householdId = householdIdFromInvite(inviteCode);
   if (!householdId) throw new Error("Invite code is not in a format Mizan recognizes.");
-  const meta = await loadHouseholdMeta(db, householdId);
-  if (meta.inviteCode !== inviteCode.trim()) throw new Error("Invite code does not match this household.");
-
   const now = new Date().toISOString();
-  const nextMeta: HouseholdMeta = {
-    ...meta,
-    updatedAt: now,
-    membersByUid: {
-      ...meta.membersByUid,
-      [user.uid]: {
-        role: meta.ownerUid === user.uid ? "owner" : "member",
-        displayName: user.displayName,
-        email: user.email,
-        joinedAt: meta.membersByUid[user.uid]?.joinedAt ?? now,
-      },
-    },
-  };
-  await commitJobs(db, [
-    (batch) => batch.set(metaRef(db, meta.id), cleanForFirestore(nextMeta)),
-    (batch) => batch.set(userHouseholdRef(db, user.uid, meta.id), cleanForFirestore(linkFromMeta(nextMeta, user.uid))),
-  ]);
+  try {
+    await commitJobs(db, [
+      (batch) => batch.set(joinRequestRef(db, householdId, user.uid), {
+        uid: user.uid,
+        inviteCode: inviteCode.trim(),
+        createdAt: serverTimestamp(),
+      }),
+      (batch) => batch.update(metaRef(db, householdId), {
+        [`membersByUid.${user.uid}`]: {
+          role: "member",
+          displayName: user.displayName,
+          email: user.email,
+          joinedAt: now,
+        },
+        updatedAt: now,
+      }),
+    ]);
+  } catch (joinError) {
+    try {
+      const existing = await loadHouseholdMeta(db, householdId);
+      if (!existing.membersByUid[user.uid]) throw joinError;
+    } catch {
+      throw new Error("Invite code does not match an accessible household.");
+    }
+  }
+
+  const nextMeta = await loadHouseholdMeta(db, householdId);
+  await setDoc(userHouseholdRef(db, user.uid, householdId), cleanForFirestore(linkFromMeta(nextMeta, user.uid)));
+  await deleteDoc(joinRequestRef(db, householdId, user.uid)).catch(() => undefined);
   return nextMeta;
 }
 
@@ -266,7 +341,8 @@ export async function rotateFirestoreInvite(db: Firestore, householdId: string):
 
 export class FirestoreHouseholdRepository implements DataRepository {
   readonly mode = "cloud" as const;
-  private loadedSettingsUpdatedAt = "";
+  private activeRevision = "";
+  private loadedManifestVersion = "";
 
   constructor(
     private readonly db: Firestore,
@@ -274,18 +350,10 @@ export class FirestoreHouseholdRepository implements DataRepository {
     private readonly uid: string,
   ) {}
 
-  async load(): Promise<AppData> {
-    const settings = await getDoc(settingsRef(this.db, this.householdId));
-    if (!settings.exists()) {
-      this.loadedSettingsUpdatedAt = "";
-      const legacy = await getDoc(legacyDataRef(this.db, this.householdId));
-      if (!legacy.exists()) return migrate(null);
-      const cloud = legacy.data() as Partial<CloudHousehold>;
-      return migrate(cloud.appData ?? null);
-    }
-
-    const cloudSettings = settings.data() as CloudSettings;
-    this.loadedSettingsUpdatedAt = typeof cloudSettings.updatedAt === "string" ? cloudSettings.updatedAt : "";
+  private async loadCollections(
+    settings: CloudSettings,
+    collectionFor: (name: string) => FirestoreCollectionRef,
+  ): Promise<AppData> {
     const [
       transactions,
       sharedContributions,
@@ -298,19 +366,19 @@ export class FirestoreHouseholdRepository implements DataRepository {
       merchantRules,
       csvPresets,
     ] = await Promise.all([
-      orderedCollection<Transaction>(this.db, this.householdId, "transactions"),
-      orderedCollection<SharedContribution>(this.db, this.householdId, "sharedContributions"),
-      orderedCollection<Account>(this.db, this.householdId, "accounts"),
-      orderedCollection<FixedCost>(this.db, this.householdId, "fixedCosts"),
-      orderedCollection<IncomeReceipt>(this.db, this.householdId, "incomeReceipts"),
-      orderedCollection<Member>(this.db, this.householdId, "members"),
-      orderedCollection<CustomCategory>(this.db, this.householdId, "customCategories"),
-      orderedCollection<Counterparty>(this.db, this.householdId, "counterparties"),
-      keyedCollection<CloudMerchantRule>(this.db, this.householdId, "merchantRules"),
-      keyedCollection<CloudCsvPreset>(this.db, this.householdId, "csvPresets"),
+      orderedCollection<Transaction>(collectionFor("transactions")),
+      orderedCollection<SharedContribution>(collectionFor("sharedContributions")),
+      orderedCollection<Account>(collectionFor("accounts")),
+      orderedCollection<FixedCost>(collectionFor("fixedCosts")),
+      orderedCollection<IncomeReceipt>(collectionFor("incomeReceipts")),
+      orderedCollection<Member>(collectionFor("members")),
+      orderedCollection<CustomCategory>(collectionFor("customCategories")),
+      orderedCollection<Counterparty>(collectionFor("counterparties")),
+      keyedCollection<CloudMerchantRule>(collectionFor("merchantRules")),
+      keyedCollection<CloudCsvPreset>(collectionFor("csvPresets")),
     ]);
-    const collections: CloudCollections = {
-      settings: cloudSettings,
+    return cloudCollectionsToAppData({
+      settings,
       transactions,
       sharedContributions,
       accounts,
@@ -321,31 +389,117 @@ export class FirestoreHouseholdRepository implements DataRepository {
       counterparties,
       merchantRules,
       csvPresets,
-    };
-    return cloudCollectionsToAppData(collections);
+    });
+  }
+
+  async load(): Promise<AppData> {
+    const manifestSnapshot = await getDoc(snapshotManifestRef(this.db, this.householdId));
+    if (manifestSnapshot.exists()) {
+      const manifest = manifestSnapshot.data() as Partial<CloudSnapshotManifest>;
+      if (manifest.schemaVersion !== 1 || typeof manifest.activeRevision !== "string" || !manifest.activeRevision) {
+        throw new Error("This household snapshot manifest is not readable.");
+      }
+      const revisionSnapshot = await getDoc(snapshotRef(this.db, this.householdId, manifest.activeRevision));
+      if (!revisionSnapshot.exists()) throw new Error("The active household snapshot is incomplete.");
+      const cloudSettings = revisionSnapshot.data() as CloudSettings;
+      this.activeRevision = manifest.activeRevision;
+      this.loadedManifestVersion = manifestVersion(manifest);
+      return this.loadCollections(
+        cloudSettings,
+        (name) => snapshotCollection(this.db, this.householdId, manifest.activeRevision!, name),
+      );
+    }
+
+    const settings = await getDoc(settingsRef(this.db, this.householdId));
+    if (!settings.exists()) {
+      this.activeRevision = "";
+      this.loadedManifestVersion = "";
+      return migrate(null);
+    }
+
+    const cloudSettings = settings.data() as CloudSettings;
+    this.activeRevision = "";
+    this.loadedManifestVersion = "";
+    return this.loadCollections(
+      cloudSettings,
+      (name) => householdCollection(this.db, this.householdId, name),
+    );
   }
 
   async save(data: AppData): Promise<void> {
     const now = new Date().toISOString();
     const cloud = appDataToCloudCollections(data, this.uid, now);
-    const jobs: BatchJob[] = [
-      (batch) => batch.set(settingsRef(this.db, this.householdId), cleanForFirestore(cloud.settings)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "transactions", cloud.transactions, (item) => item.id)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "sharedContributions", cloud.sharedContributions, (item) => item.id)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "accounts", cloud.accounts, (item) => item.id)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "fixedCosts", cloud.fixedCosts, (item) => item.id)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "incomeReceipts", cloud.incomeReceipts, (item) => item.id)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "members", cloud.members, (item) => item.id)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "customCategories", cloud.customCategories, (item) => item.id)),
-      ...(await replaceOrderedCollectionJobs(this.db, this.householdId, "counterparties", cloud.counterparties, (item) => item.id)),
-      ...(await replaceKeyedCollectionJobs(this.db, this.householdId, "merchantRules", cloud.merchantRules, (item) =>
-        safeDocId("rule", item.key),
-      )),
-      ...(await replaceKeyedCollectionJobs(this.db, this.householdId, "csvPresets", cloud.csvPresets, (item) =>
-        safeDocId("csv", item.signature),
-      )),
-    ];
-    await commitJobs(this.db, jobs);
+    const commitAgainstLoadedManifest = async (applyWrites: (transaction: Parameters<Parameters<typeof runTransaction>[1]>[0]) => void) => {
+      const expectedRevision = this.activeRevision;
+      const expectedVersion = this.loadedManifestVersion;
+      await runTransaction(this.db, async (transaction) => {
+        const currentSnapshot = await transaction.get(snapshotManifestRef(this.db, this.householdId));
+        const current = currentSnapshot.exists() ? currentSnapshot.data() as Partial<CloudSnapshotManifest> : null;
+        const unchanged = expectedRevision
+          ? current?.activeRevision === expectedRevision && manifestVersion(current ?? {}) === expectedVersion
+          : current === null;
+        if (!unchanged) {
+          throw new Error("This household changed on another device. Reload before saving your edit.");
+        }
+        applyWrites(transaction);
+      });
+    };
+    const publishFullSnapshot = async () => {
+      const revision = makeRevision();
+      const collectionFor = (name: string) => snapshotCollection(this.db, this.householdId, revision, name);
+      const jobs: BatchJob[] = [
+        (batch) => batch.set(snapshotRef(this.db, this.householdId, revision), cleanForFirestore(cloud.settings)),
+        ...appendOrderedCollectionJobs(collectionFor("transactions"), cloud.transactions, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("sharedContributions"), cloud.sharedContributions, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("accounts"), cloud.accounts, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("fixedCosts"), cloud.fixedCosts, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("incomeReceipts"), cloud.incomeReceipts, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("members"), cloud.members, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("customCategories"), cloud.customCategories, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("counterparties"), cloud.counterparties, (item) => item.id),
+        ...appendKeyedCollectionJobs(collectionFor("merchantRules"), cloud.merchantRules, (item) => safeDocId("rule", item.key)),
+        ...appendKeyedCollectionJobs(collectionFor("csvPresets"), cloud.csvPresets, (item) => safeDocId("csv", item.signature)),
+      ];
+      await commitJobs(this.db, jobs);
+      const manifest = createCloudSnapshotManifest(revision, makeRevision(), this.uid, now);
+      await commitAgainstLoadedManifest((transaction) => {
+        transaction.set(snapshotManifestRef(this.db, this.householdId), cleanForFirestore(manifest));
+      });
+      this.activeRevision = revision;
+      this.loadedManifestVersion = manifest.versionToken;
+    };
+
+    if (!this.activeRevision) {
+      await publishFullSnapshot();
+      return;
+    }
+
+    const collectionFor = (name: string) => snapshotCollection(this.db, this.householdId, this.activeRevision, name);
+    const groups = await Promise.all([
+      replaceOrderedCollectionJobs(collectionFor("transactions"), cloud.transactions, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("sharedContributions"), cloud.sharedContributions, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("accounts"), cloud.accounts, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("fixedCosts"), cloud.fixedCosts, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("incomeReceipts"), cloud.incomeReceipts, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("members"), cloud.members, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("customCategories"), cloud.customCategories, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("counterparties"), cloud.counterparties, (item) => item.id),
+      replaceKeyedCollectionJobs(collectionFor("merchantRules"), cloud.merchantRules, (item) => safeDocId("rule", item.key)),
+      replaceKeyedCollectionJobs(collectionFor("csvPresets"), cloud.csvPresets, (item) => safeDocId("csv", item.signature)),
+    ]);
+    const jobs = groups.flat();
+    if (jobs.length + 2 > BATCH_LIMIT) {
+      await publishFullSnapshot();
+      return;
+    }
+
+    const manifest = createCloudSnapshotManifest(this.activeRevision, makeRevision(), this.uid, now);
+    await commitAgainstLoadedManifest((transaction) => {
+      for (const job of jobs) job(transaction as unknown as WriteBatch);
+      transaction.set(snapshotRef(this.db, this.householdId, this.activeRevision), cleanForFirestore(cloud.settings));
+      transaction.set(snapshotManifestRef(this.db, this.householdId), cleanForFirestore(manifest));
+    });
+    this.loadedManifestVersion = manifest.versionToken;
   }
 
   subscribe(
@@ -356,11 +510,10 @@ export class FirestoreHouseholdRepository implements DataRepository {
     let active = true;
     let firstSnapshot = true;
     const unsubscribe = onSnapshot(
-      settingsRef(this.db, this.householdId),
+      snapshotManifestRef(this.db, this.householdId),
       (snapshot) => {
         if (!snapshot.exists()) return;
-        const snapshotUpdatedAt = snapshot.data().updatedAt;
-        const matchesLoadedData = snapshotUpdatedAt === this.loadedSettingsUpdatedAt;
+        const matchesLoadedData = manifestVersion(snapshot.data()) === this.loadedManifestVersion;
         if (firstSnapshot && options.skipInitial && matchesLoadedData) {
           firstSnapshot = false;
           return;

@@ -11,11 +11,12 @@ import type {
   Transaction,
 } from "../domain/types";
 
-export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 4;
+export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 5;
+export const CLOUD_SNAPSHOT_MANIFEST_VERSION = 1;
 
-export type HouseholdRole = "owner" | "member";
+type HouseholdRole = "owner" | "member";
 
-export interface HouseholdMemberAccess {
+interface HouseholdMemberAccess {
   role: HouseholdRole;
   displayName: string;
   email: string;
@@ -70,9 +71,11 @@ export interface CloudCollections {
   csvPresets: CloudCsvPreset[];
 }
 
-export interface CloudHousehold {
-  schemaVersion: 1;
-  appData: unknown;
+export interface CloudSnapshotManifest {
+  schemaVersion: typeof CLOUD_SNAPSHOT_MANIFEST_VERSION;
+  activeRevision: string;
+  /** Unique compare-and-swap identity; timestamps are informational only. */
+  versionToken: string;
   updatedAt: string;
   updatedBy: string;
 }
@@ -93,8 +96,9 @@ export interface UserProfile {
   theme?: ThemePreference;
   lastView: string;
   lastMonth: string;
-  ownerFilter: string;
   categoryFilter: string;
+  beneficiaryFilter?: string;
+  payerFilter?: string;
   /** User-specific completion time for each household's weekly money check-in. */
   lastCheckInByHousehold: Record<string, string>;
   updatedAt: string;

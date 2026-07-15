@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   expectedDeposit,
-  grossOf,
   netOf,
   portionStatus,
   pruneReceipts,
@@ -42,11 +41,6 @@ describe("income math", () => {
     expect(netOf(1000, SELF_PAID)).toBe(850);
   });
 
-  it("derives display gross only when tax was withheld", () => {
-    expect(grossOf(WITHHELD)).toBeCloseTo(1000);
-    expect(grossOf(SELF_PAID)).toBe(1000);
-  });
-
   it("converts expected foreign deposits and flags a missing rate as zero", () => {
     expect(expectedDeposit(SELF_PAID, "LKR", { USD: 305 })).toEqual({ amount: 305000, missingRate: false });
     expect(expectedDeposit(SELF_PAID, "LKR", {})).toEqual({ amount: 0, missingRate: true });
@@ -70,14 +64,14 @@ describe("income timing", () => {
   });
 
   it("lets a receipt win over any window status", () => {
-    const receipt: IncomeReceipt = { id: receiptId("2026-07", "base"), month: "2026-07", memberId: "m1", portionId: "base", amount: 700 };
+    const receipt: IncomeReceipt = { id: receiptId("2026-07", "m1", "base"), month: "2026-07", memberId: "m1", portionId: "base", amount: 700 };
     expect(portionStatus(WITHHELD, receipt, "2026-07", new Date(2026, 6, 30))).toBe("received");
   });
 });
 
 describe("income resolution and receipts", () => {
   it("uses actual household-currency receipts instead of converted expectations", () => {
-    const receipt: IncomeReceipt = { id: receiptId("2026-07", "usd"), month: "2026-07", memberId: "m1", portionId: "usd", amount: 320000 };
+    const receipt: IncomeReceipt = { id: receiptId("2026-07", "m1", "usd"), month: "2026-07", memberId: "m1", portionId: "usd", amount: 320000 };
     const result = resolveMonthIncome(members, [receipt], "LKR", { USD: 305 }, "2026-07", new Date(2026, 6, 12));
     expect(result.items.every((item) => item.month === "2026-07")).toBe(true);
     expect(result.items.find((item) => item.portion.id === "usd")?.net).toBe(272000);
@@ -87,11 +81,20 @@ describe("income resolution and receipts", () => {
   it("upserts, removes, and prunes receipts deterministically", () => {
     const original: IncomeReceipt = { id: "wrong", month: "2026-07", memberId: "m1", portionId: "base", amount: 600 };
     const inserted = upsertReceipt([], original);
-    expect(inserted[0]?.id).toBe("rcpt_2026-07_base");
+    expect(inserted[0]?.id).toBe("rcpt_2026-07_m1_base");
     expect(upsertReceipt(inserted, { ...original, amount: 700 })[0]?.amount).toBe(700);
-    expect(removeReceipt(inserted, "2026-07", "base")).toEqual([]);
+    expect(removeReceipt(inserted, "2026-07", "m1", "base")).toEqual([]);
     expect(pruneReceipts(inserted, members)).toEqual(inserted);
     expect(pruneReceipts(inserted, [{ ...members[0]!, portions: [] }])).toEqual([]);
+  });
+
+  it("keeps equal portion ids isolated by member", () => {
+    const secondMember: Member = { id: "m2", name: "Noah", color: "#654321", portions: [{ ...WITHHELD }] };
+    const first = upsertReceipt([], { id: "legacy-a", month: "2026-07", memberId: "m1", portionId: "base", amount: 700 });
+    const both = upsertReceipt(first, { id: "legacy-b", month: "2026-07", memberId: "m2", portionId: "base", amount: 800 });
+    expect(both).toHaveLength(2);
+    expect(resolveMonthIncome([...members, secondMember], both, "LKR", {}, "2026-07", new Date(2026, 6, 12)).total).toBe(1500);
+    expect(removeReceipt(both, "2026-07", "m1", "base")).toMatchObject([{ memberId: "m2", amount: 800 }]);
   });
 
   it("keeps one receipt per linked credit and unlinks deleted evidence without changing income", () => {

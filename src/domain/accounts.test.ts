@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { applyAccounts, guessOwner, ownerOf, resolveAccountLabel, seedAccounts, transactionDisplayCurrency } from "./accounts";
+import {
+  applyAccountBeneficiaryDefaults,
+  applyAccounts,
+  guessOwner,
+  ownerOfTransaction,
+  resolveAccountLabel,
+  seedAccounts,
+  transactionDisplayCurrency,
+} from "./accounts";
 import type { Account, Member, Transaction } from "./types";
 
 const MEMBERS: Member[] = [
@@ -8,11 +16,11 @@ const MEMBERS: Member[] = [
 ];
 
 const REGISTRY: Account[] = [
-  { id: "a1", label: "Alex AMEX", owner: "alex", match: ["37xx 1234", "amex"] },
-  { id: "a2", label: "Alex Master Debit", owner: "alex", match: ["5xxx 7788"] },
-  { id: "a3", label: "Joint Debit (forex)", owner: "joint", match: ["4321 0099"] },
-  { id: "a4", label: "Alex Visa", owner: "alex", match: ["dfcc"] },
-  { id: "a5", label: "Sam HNB Visa", owner: "sam", match: ["hnb", "4567 8800"] },
+  { id: "a1", label: "Alex AMEX", owner: "alex", beneficiaryDefault: "review", match: ["37xx 1234", "amex"] },
+  { id: "a2", label: "Alex Master Debit", owner: "alex", beneficiaryDefault: "review", match: ["5xxx 7788"] },
+  { id: "a3", label: "Joint Debit (forex)", owner: "joint", beneficiaryDefault: "review", match: ["4321 0099"] },
+  { id: "a4", label: "Alex Visa", owner: "alex", beneficiaryDefault: "review", match: ["dfcc"] },
+  { id: "a5", label: "Sam HNB Visa", owner: "sam", beneficiaryDefault: "review", match: ["hnb", "4567 8800"] },
 ];
 
 function txn(account: string): Transaction {
@@ -22,6 +30,7 @@ function txn(account: string): Transaction {
     description: "X",
     amount: 100,
     category: "food",
+    beneficiary: { type: "household" },
     account,
     note: "",
     source: "imported",
@@ -39,8 +48,8 @@ describe("resolveAccountLabel", () => {
 
   it("prefers the longest matching pattern deterministically", () => {
     const overlapping: Account[] = [
-      { id: "x", label: "Generic", owner: "joint", match: ["1234"] },
-      { id: "y", label: "Specific", owner: "alex", match: ["37xx 1234"] },
+      { id: "x", label: "Generic", owner: "joint", beneficiaryDefault: "review", match: ["1234"] },
+      { id: "y", label: "Specific", owner: "alex", beneficiaryDefault: "review", match: ["37xx 1234"] },
     ];
     expect(resolveAccountLabel("card 37xx 1234", overlapping)).toBe("Specific");
   });
@@ -55,28 +64,10 @@ describe("resolveAccountLabel", () => {
 
   it("breaks a tie between an exact-label match and a same-length pattern alphabetically", () => {
     const accounts: Account[] = [
-      { id: "z", label: "Zebra", owner: "joint", match: [] },
-      { id: "a", label: "Apple", owner: "alex", match: ["Zebra"] },
+      { id: "z", label: "Zebra", owner: "joint", beneficiaryDefault: "review", match: [] },
+      { id: "a", label: "Apple", owner: "alex", beneficiaryDefault: "review", match: ["Zebra"] },
     ];
     expect(resolveAccountLabel("Zebra", accounts)).toBe("Apple");
-  });
-});
-
-describe("ownerOf", () => {
-  it("attributes by exact label, then patterns, defaulting to joint", () => {
-    expect(ownerOf("Alex AMEX", REGISTRY)).toBe("alex");
-    expect(ownerOf("Sam HNB Visa", REGISTRY)).toBe("sam");
-    expect(ownerOf("something with dfcc inside", REGISTRY)).toBe("alex");
-    expect(ownerOf("Unknown Card", REGISTRY)).toBe("joint");
-  });
-
-  it("never disagrees with resolveAccountLabel on overlapping patterns", () => {
-    const accounts: Account[] = [
-      { id: "short", label: "Card Short", owner: "alex", match: ["12"] },
-      { id: "long", label: "Card Long", owner: "sam", match: ["1234"] },
-    ];
-    expect(resolveAccountLabel("account 1234", accounts)).toBe("Card Long");
-    expect(ownerOf("account 1234", accounts)).toBe("sam");
   });
 });
 
@@ -101,7 +92,7 @@ describe("applyAccounts", () => {
 
   it("re-resolves an unmatched imported row after a matching account is added", () => {
     const imported = applyAccounts([txn("Savings RFC 270080002250")], []);
-    const configured: Account[] = [{ id: "rfc", label: "RFC Savings", currency: "USD", owner: "sam", match: ["2250"] }];
+    const configured: Account[] = [{ id: "rfc", label: "RFC Savings", currency: "USD", owner: "sam", beneficiaryDefault: "review", match: ["2250"] }];
     expect(applyAccounts(imported, configured)[0]).toMatchObject({
       account: "RFC Savings",
       accountId: "rfc",
@@ -110,8 +101,55 @@ describe("applyAccounts", () => {
   });
 
   it("does not bind unknown rows to a blank account draft", () => {
-    const draft: Account[] = [{ id: "draft", label: "", currency: "USD", owner: "joint", match: [] }];
+    const draft: Account[] = [{ id: "draft", label: "", currency: "USD", owner: "joint", beneficiaryDefault: "review", match: [] }];
     expect(applyAccounts([txn("New account")], draft)[0]).toEqual(txn("New account"));
+  });
+});
+
+describe("account beneficiary defaults", () => {
+  const accounts: Account[] = [
+    { id: "sara", label: "Sara Card", owner: "sara", beneficiaryDefault: "owner", match: ["1111"] },
+    { id: "munsif", label: "Munsif Card", owner: "munsif", beneficiaryDefault: "owner", match: ["2222"] },
+    { id: "home", label: "Home Card", owner: "munsif", beneficiaryDefault: "household", match: ["3333"] },
+    { id: "joint", label: "Joint Card", owner: "joint", beneficiaryDefault: "owner", match: ["4444"] },
+  ];
+  const members: Member[] = [
+    { id: "sara", name: "Sara", color: "#5b8cff", portions: [] },
+    { id: "munsif", name: "Munsif", color: "#ff80b5", portions: [] },
+  ];
+
+  it("resolves owner and household defaults through stable account ids", () => {
+    const rows = applyAccountBeneficiaryDefaults([
+      { ...txn("Old Sara Label"), accountId: "sara", beneficiary: { type: "unassigned" } },
+      { ...txn("Home Card"), accountId: "home", beneficiary: { type: "unassigned" } },
+    ], accounts, members);
+    expect(rows[0]).toMatchObject({ beneficiary: { type: "member", memberId: "sara" }, beneficiarySource: "account_default" });
+    expect(rows[1]).toMatchObject({ beneficiary: { type: "household" }, beneficiarySource: "account_default" });
+    expect(ownerOfTransaction(rows[0]!, accounts)).toBe("sara");
+  });
+
+  it("leaves joint-owner and non-spend rows unresolved", () => {
+    const rows = applyAccountBeneficiaryDefaults([
+      { ...txn("Joint Card"), accountId: "joint", beneficiary: { type: "unassigned" } },
+      { ...txn("Sara Card"), accountId: "sara", beneficiary: { type: "unassigned" }, kind: "internal_transfer" },
+    ], accounts, members);
+    expect(rows.map((row) => row.beneficiary)).toEqual([{ type: "unassigned" }, { type: "unassigned" }]);
+    expect(rows.every((row) => row.beneficiarySource === undefined)).toBe(true);
+  });
+
+  it("recomputes inferred rows and fills unlocked unassigned rows without rewriting explicit or locked values", () => {
+    const rows = applyAccountBeneficiaryDefaults([
+      { ...txn("Sara Card"), accountId: "sara", beneficiary: { type: "member", memberId: "munsif" }, beneficiarySource: "account_default" },
+      { ...txn("Sara Card"), accountId: "sara", beneficiary: { type: "unassigned" } },
+      { ...txn("Sara Card"), accountId: "sara", beneficiary: { type: "household" } },
+      { ...txn("Sara Card"), accountId: "sara", beneficiary: { type: "unassigned" }, classificationLocked: true },
+    ], accounts, members);
+    expect(rows.map((row) => row.beneficiary)).toEqual([
+      { type: "member", memberId: "sara" },
+      { type: "member", memberId: "sara" },
+      { type: "household" },
+      { type: "unassigned" },
+    ]);
   });
 });
 
@@ -139,7 +177,7 @@ describe("seeding", () => {
 });
 
 describe("transactionDisplayCurrency", () => {
-  const accounts: Account[] = [{ id: "rfc", label: "RFC Savings", currency: "USD", owner: "sam", match: ["2250"] }];
+    const accounts: Account[] = [{ id: "rfc", label: "RFC Savings", currency: "USD", owner: "sam", beneficiaryDefault: "review", match: ["2250"] }];
 
   it("uses the account currency for a native account row", () => {
     expect(transactionDisplayCurrency({ ...txn("RFC Savings"), accountId: "rfc", direction: "credit", kind: "account_credit" }, accounts, "LKR")).toBe("USD");
@@ -147,5 +185,6 @@ describe("transactionDisplayCurrency", () => {
 
   it("uses household currency after explicit FX normalization", () => {
     expect(transactionDisplayCurrency({ ...txn("RFC Savings"), accountId: "rfc", note: "FX conversion: USD 1,900 at 332 = LKR 630,800" }, accounts, "LKR")).toBe("LKR");
+    expect(transactionDisplayCurrency({ ...txn("RFC Savings"), accountId: "rfc", note: "Reviewed; FX conversion: USD 1,900 at 332 = LKR 630,800" }, accounts, "LKR")).toBe("LKR");
   });
 });

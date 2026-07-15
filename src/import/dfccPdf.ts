@@ -1,6 +1,7 @@
 import { toISODate } from "../domain/dates";
 import { parseAmount } from "../domain/money";
-import { defaultKind, uid, type Transaction } from "../domain/types";
+import type { Transaction } from "../domain/types";
+import { makeImportedTransaction } from "./importedTransaction";
 import { extractLines, openPdf, type PdfLine } from "./pdfText";
 import type { StatementParser } from "./types";
 
@@ -41,6 +42,7 @@ export function parseLines(lines: PdfLine[], fallbackAccount: string): Transacti
   const account = banner ? `DFCC ${banner[1]}` : fallbackAccount;
 
   const transactions: Transaction[] = [];
+  let rejectedRows = 0;
   let pending: Transaction | null = null;
   let pendingY = 0;
 
@@ -51,22 +53,19 @@ export function parseLines(lines: PdfLine[], fallbackAccount: string): Transacti
       const date = toISODate(cells[1]); // transaction date, not post date
       const description = cells.slice(2, -1).join(" ").trim();
       const signedAmount = parseAmount(cells[cells.length - 1]);
-      if (!date || !description) continue;
-      if (!signedAmount) continue;
+      if (!date || !description || !signedAmount) {
+        rejectedRows += 1;
+        continue;
+      }
       const direction = signedAmount < 0 ? "credit" : "debit";
       const amount = Math.abs(signedAmount);
-      const txn: Transaction = {
-        id: uid("txn"),
+      const txn = makeImportedTransaction({
         date,
         description,
         amount: Number(amount.toFixed(2)),
-        category: "uncategorized",
         account,
-        note: "",
-        source: "imported",
         direction,
-        kind: defaultKind(direction),
-      };
+      });
       transactions.push(txn);
       pending = txn;
       pendingY = line.y;
@@ -83,6 +82,10 @@ export function parseLines(lines: PdfLine[], fallbackAccount: string): Transacti
     }
   }
 
+  if (rejectedRows) {
+    throw new Error(`Found ${rejectedRows} PDF transaction row${rejectedRows === 1 ? "" : "s"} that could not be read safely.`);
+  }
+
   if (!transactions.length) {
     throw new Error("Opened the PDF, but could not find a transaction table in a known format.");
   }
@@ -91,8 +94,12 @@ export function parseLines(lines: PdfLine[], fallbackAccount: string): Transacti
 
 async function parse(file: File, password: string): Promise<Transaction[]> {
   const doc = await openPdf(file, password);
-  const lines = await extractLines(doc);
-  return parseLines(lines, file.name.replace(/\.[^.]+$/, ""));
+  try {
+    const lines = await extractLines(doc);
+    return parseLines(lines, file.name.replace(/\.[^.]+$/, ""));
+  } finally {
+    await (doc as unknown as { destroy(): Promise<void> }).destroy();
+  }
 }
 
 export const dfccPdfParser: StatementParser = {

@@ -28,6 +28,7 @@ describe("parseCardStatement", () => {
 
     const txns = parseCardStatement(html, "fallback");
     expect(txns).toHaveLength(3);
+    expect(txns.every((t) => t.beneficiary.type === "unassigned")).toBe(true);
     expect(txns[0]).toMatchObject({ date: "2026-05-21", description: "UBER EATS", amount: 4080, direction: "debit", category: "uncategorized" });
     expect(txns[1]).toMatchObject({
       date: "2026-05-25",

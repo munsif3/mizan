@@ -1,5 +1,6 @@
 import { toISODateOrdered } from "../domain/dates";
-import { defaultKind, uid, type CsvMapping, type Transaction } from "../domain/types";
+import type { CsvMapping, Transaction } from "../domain/types";
+import { makeImportedTransaction } from "./importedTransaction";
 
 export interface CsvMapResult {
   transactions: Transaction[];
@@ -9,6 +10,28 @@ export interface CsvMapResult {
 /** A stable key for a CSV's shape — its lowercased header row joined by "|". */
 export function headerSignature(rows: string[][]): string {
   return (rows[0] ?? []).map((cell) => cell.trim().toLowerCase()).join("|");
+}
+
+/** Stable preset key for both headered and headerless exports. */
+export function csvPresetSignature(rows: string[][], hasHeader: boolean): string {
+  if (hasHeader) return `header:${headerSignature(rows)}`;
+  return `headerless:${Math.max(0, ...rows.map((row) => row.length))}`;
+}
+
+export function isCsvMapping(value: unknown): value is CsvMapping {
+  if (!value || typeof value !== "object") return false;
+  const mapping = value as Partial<CsvMapping>;
+  const index = (candidate: unknown) => Number.isInteger(candidate) && Number(candidate) >= 0;
+  if (typeof mapping.hasHeader !== "boolean" || !index(mapping.dateColumn) || !index(mapping.descriptionColumn)) return false;
+  if (mapping.dateOrder !== "dmy" && mapping.dateOrder !== "mdy" && mapping.dateOrder !== "ymd") return false;
+  if (mapping.accountColumn != null && !index(mapping.accountColumn)) return false;
+  if (mapping.amountMode === "single") {
+    return index(mapping.amountColumn)
+      && (mapping.signConvention === "negative_is_credit"
+        || mapping.signConvention === "positive_is_credit"
+        || mapping.signConvention === "all_debits");
+  }
+  return mapping.amountMode === "debit_credit" && index(mapping.debitColumn) && index(mapping.creditColumn);
 }
 
 /** A sign-aware amount parser: leading "-", "(1,200)" parentheses, and a trailing "CR" all mean negative. */
@@ -65,6 +88,7 @@ export function inferMapping(rows: string[][]): CsvMapping {
 
 /** Apply a mapping to parsed CSV rows, producing transactions and a skip log. */
 export function mapCsvRows(rows: string[][], mapping: CsvMapping, fallbackAccount: string): CsvMapResult {
+  if (!isCsvMapping(mapping)) throw new Error("The saved CSV mapping is incomplete or invalid.");
   const body = mapping.hasHeader ? rows.slice(1) : rows;
   const transactions: Transaction[] = [];
   const skipped: { row: number; reason: string }[] = [];
@@ -77,12 +101,20 @@ export function mapCsvRows(rows: string[][], mapping: CsvMapping, fallbackAccoun
       return;
     }
     const description = String(cells[mapping.descriptionColumn] ?? "").trim();
+    if (!description) {
+      skipped.push({ row: rowNumber, reason: "missing description" });
+      return;
+    }
 
     let amount: number;
     let direction: Transaction["direction"];
     if (mapping.amountMode === "debit_credit") {
       const debit = Math.abs(parseSignedAmount(cells[mapping.debitColumn ?? -1]));
       const credit = Math.abs(parseSignedAmount(cells[mapping.creditColumn ?? -1]));
+      if (debit > 0 && credit > 0) {
+        skipped.push({ row: rowNumber, reason: "both debit and credit amounts are populated" });
+        return;
+      }
       if (debit > 0) {
         amount = debit;
         direction = "debit";
@@ -115,18 +147,13 @@ export function mapCsvRows(rows: string[][], mapping: CsvMapping, fallbackAccoun
         ? String(cells[mapping.accountColumn] ?? "").trim() || fallbackAccount
         : (mapping.accountLabel ?? "").trim() || fallbackAccount;
 
-    transactions.push({
-      id: uid("txn"),
+    transactions.push(makeImportedTransaction({
       date,
       description,
       amount,
-      category: "uncategorized",
       account,
-      note: "",
-      source: "imported",
       direction,
-      kind: defaultKind(direction),
-    });
+    }));
   });
 
   return { transactions, skipped };

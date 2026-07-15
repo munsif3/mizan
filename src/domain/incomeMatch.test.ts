@@ -17,9 +17,9 @@ const members = (portions: IncomePortion[] = [BASE]): Member[] => [
 ];
 
 const accounts: Account[] = [
-  { id: "mina", label: "Mina Savings", owner: "mina", match: [] },
-  { id: "other", label: "Other Savings", owner: "other", match: [] },
-  { id: "joint", label: "Joint Account", owner: "joint", match: [] },
+  { id: "mina", label: "Mina Savings", owner: "mina", beneficiaryDefault: "review", match: [] },
+  { id: "other", label: "Other Savings", owner: "other", beneficiaryDefault: "review", match: [] },
+  { id: "joint", label: "Joint Account", owner: "joint", beneficiaryDefault: "review", match: [] },
 ];
 
 function credit(id: string, amount: number, overrides: Partial<Transaction> = {}): Transaction {
@@ -29,6 +29,7 @@ function credit(id: string, amount: number, overrides: Partial<Transaction> = {}
     description: "SALARY CREDIT",
     amount,
     category: "uncategorized",
+    beneficiary: { type: "unassigned" },
     account: "Mina Savings",
     note: "",
     source: "imported",
@@ -64,7 +65,7 @@ describe("detectIncomeCandidates", () => {
     const usdPortion = { ...BASE, amount: 2200, currency: "USD" };
     const usdAccounts: Account[] = [
       ...accounts,
-      { id: "rfc", label: "Mina RFC", currency: "USD", owner: "mina", match: ["2250"] },
+      { id: "rfc", label: "Mina RFC", currency: "USD", owner: "mina", beneficiaryDefault: "review", match: ["2250"] },
     ];
     const result = detectIncomeCandidates(
       members([usdPortion]),
@@ -78,6 +79,21 @@ describe("detectIncomeCandidates", () => {
     expect(result[0]).toMatchObject({ sourceAmount: 2109.8, sourceCurrency: "USD", fxRate: 332 });
     expect(result[0]?.amount).toBeCloseTo(700453.6, 2);
     expect(result[0]?.variance).toBeCloseTo(-0.041, 3);
+  });
+
+  it("recovers a native USD credit when a legacy account was defaulted to LKR", () => {
+    const usdPortion = { ...BASE, amount: 2200, currency: "USD" };
+    const result = detectIncomeCandidates(
+      members([usdPortion]),
+      [credit("usd-salary", 2109.8)],
+      accounts,
+      [],
+      "LKR",
+      { USD: 332 },
+      "2026-07",
+    );
+    expect(result[0]).toMatchObject({ sourceAmount: 2109.8, sourceCurrency: "USD", fxRate: 332 });
+    expect(result[0]?.amount).toBeCloseTo(700453.6, 2);
   });
 
   it("stays silent for missing FX rates and zero expectations", () => {
@@ -114,5 +130,23 @@ describe("detectIncomeCandidates", () => {
     expect(first).toEqual([["b", "for-b"], ["a", "for-a"]]);
     expect(shuffled).toEqual(first);
     expect(new Set(first.map(([, id]) => id)).size).toBe(2);
+  });
+
+  it("maximizes the number of matches before choosing the closest amounts", () => {
+    const portions = [{ ...BASE, id: "large", amount: 1000 }, { ...BASE, id: "small", amount: 900 }];
+    const result = detectIncomeCandidates(
+      members(portions),
+      [credit("middle", 950), credit("large-only", 1100)],
+      accounts,
+      [],
+      "LKR",
+      {},
+      "2026-07",
+      { tolerance: 0.15 },
+    );
+    expect(result.map((item) => [item.portionId, item.transaction.id]).sort()).toEqual([
+      ["large", "large-only"],
+      ["small", "middle"],
+    ]);
   });
 });

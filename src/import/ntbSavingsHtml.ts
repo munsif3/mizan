@@ -1,4 +1,5 @@
-import { defaultKind, uid, type Transaction } from "../domain/types";
+import type { Transaction } from "../domain/types";
+import { makeImportedTransaction } from "./importedTransaction";
 import { parseAmount } from "../domain/money";
 
 /**
@@ -123,18 +124,13 @@ function transactionFromBlock(block: string, prefix: "savings" | "current", acco
   const amount = direction === "credit" ? credit : debit;
   if (!amount || amount < 0) return null;
 
-  return {
-    id: uid("txn"),
+  return makeImportedTransaction({
     date,
     description: details,
     amount: Number(amount.toFixed(2)),
-    category: "uncategorized",
     account: accountLabel,
-    note: "",
-    source: "imported",
     direction,
-    kind: defaultKind(direction),
-  };
+  });
 }
 
 /**
@@ -170,9 +166,9 @@ export function parseDepositStatement(html: string, fallbackAccount: string): Tr
       // almost certainly a field-naming mismatch (the current-account path is
       // unverified, see the doc comment above). Fail loudly instead of quietly
       // reporting a successful import that's missing this account's history.
-      if (blocks.length > 0 && parsed.length === 0) {
+      if (parsed.length !== blocks.length) {
         throw new Error(
-          `Found ${blocks.length} transaction(s) for ${accountLabel} but couldn't read any of them — ` +
+          `Found ${blocks.length} transaction(s) for ${accountLabel} but could safely read only ${parsed.length}. ` +
             `the ${prefix === "current" ? "current-account" : "savings"} statement format may have changed.`,
         );
       }

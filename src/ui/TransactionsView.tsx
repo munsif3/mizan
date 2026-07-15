@@ -1,12 +1,48 @@
 import { useEffect, useState } from "react";
 import { RotateCcw, Scissors, Trash2 } from "lucide-react";
+import { ownerOfTransaction } from "../domain/accounts";
 import { categoryOptions, spendingCategoryOptions } from "../domain/categories";
-import { contributionReferencesTransaction, recoveryRowsForContribution } from "../domain/contributions";
-import { kindAllowedFor, kindNeedsCategory, kindNeedsCounterparty, movementInfo, MOVEMENT_OPTIONS } from "../domain/movements";
-import { netAmount, spendTotal, type MonthSummary, type ReviewItem } from "../domain/summary";
+import { contributionReferencesTransaction } from "../domain/contributions";
+import { isSpendKind, kindAllowedFor, kindNeedsCategory, kindNeedsCounterparty, movementInfo, MOVEMENT_OPTIONS } from "../domain/movements";
+import { cleanMerchant } from "../domain/rules";
+import { isSpend, needsClassificationReview, netAmount, spendTotal, type MonthSummary, type ReviewItem } from "../domain/summary";
 import type { TransferCandidate } from "../domain/transfers";
-import { defaultKind, personalMemberId, type Account, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type SharedContribution, type Transaction } from "../domain/types";
+import { defaultKind, type Account, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type SharedContribution, type SpendBeneficiary, type Transaction } from "../domain/types";
 import { IconButton } from "./bits";
+
+export type BeneficiaryFilter = "all" | "household" | "unassigned" | `member:${string}`;
+export type PayerFilter = "all" | "joint" | `member:${string}`;
+
+export interface LedgerFilters {
+  category: CategoryKey | "all";
+  beneficiary: BeneficiaryFilter;
+  payer: PayerFilter;
+  merchant?: string;
+  spendOnly?: boolean;
+}
+
+function beneficiaryFilterOf(beneficiary: SpendBeneficiary): Exclude<BeneficiaryFilter, "all"> {
+  return beneficiary.type === "member" ? `member:${beneficiary.memberId}` : beneficiary.type;
+}
+
+function beneficiaryFromFilter(value: Exclude<BeneficiaryFilter, "all">): SpendBeneficiary {
+  return value.startsWith("member:")
+    ? { type: "member", memberId: value.slice("member:".length) }
+    : { type: value as "household" | "unassigned" };
+}
+
+type RuleBeneficiaryValue = "unassigned" | "account_default" | "household" | `member:${string}`;
+
+function ruleBeneficiaryValue(beneficiary: MerchantRule["beneficiary"] | undefined): RuleBeneficiaryValue {
+  if (!beneficiary) return "unassigned";
+  return beneficiary.type === "member" ? `member:${beneficiary.memberId}` : beneficiary.type;
+}
+
+function ruleBeneficiaryFromValue(value: Exclude<RuleBeneficiaryValue, "unassigned">): MerchantRule["beneficiary"] {
+  return value.startsWith("member:")
+    ? { type: "member", memberId: value.slice("member:".length) }
+    : { type: value as "account_default" | "household" };
+}
 
 export function TransactionsView({
   summary,
@@ -17,15 +53,17 @@ export function TransactionsView({
   queue,
   transferCandidates,
   undoLabel,
-  categoryFilter,
-  onCategoryFilter,
+  filters,
+  onFiltersChange,
   money,
   transactionMoney,
   onSetCategory,
+  onSetBeneficiary,
   onSetKind,
   onSetCounterparty,
   onSetAccount,
   onCategorizeMerchant,
+  onRememberMerchant,
   onUndo,
   onResetClassification,
   onConfirmTransfer,
@@ -46,15 +84,17 @@ export function TransactionsView({
   queue: ReviewItem[];
   transferCandidates: TransferCandidate[];
   undoLabel: string;
-  categoryFilter: CategoryKey | "all";
-  onCategoryFilter: (value: CategoryKey | "all") => void;
+  filters: LedgerFilters;
+  onFiltersChange: (value: LedgerFilters) => void;
   money: (value: number) => string;
   transactionMoney: (txn: Transaction, value: number) => string;
   onSetCategory: (id: string, category: CategoryKey) => void;
+  onSetBeneficiary: (id: string, beneficiary: SpendBeneficiary) => void;
   onSetKind: (id: string, kind: MovementKind) => void;
   onSetCounterparty: (id: string, counterpartyId: string | undefined) => void;
   onSetAccount: (id: string, accountId: string) => void;
   onCategorizeMerchant: (merchant: string, rule: MerchantRule) => void;
+  onRememberMerchant: (id: string) => void;
   onUndo: () => void;
   onResetClassification: (id: string) => void;
   onConfirmTransfer: (debitId: string, creditId: string) => void;
@@ -79,16 +119,47 @@ export function TransactionsView({
     setMovementFilter("all");
   }, [summary.month]);
   const accountsInMonth = [...new Set(summary.monthTransactions.map((txn) => txn.account))].sort();
+  const payerFiltersFor = (txn: Transaction): PayerFilter[] => {
+    const linked = contributions.flatMap((item) => {
+      const allocation = item.allocations.find((candidate) => candidate.expenseTransactionId === txn.id);
+      return allocation ? [{ memberId: item.contributorMemberId, amount: allocation.amount }] : [];
+    });
+    const funded = linked.reduce((sum, item) => sum + item.amount, 0);
+    const values = new Set<PayerFilter>(linked.map((item) => `member:${item.memberId}` as PayerFilter));
+    const owner = ownerOfTransaction(txn, accounts);
+    if (netAmount(txn) - funded > 0.005) values.add(owner === "joint" ? "joint" : `member:${owner}`);
+    return [...values];
+  };
   const visible = summary.monthTransactions.filter(
     (txn) =>
-      (categoryFilter === "all" || txn.category === categoryFilter) &&
+      (filters.category === "all" || txn.category === filters.category) &&
+      (filters.beneficiary === "all" || beneficiaryFilterOf(txn.beneficiary) === filters.beneficiary) &&
+      (filters.payer === "all" || payerFiltersFor(txn).includes(filters.payer)) &&
+      (!filters.merchant || cleanMerchant(txn.description) === cleanMerchant(filters.merchant)) &&
+      (!filters.spendOnly || isSpend(txn)) &&
       (accountFilter === "all" || txn.account === accountFilter) &&
       (movementFilter === "all" || txn.kind === movementFilter),
   );
+  const memberName = (id: string) => members.find((member) => member.id === id)?.name ?? "Former member";
+  const beneficiaryFilterLabel = filters.beneficiary === "household"
+    ? "For: Household"
+    : filters.beneficiary === "unassigned"
+      ? "For: Unassigned"
+      : filters.beneficiary.startsWith("member:")
+        ? `For: ${memberName(filters.beneficiary.slice("member:".length))}`
+        : "";
+  const payerFilterLabel = filters.payer === "joint"
+    ? "Paid from: Joint/unregistered"
+    : filters.payer.startsWith("member:")
+      ? `Paid from: ${memberName(filters.payer.slice("member:".length))}`
+      : "";
+  const hasFilters = filters.category !== "all" || filters.beneficiary !== "all" || filters.payer !== "all" ||
+    Boolean(filters.merchant) || Boolean(filters.spendOnly) || accountFilter !== "all" || movementFilter !== "all";
 
   const counterpartyName = (id: string | undefined) => (id ? (counterparties.find((cp) => cp.id === id)?.name ?? "") : "");
   const canReset = (txn: Transaction) =>
-    txn.category !== "uncategorized" || txn.kind !== defaultKind(txn.direction) || Boolean(txn.counterpartyId);
+    txn.category !== "uncategorized" || txn.beneficiary.type !== "unassigned" ||
+    txn.kind !== defaultKind(txn.direction) || Boolean(txn.counterpartyId) || Boolean(txn.classificationLocked);
   const confirmRemove = (txn: Transaction) => {
     const linkedContribution = contributions.some((item) =>
       contributionReferencesTransaction(item, txn.id, contributionTransactions),
@@ -118,6 +189,25 @@ export function TransactionsView({
           ))}
         </select>
       )}
+      {isSpend(txn) && (
+        <span className="beneficiary-control">
+          <select
+            aria-label={`Beneficiary for ${txn.description}`}
+            value={beneficiaryFilterOf(txn.beneficiary)}
+            onChange={(event) => onSetBeneficiary(
+              txn.id,
+              beneficiaryFromFilter(event.target.value as Exclude<BeneficiaryFilter, "all">),
+            )}
+          >
+            <option value="unassigned">For whom?</option>
+            <option value="household">Household</option>
+            {members.map((member) => (
+              <option key={member.id} value={`member:${member.id}`}>{member.name}</option>
+            ))}
+          </select>
+          {txn.beneficiarySource === "account_default" && <small>Account default</small>}
+        </span>
+      )}
       {kindNeedsCounterparty(txn.kind) && (
         <select
           aria-label={`Person for ${txn.description}`}
@@ -129,6 +219,16 @@ export function TransactionsView({
             <option key={cp.id} value={cp.id}>{cp.name}</option>
           ))}
         </select>
+      )}
+      {txn.classificationLocked && (
+        <button
+          type="button"
+          className="link-button"
+          disabled={needsClassificationReview(txn)}
+          onClick={() => onRememberMerchant(txn.id)}
+        >
+          Remember for merchant
+        </button>
       )}
     </div>
   );
@@ -152,21 +252,25 @@ export function TransactionsView({
   };
 
   const contributionControl = (txn: Transaction) => {
-    const funded = contributions.filter((item) => recoveryRowsForContribution(item, contributionTransactions).some((expense) => expense.id === txn.id));
+    const funded = contributions.flatMap((item) => {
+      const allocation = item.allocations.find((candidate) => candidate.expenseTransactionId === txn.id);
+      return allocation ? [{ contribution: item, allocatedAmount: allocation.amount }] : [];
+    });
     const evidence = contributions.find((item) => item.transferDebitTransactionId === txn.id || item.transferCreditTransactionId === txn.id);
-    if (!funded.length && !evidence && !(txn.kind === "loan_payment" && !personalMemberId(txn.category))) return null;
+    const sharedLoan = txn.kind === "loan_payment" && txn.beneficiary.type === "household";
+    if (!funded.length && !evidence && !sharedLoan) return null;
     return (
       <div className="contribution-links">
-        {funded.map((item) => {
-          const member = members.find((candidate) => candidate.id === item.contributorMemberId);
+        {funded.map(({ contribution, allocatedAmount }) => {
+          const member = members.find((candidate) => candidate.id === contribution.contributorMemberId);
           return (
-            <button className="link-button" key={item.id} onClick={() => onEditContribution?.(item)}>
-              {member?.name ?? "Member"} funded {money(item.amount)}
+            <button className="link-button" key={contribution.id} onClick={() => onEditContribution?.(contribution)}>
+              {member?.name ?? "Member"} funded {money(allocatedAmount)}
             </button>
           );
         })}
         {evidence && <small className="movement-badge">Contribution evidence</small>}
-        {txn.kind === "loan_payment" && !personalMemberId(txn.category) && !funded.length && (
+        {sharedLoan && !funded.length && (
           <button className="link-button" onClick={() => onLinkContribution?.(txn.id)}>+ Link contribution</button>
         )}
       </div>
@@ -220,15 +324,15 @@ export function TransactionsView({
       )}
 
       {queue.length > 0 && (
-        <section className="friendly-section review-strip">
-          <div className="friendly-heading">
+        <section className="friendly-section review-strip merchant-review-strip">
+          <div className="review-queue-heading">
             <div>
               <span className="soft-label">Review queue</span>
-              <h3>Teach Mizan these merchants</h3>
+              <h3>{queue.length} merchant{queue.length === 1 ? "" : "s"} need a default</h3>
             </div>
-            <p>Pick what kind of movement it is, then a category. Mizan creates a rule and applies it to matching transactions; the recent-change panel can undo it. This queue covers every month, not just the one selected below — a statement period usually spans two.</p>
+            <p>Set purpose and beneficiary once. Matching history and future imports follow that default; one-off ledger edits stay protected.</p>
           </div>
-          <div className="review-list">
+          <div className="review-list merchant-review-list">
             {queue.map((item) => (
               <ReviewCard
                 key={item.merchant}
@@ -253,25 +357,52 @@ export function TransactionsView({
         </div>
         <div className="table-toolbar">
           <div className="toolbar-filters" aria-label="Ledger filters">
-            <select value={categoryFilter} onChange={(event) => onCategoryFilter(event.target.value as CategoryKey | "all")}>
-              <option value="all">All categories</option>
+            <select aria-label="What for" value={filters.category} onChange={(event) => onFiltersChange({ ...filters, category: event.target.value as CategoryKey | "all" })}>
+              <option value="all">What for: All</option>
               {allOptions.map((option) => (
                 <option value={option.key} key={option.key}>{option.label}</option>
               ))}
             </select>
-            <select value={movementFilter} onChange={(event) => setMovementFilter(event.target.value as MovementKind | "all")}>
+            <select aria-label="For whom" value={filters.beneficiary} onChange={(event) => onFiltersChange({ ...filters, beneficiary: event.target.value as BeneficiaryFilter })}>
+              <option value="all">For whom: All</option>
+              <option value="household">Household</option>
+              {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
+              <option value="unassigned">Unassigned</option>
+            </select>
+            <select aria-label="Paid from" value={filters.payer} onChange={(event) => onFiltersChange({ ...filters, payer: event.target.value as PayerFilter })}>
+              <option value="all">Paid from: All</option>
+              {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
+              <option value="joint">Joint / unregistered</option>
+            </select>
+            <select aria-label="Movement" value={movementFilter} onChange={(event) => setMovementFilter(event.target.value as MovementKind | "all")}>
               <option value="all">All movements</option>
               {MOVEMENT_OPTIONS.map((option) => (
                 <option value={option.kind} key={option.kind}>{option.label}</option>
               ))}
             </select>
-            <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
+            <select aria-label="Account" value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
               <option value="all">All accounts</option>
               {accountsInMonth.map((account) => (
                 <option value={account} key={account}>{account}</option>
               ))}
             </select>
           </div>
+          {hasFilters && (
+            <div className="filter-chips" aria-label="Active ledger filters">
+              {filters.category !== "all" && <span>{allOptions.find((option) => option.key === filters.category)?.label ?? filters.category}</span>}
+              {beneficiaryFilterLabel && <span>{beneficiaryFilterLabel}</span>}
+              {payerFilterLabel && <span>{payerFilterLabel}</span>}
+              {filters.merchant && <span>Merchant: {filters.merchant}</span>}
+              {filters.spendOnly && <span>Recorded spend only</span>}
+              {accountFilter !== "all" && <span>Account: {accountFilter}</span>}
+              {movementFilter !== "all" && <span>{movementInfo(movementFilter).label}</span>}
+              <button type="button" className="link-button" onClick={() => {
+                onFiltersChange({ category: "all", beneficiary: "all", payer: "all" });
+                setAccountFilter("all");
+                setMovementFilter("all");
+              }}>Clear all</button>
+            </div>
+          )}
         </div>
         {!visible.length && (
           <div className="ledger-empty-state compact">
@@ -287,7 +418,7 @@ export function TransactionsView({
                 <th>Date</th>
                 <th>Description</th>
                 <th>Account</th>
-                <th>Movement</th>
+                <th>Purpose / beneficiary</th>
                 <th className="right">Net</th>
                 <th />
               </tr>
@@ -301,7 +432,7 @@ export function TransactionsView({
                     <td>
                       <strong>{txn.description}</strong>
                       {badge && <small className="movement-badge">{badge}{counterpartyName(txn.counterpartyId) ? ` · ${counterpartyName(txn.counterpartyId)}` : ""}</small>}
-                      {linkedIncome.has(txn.id) && <small className="movement-badge income-linked-badge">Counted as income</small>}
+                      {linkedIncome.has(txn.id) && <small className="movement-badge income-linked-badge">Linked income evidence</small>}
                       {contributionControl(txn)}
                       {txn.note && <small>{txn.note}</small>}
                     </td>
@@ -337,7 +468,7 @@ export function TransactionsView({
                 </b>
               </div>
               {txn.note && <p>{txn.note}</p>}
-              {linkedIncome.has(txn.id) && <small className="movement-badge income-linked-badge">Counted as income</small>}
+              {linkedIncome.has(txn.id) && <small className="movement-badge income-linked-badge">Linked income evidence</small>}
               {contributionControl(txn)}
               {txn.split && <small>{txn.split.mine}/{txn.split.of} of {transactionMoney(txn, txn.amount)}</small>}
               <div className="transaction-card-actions">
@@ -355,7 +486,7 @@ export function TransactionsView({
   );
 }
 
-/** One review-queue card: lead with category, with movement details on demand. */
+/** One review card teaches both independent classification axes. */
 function ReviewCard({
   item,
   members,
@@ -372,64 +503,98 @@ function ReviewCard({
   onCategorize: (merchant: string, rule: MerchantRule) => void;
 }) {
   const spendingOptions = spendingCategoryOptions(members, customCategories);
-  const [kind, setKind] = useState<MovementKind>("expense");
-  const [showType, setShowType] = useState(false);
-  const [counterpartyId, setCounterpartyId] = useState("");
+  const [kind, setKind] = useState<MovementKind>(item.suggestedKind ?? "expense");
+  const [showType, setShowType] = useState(item.suggestedKind !== undefined && item.suggestedKind !== "expense");
+  const [counterpartyId, setCounterpartyId] = useState(item.suggestedCounterpartyId ?? "");
+  const [category, setCategory] = useState<CategoryKey>(item.suggestedCategory ?? "uncategorized");
+  const [beneficiary, setBeneficiary] = useState<RuleBeneficiaryValue>(
+    ruleBeneficiaryValue(item.suggestedBeneficiary),
+  );
   const needsCategory = kindNeedsCategory(kind);
   const needsCounterparty = kindNeedsCounterparty(kind);
+  const spendKind = isSpendKind(kind);
+  const canApply = (!needsCategory || category !== "uncategorized") && (!spendKind || beneficiary !== "unassigned");
 
-  const apply = (category: CategoryKey) =>
+  const apply = () =>
     onCategorize(item.merchant, {
-      category,
+      category: needsCategory ? category : "uncategorized",
+      beneficiary: spendKind
+        ? ruleBeneficiaryFromValue(beneficiary as Exclude<RuleBeneficiaryValue, "unassigned">)
+        : { type: "unassigned" },
       kind,
       ...(needsCounterparty && counterpartyId ? { counterpartyId } : {}),
     });
 
+  const transactionLabel = `${item.count} transaction${item.count === 1 ? "" : "s"}`;
+
   return (
-    <div className="review-card">
-      <div>
-        <span className="review-merchant">{item.merchant}</span>
-        <small>{item.count}x - {money(item.total)}</small>
+    <article className="review-card merchant-review-card">
+      <div className="review-card-summary">
+        <span className="review-merchant" title={item.merchant}>{item.merchant}</span>
+        <small>{transactionLabel} · {money(item.total)}</small>
       </div>
-      <div className="movement-controls">
-        {!showType && kind === "expense" ? (
-          <>
-            <select aria-label={`Category for ${item.merchant}`} value="uncategorized" onChange={(event) => apply(event.target.value as CategoryKey)}>
-              <option value="uncategorized" disabled>Choose category...</option>
-              {spendingOptions.map((option) => (
-                <option key={option.key} value={option.key}>{option.label}</option>
-              ))}
-            </select>
-            <button type="button" className="link-button" onClick={() => setShowType(true)}>Not an expense?</button>
-          </>
-        ) : (
-          <>
+      <div className="review-fields">
+        {showType || kind !== "expense" ? (
+          <label className="review-field">
+            <span>Movement</span>
             <select aria-label={`Movement for ${item.merchant}`} value={kind} onChange={(event) => setKind(event.target.value as MovementKind)}>
               {MOVEMENT_OPTIONS.map((option) => (
                 <option key={option.kind} value={option.kind}>{option.label}</option>
               ))}
             </select>
-            {needsCounterparty && (
-              <select aria-label={`Person for ${item.merchant}`} value={counterpartyId} onChange={(event) => setCounterpartyId(event.target.value)}>
-                <option value="">Who?</option>
-                {counterparties.map((cp) => (
-                  <option key={cp.id} value={cp.id}>{cp.name}</option>
-                ))}
-              </select>
-            )}
-            {needsCategory ? (
-              <select aria-label={`Category for ${item.merchant}`} value="uncategorized" onChange={(event) => apply(event.target.value as CategoryKey)}>
-                <option value="uncategorized" disabled>Choose category...</option>
-                {spendingOptions.map((option) => (
-                  <option key={option.key} value={option.key}>{option.label}</option>
-                ))}
-              </select>
-            ) : (
-              <button onClick={() => apply("uncategorized")}>Apply</button>
-            )}
-          </>
+          </label>
+        ) : (
+          <div className="review-field">
+            <span>Movement</span>
+            <button type="button" className="review-value-button" onClick={() => setShowType(true)}>
+              Expense <small>Change</small>
+            </button>
+          </div>
+        )}
+        {needsCategory && (
+          <label className="review-field">
+            <span>What was it?</span>
+            <select aria-label={`Category for ${item.merchant}`} value={category} onChange={(event) => setCategory(event.target.value as CategoryKey)}>
+              <option value="uncategorized" disabled>Choose purpose</option>
+              {spendingOptions.map((option) => (
+                <option key={option.key} value={option.key}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {spendKind && (
+          <label className="review-field">
+            <span>Who was it for?</span>
+            <select aria-label={`Beneficiary for ${item.merchant}`} value={beneficiary} onChange={(event) => setBeneficiary(event.target.value as RuleBeneficiaryValue)}>
+              <option value="unassigned" disabled>Choose beneficiary</option>
+              <option value="account_default">Use account default</option>
+              <option value="household">Household</option>
+              {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
+            </select>
+          </label>
+        )}
+        {needsCounterparty && (
+          <label className="review-field">
+            <span>Other person</span>
+            <select aria-label={`Person for ${item.merchant}`} value={counterpartyId} onChange={(event) => setCounterpartyId(event.target.value)}>
+              <option value="">Optional</option>
+              {counterparties.map((cp) => (
+                <option key={cp.id} value={cp.id}>{cp.name}</option>
+              ))}
+            </select>
+          </label>
         )}
       </div>
-    </div>
+      <button
+        type="button"
+        className="review-apply-button"
+        aria-label={`Save default for ${item.merchant}`}
+        disabled={!canApply}
+        onClick={apply}
+      >
+        <span>Save default</span>
+        <small>Apply to {transactionLabel}</small>
+      </button>
+    </article>
   );
 }

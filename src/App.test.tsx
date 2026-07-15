@@ -5,6 +5,7 @@ import { computeMonthSummary, reviewQueue } from "./domain/summary";
 import type { AppData } from "./domain/types";
 import { emptyData } from "./storage/schema";
 import { AuthGate } from "./ui/AuthGate";
+import { ClearTransactionsModal, isClearTransactionsConfirmation } from "./ui/ClearTransactionsModal";
 import { CsvImportModal } from "./ui/CsvImportModal";
 import { HomeView } from "./ui/HomeView";
 import { ImportModal } from "./ui/ImportModal";
@@ -12,7 +13,7 @@ import { IncomeConfirmModal } from "./ui/IncomeConfirmModal";
 import { ManualModal } from "./ui/ManualModal";
 import { OnboardingView } from "./ui/OnboardingView";
 import { isResetConfirmation, ResetHouseholdModal } from "./ui/ResetHouseholdModal";
-import { HouseholdResetAction, SettingsModal } from "./ui/SettingsModal";
+import { HouseholdResetAction, HouseholdTransactionClearAction, SettingsModal } from "./ui/SettingsModal";
 import { SplitModal } from "./ui/SplitModal";
 import { SharedContributionModal } from "./ui/SharedContributionModal";
 import { TransactionsView } from "./ui/TransactionsView";
@@ -27,13 +28,13 @@ function threeMemberData(): AppData {
   data.settings.currency = "USD";
   data.settings.locale = "en-US";
   data.accounts = [
-    { id: "aa", label: "Ana Card", owner: "a", match: [] },
-    { id: "bb", label: "Ben Card", owner: "b", match: [] },
+    { id: "aa", label: "Ana Card", owner: "a", beneficiaryDefault: "review", match: [] },
+    { id: "bb", label: "Ben Card", owner: "b", beneficiaryDefault: "review", match: [] },
   ];
   data.transactions = [
-    { id: "t1", date: "2026-07-01", description: "RENT SHARE", amount: 90000, category: "housing", account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "expense" },
-    { id: "t2", date: "2026-07-02", description: "GIFT FOR CYD", amount: 30000, category: "personal:c", account: "Ben Card", note: "", source: "imported", direction: "debit", kind: "expense" },
-    { id: "t3", date: "2026-07-03", description: "UNKNOWN SHOP", amount: 12000, category: "uncategorized", account: "Ben Card", note: "", source: "imported", direction: "debit", kind: "expense" },
+    { id: "t1", date: "2026-07-01", description: "RENT SHARE", amount: 90000, category: "housing", beneficiary: { type: "household" }, account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "expense" },
+    { id: "t2", date: "2026-07-02", description: "GIFT FOR CYD", amount: 30000, category: "lifestyle", beneficiary: { type: "member", memberId: "c" }, account: "Ben Card", note: "", source: "imported", direction: "debit", kind: "expense" },
+    { id: "t3", date: "2026-07-03", description: "UNKNOWN SHOP", amount: 12000, category: "uncategorized", beneficiary: { type: "unassigned" }, account: "Ben Card", note: "", source: "imported", direction: "debit", kind: "expense" },
   ];
   return data;
 }
@@ -76,7 +77,7 @@ describe("UI render smoke", () => {
 
   it("renders the home view with N-member settlement", () => {
     const data = threeMemberData();
-    const summary = computeMonthSummary(data, "2026-07", "all", new Date(2026, 6, 15));
+    const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     const html = renderToString(
       <HomeView
         summary={summary}
@@ -104,7 +105,7 @@ describe("UI render smoke", () => {
     const data = threeMemberData();
     const member = data.settings.members[0]!;
     member.portions[0] = { ...member.portions[0]!, taxRate: 15, taxWithheld: false };
-    const item = computeMonthSummary(data, "2026-07", "all", new Date(2026, 6, 15)).incomeItems[0]!;
+    const item = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15)).incomeItems[0]!;
     const html = renderToString(
       <IncomeConfirmModal
         item={item}
@@ -122,6 +123,7 @@ describe("UI render smoke", () => {
 
   it("confirms a foreign income portion in the receiving account currency", () => {
     const data = threeMemberData();
+    data.settings.members = [data.settings.members[0]!];
     data.settings.currency = "LKR";
     data.settings.fxRates = { USD: 332 };
     data.settings.members[0]!.portions[0] = {
@@ -131,7 +133,7 @@ describe("UI render smoke", () => {
       taxRate: 15,
       taxWithheld: false,
     };
-    const item = computeMonthSummary(data, "2026-07", "all", new Date(2026, 6, 15)).incomeItems[0]!;
+    const item = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15)).incomeItems[0]!;
     const html = renderToString(
       <IncomeConfirmModal
         item={item}
@@ -148,12 +150,39 @@ describe("UI render smoke", () => {
     expect(html).toMatch(/Amount received .*USD/);
     expect(html).toMatch(/FX rate .*LKR.* per .*USD/);
     expect(html).toContain("Mizan converts it to LKR");
+
+    data.incomeReceipts = [{
+      id: "rcpt_2026-07_pa",
+      month: "2026-07",
+      memberId: "a",
+      portionId: "pa",
+      amount: 2109.8 * 332,
+      receivedAmount: 2109.8,
+      receivedCurrency: "USD",
+      fxRate: 332,
+    }];
+    const confirmed = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
+    const home = renderToString(
+      <HomeView
+        summary={confirmed}
+        money={(value) => `LKR ${Math.round(value).toLocaleString("en-US")}`}
+        currencyMoney={(value, currency) => `${currency} ${Math.round(value).toLocaleString("en-US")}`}
+        lastCheckInAt=""
+        onOpenSettings={() => {}}
+        onOpenImport={() => {}}
+        onReviewQueue={() => {}}
+        onCompleteCheckIn={() => {}}
+        onConfirmIncome={() => {}}
+      />,
+    );
+    expect(home).toContain("USD 1,793");
+    expect(home).toContain("LKR 595,386<!-- --> available after tax");
   });
 
   it("pauses the forecast when the current month has no activity", () => {
     const data = threeMemberData();
     data.transactions = [];
-    const summary = computeMonthSummary(data, "2026-07", "all", new Date(2026, 6, 10));
+    const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 10));
     const html = renderToString(
       <HomeView
         summary={summary}
@@ -182,13 +211,14 @@ describe("UI render smoke", () => {
         description: "FRESH ACTIVITY",
         amount: 1000,
         category: "food",
+        beneficiary: { type: "household" },
         account: "Ana Card",
         note: "",
         source: "manual",
         direction: "debit",
         kind: "expense",
       });
-    const summary = computeMonthSummary(data, "2026-07", "all", new Date(2026, 6, 15));
+    const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     const html = renderToString(
       <HomeView
         summary={summary}
@@ -208,7 +238,7 @@ describe("UI render smoke", () => {
 
   it("renders transactions with review placement and accessible row actions", () => {
     const data = threeMemberData();
-    const summary = computeMonthSummary(data, "2026-07", "all", new Date(2026, 6, 15));
+    const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     const html = renderToString(
       <TransactionsView
         summary={summary}
@@ -219,15 +249,17 @@ describe("UI render smoke", () => {
         queue={reviewQueue(data.transactions)}
         transferCandidates={[]}
         undoLabel=""
-        categoryFilter="all"
-        onCategoryFilter={() => {}}
+        filters={{ category: "all", beneficiary: "all", payer: "all" }}
+        onFiltersChange={() => {}}
         money={(v) => `USD ${v}`}
         transactionMoney={(_txn, v) => `USD ${v}`}
         onSetCategory={() => {}}
+        onSetBeneficiary={() => {}}
         onSetKind={() => {}}
         onSetCounterparty={() => {}}
         onSetAccount={() => {}}
         onCategorizeMerchant={() => {}}
+        onRememberMerchant={() => {}}
         onUndo={() => {}}
         onResetClassification={() => {}}
         onConfirmTransfer={() => {}}
@@ -236,7 +268,8 @@ describe("UI render smoke", () => {
         onRemove={() => {}}
       />,
     );
-    expect(html).toContain("Teach Mizan these merchants");
+    expect(html).toContain("need a default");
+    expect(html).toContain('aria-label="Save default for UNKNOWN SHOP"');
     expect(html).toContain("aria-label=\"Category for UNKNOWN SHOP\"");
     expect(html).toContain("aria-label=\"Account for UNKNOWN SHOP\"");
     expect(html).toContain("aria-label=\"Split UNKNOWN SHOP\"");
@@ -281,6 +314,9 @@ describe("UI render smoke", () => {
         onExport={() => {}}
         onImportBackup={() => {}}
         onClearData={() => {}}
+        canClearTransactions={true}
+        hasTransactions={true}
+        onClearTransactions={() => {}}
         canResetHousehold={true}
         hasResettableData={true}
         onResetHousehold={() => {}}
@@ -318,9 +354,24 @@ describe("UI render smoke", () => {
     expect(empty).toBe("");
   });
 
+  it("shows transaction clearing only to an owner when ledger rows exist", () => {
+    const owner = renderToString(
+      <HouseholdTransactionClearAction canClearTransactions={true} hasTransactions={true} onClearTransactions={() => {}} />,
+    );
+    const member = renderToString(
+      <HouseholdTransactionClearAction canClearTransactions={false} hasTransactions={true} onClearTransactions={() => {}} />,
+    );
+    const empty = renderToString(
+      <HouseholdTransactionClearAction canClearTransactions={true} hasTransactions={false} onClearTransactions={() => {}} />,
+    );
+    expect(owner).toContain("Clear transactions");
+    expect(member).toBe("");
+    expect(empty).toBe("");
+  });
+
   it("renders a guarded reset summary with optional export", () => {
     const data = threeMemberData();
-    data.merchantRules.SHOP = { category: "food", kind: "expense" };
+    data.merchantRules.SHOP = { category: "food", beneficiary: { type: "household" }, kind: "expense" };
     const html = renderToString(
       <ResetHouseholdModal
         householdName="Shared budget"
@@ -342,6 +393,45 @@ describe("UI render smoke", () => {
     expect(isResetConfirmation(" RESET ")).toBe(false);
   });
 
+  it("explains the transaction-only boundary and requires exact confirmation", () => {
+    const data = threeMemberData();
+    data.sharedContributions = [{
+      id: "contribution-1",
+      allocations: [{ expenseTransactionId: "t1", amount: 10 }],
+      transferDebitTransactionId: "t2",
+      transferCreditTransactionId: "t3",
+      contributorMemberId: "b",
+      amount: 10,
+    }];
+    data.incomeReceipts = [{
+      id: "receipt-1",
+      month: "2026-07",
+      memberId: "a",
+      portionId: "pa",
+      amount: 500000,
+      transactionId: "t3",
+    }];
+    const html = renderToString(
+      <ClearTransactionsModal
+        householdName="Shared budget"
+        data={data}
+        onExport={() => {}}
+        onClear={async () => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(html).toContain("Clear transaction history");
+    expect(html).toContain("Accounts, card and bank matching");
+    expect(html).toContain("Transactions removed");
+    expect(html).toContain("Contribution links removed");
+    expect(html).toContain("Income links detached");
+    expect(html).toContain("Export JSON first");
+    expect(html).toContain("disabled=\"\"");
+    expect(isClearTransactionsConfirmation("CLEAR")).toBe(true);
+    expect(isClearTransactionsConfirmation("clear")).toBe(false);
+    expect(isClearTransactionsConfirmation(" CLEAR ")).toBe(false);
+  });
+
   it("renders the import modal with type-first placement", () => {
     const html = renderToString(
       <ImportModal
@@ -359,7 +449,7 @@ describe("UI render smoke", () => {
   it("renders a keyboard-submittable manual entry form with positive amount validation", () => {
     const html = renderToString(
       <ManualModal
-        accountOptions={["Cash"]}
+        accounts={[]}
         members={threeMemberData().settings.members}
         customCategories={[]}
         counterparties={[]}
@@ -369,6 +459,7 @@ describe("UI render smoke", () => {
     );
     expect(html).toContain("<form");
     expect(html).toContain('min="0.01"');
+    expect(html).toContain("Who was it for?");
     expect(html).toContain('type="submit"');
   });
 
@@ -394,10 +485,10 @@ describe("UI render smoke", () => {
   it("renders a guarded shared-contribution preview across partial recovery rows", () => {
     const data = threeMemberData();
     data.transactions = [
-      { id: "out", date: "2026-07-01", description: "BEN CAR LOAN", amount: 45_000, category: "uncategorized", account: "Ben Card", note: "", source: "imported", direction: "debit", kind: "expense" },
-      { id: "in", date: "2026-07-01", description: "BEN CAR LOAN", amount: 45_000, category: "uncategorized", account: "Ana Card", note: "", source: "imported", direction: "credit", kind: "account_credit" },
-      { id: "loan-early", date: "2026-06-30", description: "BANK RECOVERY FOR500240015943", amount: 40_000, category: "housing", account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
-      { id: "loan-late", date: "2026-07-02", description: "BANK RECOVERY FOR500240015943", amount: 50_000, category: "housing", account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
+      { id: "out", date: "2026-07-01", description: "BEN CAR LOAN", amount: 45_000, category: "uncategorized", beneficiary: { type: "unassigned" }, account: "Ben Card", note: "", source: "imported", direction: "debit", kind: "expense" },
+      { id: "in", date: "2026-07-01", description: "BEN CAR LOAN", amount: 45_000, category: "uncategorized", beneficiary: { type: "unassigned" }, account: "Ana Card", note: "", source: "imported", direction: "credit", kind: "account_credit" },
+      { id: "loan-early", date: "2026-06-30", description: "BANK RECOVERY FOR500240015943", amount: 40_000, category: "housing", beneficiary: { type: "household" }, account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
+      { id: "loan-late", date: "2026-07-02", description: "BANK RECOVERY FOR500240015943", amount: 50_000, category: "housing", beneficiary: { type: "household" }, account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
     ];
     const html = renderToString(
       <SharedContributionModal

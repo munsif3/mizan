@@ -15,12 +15,24 @@ const members: Member[] = [
   { id: "contributor", name: "Contributor", color: "#ff80b5", portions: [] },
 ];
 const accounts: Account[] = [
-  { id: "mine", label: "Owner Savings", owner: "owner", match: [] },
-  { id: "contributor", label: "Contributor Savings", owner: "contributor", match: [] },
+  { id: "mine", label: "Owner Savings", owner: "owner", beneficiaryDefault: "review", match: [] },
+  { id: "contributor", label: "Contributor Savings", owner: "contributor", beneficiaryDefault: "review", match: [] },
 ];
 
 function txn(id: string, date: string, description: string, amount: number, account: string, direction: "debit" | "credit", kind: Transaction["kind"], category: Transaction["category"] = kind === "loan_payment" ? "custom:vehicle-loan" : "uncategorized"): Transaction {
-  return { id, date, description, amount, account, category, note: "", source: "imported", direction, kind };
+  return {
+    id,
+    date,
+    description,
+    amount,
+    account,
+    category,
+    beneficiary: kind === "loan_payment" ? { type: "household" } : { type: "unassigned" },
+    note: "",
+    source: "imported",
+    direction,
+    kind,
+  };
 }
 
 function rows(): Transaction[] {

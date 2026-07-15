@@ -5,30 +5,40 @@
   "description": "Deterministic household finance PWA with Google sign-in and Firestore sync.",
   "license": "MIT",
   "type": "module",
+  "packageManager": "npm@11.8.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:rules:emulator": "vitest run --config vitest.rules.config.ts",
+    "test:rules": "npx --yes firebase-tools@15.22.4 emulators:exec --only firestore --project demo-mizan \"npm run test:rules:emulator\"",
+    "typecheck": "tsc --noEmit",
+    "check:deadcode": "npx --yes knip@6.26.0",
+    "check": "npm run typecheck && npm test && vite build"
   },
   "dependencies": {
-    "firebase": "^12.15.0",
+    "firebase": "^12.16.0",
     "lucide-react": "^1.24.0",
     "pdfjs-dist": "^6.1.200",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
     "@types/crypto-js": "^4.2.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "crypto-js": "^4.2.0",
-    "jsdom": "^26.1.0",
+    "jsdom": "^29.1.1",
     "pdf-lib": "^1.17.1",
     "typescript": "^5.9.3",
-    "vite": "^8.0.12",
-    "vitest": "^3.2.4"
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }

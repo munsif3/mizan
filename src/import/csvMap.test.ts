@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseCsv } from "./csv";
-import { headerSignature, inferMapping, mapCsvRows, parseSignedAmount } from "./csvMap";
+import { csvPresetSignature, headerSignature, inferMapping, mapCsvRows, parseSignedAmount } from "./csvMap";
 
 describe("parseSignedAmount", () => {
   it("reads leading minus, parentheses, and trailing CR as negative", () => {
@@ -36,6 +36,7 @@ describe("mapCsvRows", () => {
     expect(transactions).toHaveLength(2);
     expect(transactions[0]).toMatchObject({ date: "2026-07-01", description: "GROCERIES", amount: 50, direction: "credit", account: "My CSV Account" });
     expect(transactions[1]).toMatchObject({ date: "2026-07-02", amount: 3000, direction: "debit" });
+    expect(transactions.every((transaction) => transaction.beneficiary.type === "unassigned")).toBe(true);
   });
 
   it("maps month-first dates when told to", () => {
@@ -51,6 +52,13 @@ describe("mapCsvRows", () => {
     const { transactions } = mapCsvRows(rows, mapping, "acct");
     expect(transactions[0]).toMatchObject({ amount: 20, direction: "debit" });
     expect(transactions[1]).toMatchObject({ amount: 15, direction: "credit" });
+  });
+
+  it("rejects an ambiguous row with both debit and credit values", () => {
+    const rows = parseCsv("Date,Narration,Debit,Credit\n01/07/2026,AMBIGUOUS,20.00,15.00");
+    const result = mapCsvRows(rows, inferMapping(rows), "acct");
+    expect(result.transactions).toEqual([]);
+    expect(result.skipped).toEqual([{ row: 2, reason: "both debit and credit amounts are populated" }]);
   });
 
   it("uses a per-row account column when present, else the fallback", () => {
@@ -72,5 +80,10 @@ describe("mapCsvRows", () => {
     const a = headerSignature(parseCsv("Date, Description ,Amount\n1,2,3"));
     const b = headerSignature(parseCsv("date,description,amount\nx,y,z"));
     expect(a).toBe(b);
+  });
+
+  it("uses the column count rather than the first data row for headerless presets", () => {
+    expect(csvPresetSignature(parseCsv("01/07/2026,SHOP,20"), false))
+      .toBe(csvPresetSignature(parseCsv("02/07/2026,OTHER,30"), false));
   });
 });

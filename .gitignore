@@ -3,6 +3,9 @@ dist/
 coverage/
 .env
 .env.*
+!.env.example
 .firebase/
+firestore-debug.log
+firebase-debug.log
 # Personal Firebase deploy target — created per-machine via `firebase use --add`
 .firebaserc

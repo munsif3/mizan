@@ -1,4 +1,6 @@
-import { netAmount } from "./summary";
+import { accountForTransaction } from "./accounts";
+import { maximumCardinalityMinCostMatch } from "./matching";
+import { netAmount } from "./transactionMath";
 import type { Account, Transaction } from "./types";
 
 /** A debit/credit pair that looks like one internal transfer between owned accounts. */
@@ -63,36 +65,33 @@ export function detectTransferCandidates(
   includeConfirmed = false,
   requireCompatibleDescriptions = true,
 ): TransferCandidate[] {
-  const registeredLabels = new Set(accounts.map((account) => account.label));
-  const owned = (label: string) => registeredLabels.has(label);
+  const accountIdOf = (txn: Transaction) => accountForTransaction(txn, accounts)?.id;
 
   const debits = transactions.filter(
-    (txn) => txn.direction === "debit" && (txn.kind === "expense" || (includeConfirmed && txn.kind === "internal_transfer")) && owned(txn.account),
+    (txn) => txn.direction === "debit" && (txn.kind === "expense" || (includeConfirmed && txn.kind === "internal_transfer")) && Boolean(accountIdOf(txn)),
   );
   const credits = transactions.filter(
-    (txn) => txn.direction === "credit" && (txn.kind === "account_credit" || (includeConfirmed && txn.kind === "internal_transfer")) && owned(txn.account),
+    (txn) => txn.direction === "credit" && (txn.kind === "account_credit" || (includeConfirmed && txn.kind === "internal_transfer")) && Boolean(accountIdOf(txn)),
   );
 
-  const usedCredits = new Set<string>();
-  const candidates: TransferCandidate[] = [];
+  const possible: Array<{ left: string; right: string; cost: number; value: TransferCandidate }> = [];
   for (const debit of debits) {
-    let best: { credit: Transaction; daysApart: number } | null = null;
     for (const credit of credits) {
-      if (usedCredits.has(credit.id)) continue;
-      if (credit.account === debit.account) continue;
+      if (accountIdOf(credit) === accountIdOf(debit)) continue;
       if (Math.abs(netAmount(credit) - netAmount(debit)) > 0.005) continue;
       const daysApart = dayDiff(debit.date, credit.date);
       if (daysApart > windowDays) continue;
       if (requireCompatibleDescriptions && !descriptionsCompatible(debit.description, credit.description)) continue;
-      if (!best || daysApart < best.daysApart) best = { credit, daysApart };
-    }
-    if (best) {
-      usedCredits.add(best.credit.id);
-      candidates.push({ debit, credit: best.credit, daysApart: best.daysApart });
+      possible.push({
+        left: debit.id,
+        right: credit.id,
+        cost: daysApart,
+        value: { debit, credit, daysApart },
+      });
     }
   }
 
-  return candidates.sort(
+  return maximumCardinalityMinCostMatch(possible).sort(
     (a, b) => a.daysApart - b.daysApart || netAmount(b.debit) - netAmount(a.debit) || a.debit.id.localeCompare(b.debit.id),
   );
 }

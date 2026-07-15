@@ -10,6 +10,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/households/$(householdId)/meta/current;
     }
 
+    function joinRequestPath(householdId, uid) {
+      return /databases/$(database)/documents/households/$(householdId)/joinRequests/$(uid);
+    }
+
     function isHouseholdDataCollection(collectionId) {
       return collectionId in [
         "settings",
@@ -22,7 +26,9 @@ service cloud.firestore {
         "customCategories",
         "counterparties",
         "merchantRules",
-        "csvPresets"
+        "csvPresets",
+        "snapshotManifest",
+        "snapshots"
       ];
     }
 
@@ -44,23 +50,52 @@ service cloud.firestore {
         && get(metaPath(householdId)).data.ownerUid == request.auth.uid;
     }
 
-    function isSelfInviteJoin() {
+    function isSelfInviteJoin(householdId) {
       return signedIn()
-        && resource.data.inviteCode == request.resource.data.inviteCode
-        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["membersByUid", "updatedAt"])
         && request.resource.data.membersByUid.diff(resource.data.membersByUid).affectedKeys().hasOnly([request.auth.uid])
-        && request.resource.data.membersByUid[request.auth.uid].role in ["owner", "member"];
+        && request.resource.data.membersByUid[request.auth.uid].keys().hasOnly(["role", "displayName", "email", "joinedAt"])
+        && request.resource.data.membersByUid[request.auth.uid].role == "member"
+        && request.resource.data.membersByUid[request.auth.uid].displayName is string
+        && request.resource.data.membersByUid[request.auth.uid].email is string
+        && request.resource.data.membersByUid[request.auth.uid].joinedAt is string
+        && existsAfter(joinRequestPath(householdId, request.auth.uid))
+        && getAfter(joinRequestPath(householdId, request.auth.uid)).data.uid == request.auth.uid
+        && getAfter(joinRequestPath(householdId, request.auth.uid)).data.inviteCode == resource.data.inviteCode
+        && getAfter(joinRequestPath(householdId, request.auth.uid)).data.createdAt == request.time;
     }
 
     match /households/{householdId}/meta/current {
-      allow get: if signedIn();
+      allow get: if isMember(householdId);
       allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
-      allow update: if isOwner(householdId) || isSelfInviteJoin();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(["id", "name", "ownerUid", "membersByUid", "inviteCode", "createdAt", "updatedAt"])
+        && request.resource.data.id == householdId
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.membersByUid.keys().hasOnly([request.auth.uid])
+        && request.resource.data.membersByUid[request.auth.uid].keys().hasOnly(["role", "displayName", "email", "joinedAt"])
+        && request.resource.data.membersByUid[request.auth.uid].role == "owner";
+      allow update: if isOwner(householdId) || isSelfInviteJoin(householdId);
       allow delete: if isOwner(householdId);
     }
 
+    match /households/{householdId}/joinRequests/{uid} {
+      allow create: if signedIn()
+        && uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(["uid", "inviteCode", "createdAt"])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.inviteCode == get(metaPath(householdId)).data.inviteCode
+        && request.resource.data.createdAt == request.time;
+      allow read, delete: if signedIn() && (uid == request.auth.uid || isMember(householdId));
+      allow update: if false;
+    }
+
     match /households/{householdId}/{collectionId}/{docId} {
+      allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
+      allow write: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
+    }
+
+    match /households/{householdId}/snapshots/{revision}/{collectionId}/{docId} {
       allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
       allow write: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
     }

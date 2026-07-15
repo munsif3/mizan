@@ -29,6 +29,11 @@ function closeTo(actual: number, expected: number): boolean {
   return Math.abs(actual - expected) <= Math.max(0.01, expected * 0.00001);
 }
 
+/** One compatibility seam for the audit note used before structured FX evidence existed. */
+export function hasFxConversionEvidence(txn: Pick<Transaction, "note">): boolean {
+  return txn.note.includes("FX conversion:");
+}
+
 /**
  * Mizan's ledger uses one household currency. When an FX description carries
  * both the original amount and rate, normalize a row still booked at the
@@ -46,7 +51,7 @@ export function normalizeFxTransaction(txn: Transaction, householdCurrency: stri
   if (!carriesOriginal && !carriesConverted) return txn;
 
   const audit = `FX conversion: ${fx.originalCurrency} ${fx.originalAmount.toLocaleString("en-US")} at ${fx.rate.toLocaleString("en-US")} = ${currency} ${fx.convertedAmount.toLocaleString("en-US")}`;
-  const note = txn.note.includes("FX conversion:") ? txn.note : [txn.note, audit].filter(Boolean).join("; ");
+  const note = hasFxConversionEvidence(txn) ? txn.note : [txn.note, audit].filter(Boolean).join("; ");
   const amount = carriesOriginal ? fx.convertedAmount : txn.amount;
   return amount === txn.amount && note === txn.note ? txn : { ...txn, amount, note };
 }

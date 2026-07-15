@@ -1,11 +1,12 @@
 import type { AuthUser } from "../auth/authStore";
 import type { AppData } from "../domain/types";
+import { stableHash } from "../domain/ids";
 import { migrate } from "../storage/schema";
 import {
   CLOUD_HOUSEHOLD_SCHEMA_VERSION,
+  CLOUD_SNAPSHOT_MANIFEST_VERSION,
   type CloudCollections,
   type CloudCsvPreset,
-  type CloudHousehold,
   type CloudMerchantRule,
   type CloudSettings,
   type HouseholdMeta,
@@ -16,7 +17,7 @@ function randomToken(): string {
   return `${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-6)}`;
 }
 
-export function makeHouseholdId(): string {
+function makeHouseholdId(): string {
   return `hh_${randomToken()}`;
 }
 
@@ -69,19 +70,6 @@ export function createHouseholdMeta(owner: AuthUser, name: string, now = new Dat
   };
 }
 
-function stableHash(value: string): string {
-  let h1 = 0xdeadbeef ^ value.length;
-  let h2 = 0x41c6ce57 ^ value.length;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    h1 = Math.imul(h1 ^ code, 2654435761);
-    h2 = Math.imul(h2 ^ code, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return `${(h2 >>> 0).toString(36)}${(h1 >>> 0).toString(36)}`;
-}
-
 export function safeDocId(prefix: string, key: string): string {
   const safePrefix = prefix.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24) || "doc";
   const preview = key
@@ -92,7 +80,7 @@ export function safeDocId(prefix: string, key: string): string {
   return `${safePrefix}_${stableHash(key)}_${preview}`.slice(0, 120);
 }
 
-export function createCloudSettings(appData: AppData, updatedBy: string, now = new Date().toISOString()): CloudSettings {
+function createCloudSettings(appData: AppData, updatedBy: string, now = new Date().toISOString()): CloudSettings {
   return {
     schemaVersion: CLOUD_HOUSEHOLD_SCHEMA_VERSION,
     targetSaveRate: appData.settings.targetSaveRate,
@@ -136,7 +124,13 @@ export function appDataToCloudCollections(appData: AppData, updatedBy: string, n
 export function cloudCollectionsToAppData(collections: Partial<CloudCollections>): AppData {
   const merchantRules = Object.fromEntries((collections.merchantRules ?? []).map((item) => [item.key, item.rule]));
   const csvPresets = Object.fromEntries((collections.csvPresets ?? []).map((item) => [item.signature, item.mapping]));
+  const cloudSchemaVersion = Number(collections.settings?.schemaVersion) || 0;
+  if (cloudSchemaVersion > CLOUD_HOUSEHOLD_SCHEMA_VERSION) {
+    throw new Error(`This household uses cloud schema v${cloudSchemaVersion}. Update Mizan before opening it.`);
+  }
   return migrate({
+    // Split-cloud v4 stored AppData v10 semantics; v5 is the first beneficiary-aware shape.
+    schemaVersion: cloudSchemaVersion >= 5 ? 12 : 10,
     transactions: collections.transactions ?? [],
     sharedContributions: collections.sharedContributions ?? [],
     merchantRules,
@@ -156,10 +150,11 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
   });
 }
 
-export function createLegacyCloudHousehold(appData: AppData, updatedBy: string, now = new Date().toISOString()): CloudHousehold {
+export function createCloudSnapshotManifest(activeRevision: string, versionToken: string, updatedBy: string, now = new Date().toISOString()) {
   return {
-    schemaVersion: 1,
-    appData,
+    schemaVersion: CLOUD_SNAPSHOT_MANIFEST_VERSION,
+    activeRevision,
+    versionToken,
     updatedAt: now,
     updatedBy,
   };

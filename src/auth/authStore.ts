@@ -43,7 +43,7 @@ export function authErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Google sign-in failed. Try again.";
 }
 
-export function subscribeAuthState(onState: (state: AuthState) => void): () => void {
+function subscribeAuthState(onState: (state: AuthState) => void): () => void {
   const services = getFirebaseServices();
   if (!services) {
     onState(UNCONFIGURED);

@@ -1,5 +1,19 @@
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+function validISODate(year: string, month: string, day: string): string {
+  const yyyy = year.padStart(4, "0");
+  const mm = month.padStart(2, "0");
+  const dd = day.padStart(2, "0");
+  const yearNumber = Number(yyyy);
+  const monthNumber = Number(mm);
+  const dayNumber = Number(dd);
+  if (!Number.isInteger(yearNumber) || yearNumber < 1 || yearNumber > 9999) return "";
+  if (!Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) return "";
+  if (!Number.isInteger(dayNumber) || dayNumber < 1) return "";
+  if (new Date(Date.UTC(yearNumber, monthNumber, 0)).getUTCDate() < dayNumber) return "";
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 /** "2026-07-14" -> "2026-07" */
 export function monthOf(date: string | undefined): string {
   return String(date ?? "").slice(0, 7);
@@ -43,10 +57,10 @@ export function toISODate(value: unknown): string {
     const day = slash[1]!.padStart(2, "0");
     const month = slash[2]!.padStart(2, "0");
     const year = slash[3]!.length === 2 ? `20${slash[3]}` : slash[3]!;
-    return `${year}-${month}-${day}`;
+    return validISODate(year, month, day);
   }
   const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (iso) return `${iso[1]}-${iso[2]!.padStart(2, "0")}-${iso[3]!.padStart(2, "0")}`;
+  if (iso) return validISODate(iso[1]!, iso[2]!, iso[3]!);
   return "";
 }
 
@@ -58,7 +72,7 @@ export function toISODate(value: unknown): string {
 export function toISODateOrdered(value: unknown, order: "dmy" | "mdy" | "ymd"): string {
   const text = String(value ?? "").trim();
   const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
-  if (iso) return `${iso[1]}-${iso[2]!.padStart(2, "0")}-${iso[3]!.padStart(2, "0")}`;
+  if (iso) return validISODate(iso[1]!, iso[2]!, iso[3]!);
   const parts = text.match(/^(\d{1,4})[-/.](\d{1,4})[-/.](\d{1,4})$/);
   if (!parts) return "";
   const [a, b, c] = [parts[1]!, parts[2]!, parts[3]!];
@@ -69,10 +83,7 @@ export function toISODateOrdered(value: unknown, order: "dmy" | "mdy" | "ymd"): 
   else if (order === "mdy") [month, day, year] = [a, b, c];
   else [day, month, year] = [a, b, c];
   year = year.length <= 2 ? `20${year.padStart(2, "0")}` : year.padStart(4, "0");
-  const mm = month.padStart(2, "0");
-  const dd = day.padStart(2, "0");
-  if (Number(mm) < 1 || Number(mm) > 12 || Number(dd) < 1 || Number(dd) > 31) return "";
-  return `${year}-${mm}-${dd}`;
+  return validISODate(year, month, day);
 }
 
 export function daysInMonth(month: string): number {

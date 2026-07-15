@@ -3,9 +3,9 @@ import { detectTransferCandidates } from "./transfers";
 import { defaultKind, type Account, type MovementKind, type Transaction } from "./types";
 
 const ACCOUNTS: Account[] = [
-  { id: "hnb", label: "HNB Savings", owner: "alex", match: [] },
-  { id: "ntb", label: "NTB Current", owner: "alex", match: [] },
-  { id: "cash", label: "Cash", owner: "joint", match: [] },
+  { id: "hnb", label: "HNB Savings", owner: "alex", beneficiaryDefault: "review", match: [] },
+  { id: "ntb", label: "NTB Current", owner: "alex", beneficiaryDefault: "review", match: [] },
+  { id: "cash", label: "Cash", owner: "joint", beneficiaryDefault: "review", match: [] },
 ];
 
 function txn(overrides: Partial<Transaction> & { id: string; account: string; direction: "debit" | "credit" }): Transaction {
@@ -15,6 +15,7 @@ function txn(overrides: Partial<Transaction> & { id: string; account: string; di
     description: "TRANSFER",
     amount: 100_000,
     category: "uncategorized",
+    beneficiary: { type: "unassigned" },
     note: "",
     source: "imported",
     kind: (kind ?? defaultKind(overrides.direction)) as MovementKind,

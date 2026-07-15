@@ -1,7 +1,7 @@
-import { ownerOf } from "./accounts";
+import { ownerOfTransaction } from "./accounts";
 import { monthOf } from "./dates";
 import { cleanMerchant } from "./rules";
-import { personalMemberId } from "./types";
+import { netAmount } from "./transactionMath";
 import { detectTransferCandidates } from "./transfers";
 import type {
   Account,
@@ -32,10 +32,7 @@ export function sharedContributionId(expenseIds: string[], debitId: string, cred
 }
 
 export function transactionContributionAmount(txn: Transaction): number {
-  if (!txn.split) return txn.amount;
-  const of = Math.max(1, Number(txn.split.of) || 1);
-  const mine = Math.max(0, Number(txn.split.mine) || 0);
-  return txn.amount * (mine / of);
+  return netAmount(txn);
 }
 
 function dayDiff(a: string, b: string): number {
@@ -64,7 +61,7 @@ function descriptionScore(pair: { debit: Transaction; credit: Transaction }, exp
 }
 
 /** Exact loan identifier wins; otherwise the cleaned recovery description is the group key. */
-export function recoveryDescriptionKey(description: string): string {
+function recoveryDescriptionKey(description: string): string {
   const cleaned = cleanMerchant(description);
   const identifier = cleaned.match(/\d{8,}/)?.[0];
   return identifier ? `ID:${identifier}` : `DESC:${cleaned}`;
@@ -164,7 +161,7 @@ export function sharedContributionError(
   if (!Number.isFinite(contribution.amount) || contribution.amount <= 0 || Math.abs(contribution.amount - transactionContributionAmount(debit)) > AMOUNT_TOLERANCE) {
     return "The contribution amount must equal the matched transfer amount.";
   }
-  if (ownerOf(debit.account, accounts) !== contribution.contributorMemberId) return "The outgoing transfer account does not belong to the contributor.";
+  if (ownerOfTransaction(debit, accounts) !== contribution.contributorMemberId) return "The outgoing transfer account does not belong to the contributor.";
 
   const allocationTotal = allocations.reduce((sum, allocation) => sum + Number(allocation.amount || 0), 0);
   if (allocations.some((allocation) => !Number.isFinite(allocation.amount) || allocation.amount <= 0) || Math.abs(allocationTotal - contribution.amount) > AMOUNT_TOLERANCE) {
@@ -173,7 +170,7 @@ export function sharedContributionError(
   const firstExpense = expenseRows[0]!;
   const category = firstExpense.category;
   const descriptionKey = recoveryDescriptionKey(firstExpense.description);
-  const expensePayer = ownerOf(firstExpense.account, accounts);
+  const expensePayer = ownerOfTransaction(firstExpense, accounts);
   if (expensePayer === "joint" || !members.some((member) => member.id === expensePayer)) return "The loan-paying account needs a household-member owner.";
   if (expensePayer === contribution.contributorMemberId) return "The contributor and loan-paying account owner must be different members.";
   const dates = expenseRows.map((expense) => expense.date).sort();
@@ -181,14 +178,14 @@ export function sharedContributionError(
 
   for (const expense of expenseRows) {
     if (!sameAccount(credit, expense)) return "Every incoming contribution must land in the account that pays the selected recoveries.";
-    if (expense.direction !== "debit" || expense.kind !== "loan_payment" || personalMemberId(expense.category)) {
+    if (expense.direction !== "debit" || expense.kind !== "loan_payment" || expense.beneficiary.type !== "household") {
       return "Every funded row must be a shared loan or debt payment.";
     }
     if (expense.category !== category || recoveryDescriptionKey(expense.description) !== descriptionKey) {
       return "Selected deductions must belong to the same loan recovery.";
     }
     if (dayDiff(credit.date, expense.date) > CONTRIBUTION_WINDOW_DAYS) return "A selected recovery is too far from the contribution date.";
-    if (ownerOf(expense.account, accounts) !== expensePayer) return "Every selected recovery must use the same member-owned account.";
+    if (ownerOfTransaction(expense, accounts) !== expensePayer) return "Every selected recovery must use the same member-owned account.";
   }
 
   for (const item of existing) {
@@ -255,18 +252,18 @@ export function detectSharedContributionCandidates(
   const usedDebitIds = new Set(valid.map((item) => item.transferDebitTransactionId));
   const usedCreditIds = new Set(valid.map((item) => item.transferCreditTransactionId));
   const expenses = transactions.filter(
-    (txn) => txn.direction === "debit" && txn.kind === "loan_payment" && !personalMemberId(txn.category),
+    (txn) => txn.direction === "debit" && txn.kind === "loan_payment" && txn.beneficiary.type === "household",
   );
   const pairs = detectTransferCandidates(transactions, accounts, 3, true, false).filter(
     (pair) => !usedDebitIds.has(pair.debit.id) && !usedCreditIds.has(pair.credit.id),
   );
   const candidates: (SharedContributionCandidate & { descriptionScore: number })[] = [];
   for (const pair of pairs) {
-    const contributorMemberId = ownerOf(pair.debit.account, accounts);
+    const contributorMemberId = ownerOfTransaction(pair.debit, accounts);
     if (contributorMemberId === "joint" || !members.some((member) => member.id === contributorMemberId)) continue;
     const eligible = expenses.filter((expense) => {
       if (!sameAccount(pair.credit, expense) || dayDiff(pair.credit.date, expense.date) > CONTRIBUTION_WINDOW_DAYS) return false;
-      const expensePayer = ownerOf(expense.account, accounts);
+      const expensePayer = ownerOfTransaction(expense, accounts);
       return expensePayer !== "joint" && expensePayer !== contributorMemberId;
     });
     for (const group of recoveryGroups(eligible)) {

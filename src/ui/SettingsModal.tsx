@@ -1,9 +1,9 @@
-import { useRef, useState, type CSSProperties } from "react";
+import { useId, useRef, useState, type CSSProperties } from "react";
 import { Trash2 } from "lucide-react";
 import type { AuthState } from "../auth/authStore";
-import { categoryInfo, nextMemberColor, spendingCategoryOptions } from "../domain/categories";
-import { movementInfo } from "../domain/movements";
-import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, FixedCost, IncomePortion, Member } from "../domain/types";
+import { categoryInfo, categoryOptions, nextMemberColor } from "../domain/categories";
+import { isSpendKind, movementInfo } from "../domain/movements";
+import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, FixedCost, IncomePortion, Member, MerchantRule, SpendBeneficiary } from "../domain/types";
 import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import type { RepositoryMode } from "../storage/repository";
 import { uid } from "../domain/types";
@@ -28,6 +28,22 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "sync", label: "Sync & backup" },
 ];
 
+function beneficiaryValue(beneficiary: SpendBeneficiary): string {
+  return beneficiary.type === "member" ? `member:${beneficiary.memberId}` : beneficiary.type;
+}
+
+function beneficiaryFromValue(value: string): SpendBeneficiary {
+  if (value.startsWith("member:")) return { type: "member", memberId: value.slice("member:".length) };
+  return value === "household" ? { type: "household" } : { type: "unassigned" };
+}
+
+function beneficiaryLabel(beneficiary: MerchantRule["beneficiary"], members: Member[]): string {
+  if (beneficiary.type === "account_default") return "Account default";
+  if (beneficiary.type === "household") return "Household";
+  if (beneficiary.type === "unassigned") return "Unassigned";
+  return members.find((member) => member.id === beneficiary.memberId)?.name ?? "Former member";
+}
+
 export function HouseholdResetAction({
   canResetHousehold,
   hasResettableData,
@@ -39,6 +55,19 @@ export function HouseholdResetAction({
 }) {
   if (!canResetHousehold || !hasResettableData) return null;
   return <button className="danger" onClick={onResetHousehold}>Reset household data</button>;
+}
+
+export function HouseholdTransactionClearAction({
+  canClearTransactions,
+  hasTransactions,
+  onClearTransactions,
+}: {
+  canClearTransactions: boolean;
+  hasTransactions: boolean;
+  onClearTransactions: () => void;
+}) {
+  if (!canClearTransactions || !hasTransactions) return null;
+  return <button className="secondary danger" onClick={onClearTransactions}>Clear transactions</button>;
 }
 
 export function SettingsModal({
@@ -62,6 +91,9 @@ export function SettingsModal({
   onExport,
   onImportBackup,
   onClearData,
+  canClearTransactions,
+  hasTransactions,
+  onClearTransactions,
   canResetHousehold,
   hasResettableData,
   onResetHousehold,
@@ -87,16 +119,20 @@ export function SettingsModal({
   onExport: () => void;
   onImportBackup: (file: File) => void;
   onClearData: () => void;
+  canClearTransactions: boolean;
+  hasTransactions: boolean;
+  onClearTransactions: () => void;
   canResetHousehold: boolean;
   hasResettableData: boolean;
   onResetHousehold: () => void;
   onClose: () => void;
 }) {
+  const currenciesId = useId();
   const importRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("household");
   const { members, currency, locale, fxRates, counterparties, customCategories } = data.settings;
   const fixedCosts = data.fixedCosts;
-  const categoryChoices = spendingCategoryOptions(members, customCategories);
+  const categoryChoices = categoryOptions(members, customCategories);
 
   const patchCounterparty = (id: string, name: string) =>
     onUpdateCounterparties(counterparties.map((item) => (item.id === id ? { ...item, name } : item)));
@@ -122,7 +158,7 @@ export function SettingsModal({
     .sort();
   const removeMember = (member: Member) => {
     if (members.length <= 1) return;
-    if (!window.confirm(`Remove ${member.name}? Their personal transactions become Uncategorized and their accounts become Joint.`)) return;
+    if (!window.confirm(`Remove ${member.name}? Spending assigned to them becomes Unassigned and their accounts become Joint.`)) return;
     onUpdateMembers(members.filter((item) => item.id !== member.id));
   };
   const patchFixed = (id: string, patch: Partial<FixedCost>) =>
@@ -133,13 +169,28 @@ export function SettingsModal({
   return (
     <Modal title="Settings" onClose={onClose} wide>
       <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-        {SETTINGS_TABS.map((tab) => (
+        {SETTINGS_TABS.map((tab, index) => (
           <button
             key={tab.id}
+            id={`settings-tab-${tab.id}`}
             role="tab"
             aria-selected={activeTab === tab.id}
+            aria-controls={`settings-panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
             className={activeTab === tab.id ? "active" : ""}
             onClick={() => setActiveTab(tab.id)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+              event.preventDefault();
+              const nextIndex = event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? SETTINGS_TABS.length - 1
+                  : (index + (event.key === "ArrowRight" ? 1 : -1) + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+              const next = SETTINGS_TABS[nextIndex]!;
+              setActiveTab(next.id);
+              requestAnimationFrame(() => document.getElementById(`settings-tab-${next.id}`)?.focus());
+            }}
           >
             {tab.label}
           </button>
@@ -147,7 +198,7 @@ export function SettingsModal({
       </div>
 
       {activeTab === "household" && (
-        <div className="settings-section">
+        <div className="settings-section" id="settings-panel-household" role="tabpanel" aria-labelledby="settings-tab-household">
           <div className="section-title">
             <div>
               <h3>Household members</h3>
@@ -207,8 +258,8 @@ export function SettingsModal({
                             <div><strong>What reaches the account?</strong><small>Enter the deposit amount, not the gross salary.</small></div>
                           </div>
                           <div className="deposit-money-fields">
-                            <label><span>Amount</span><input aria-label={`${portion.label} amount`} type="number" min="0" value={portion.amount || ""} placeholder="0" onChange={(event) => patchPortion(member.id, portion.id, { amount: Number(event.target.value) || 0 })} /></label>
-                            <label><span>Currency</span><input aria-label={`${portion.label} currency`} list="mizan-currencies" value={portion.currency} placeholder={currency || "Currency"} onChange={(event) => patchPortion(member.id, portion.id, { currency: event.target.value.toUpperCase().trim() })} /></label>
+                            <label><span>Amount</span><input aria-label={`${portion.label} amount`} type="number" min="0" value={portion.amount || ""} placeholder="0" onChange={(event) => patchPortion(member.id, portion.id, { amount: Math.max(0, Number(event.target.value) || 0) })} /></label>
+                            <label><span>Currency</span><input aria-label={`${portion.label} currency`} list={currenciesId} value={portion.currency} placeholder={currency || "Currency"} onChange={(event) => patchPortion(member.id, portion.id, { currency: event.target.value.toUpperCase().trim() })} /></label>
                           </div>
                         </div>
 
@@ -225,7 +276,7 @@ export function SettingsModal({
                               <strong>I pay it later</strong><small>Mizan reserves tax first.</small>
                             </button>
                           </div>
-                          <label className="deposit-tax-rate"><span>Tax rate</span><div><input aria-label={`${portion.label} tax rate`} type="number" min="0" max="99.99" value={portion.taxRate || ""} placeholder="0" onChange={(event) => patchPortion(member.id, portion.id, { taxRate: Number(event.target.value) || 0 })} /><b>%</b></div></label>
+                          <label className="deposit-tax-rate"><span>Tax rate</span><div><input aria-label={`${portion.label} tax rate`} type="number" min="0" max="99.99" value={portion.taxRate || ""} placeholder="0" onChange={(event) => patchPortion(member.id, portion.id, { taxRate: Math.max(0, Math.min(99.99, Number(event.target.value) || 0)) })} /><b>%</b></div></label>
                         </div>
 
                         <div className="deposit-section deposit-timing-section">
@@ -234,9 +285,9 @@ export function SettingsModal({
                             <div><strong>When does it arrive?</strong><small>Leave blank if the timing changes each month.</small></div>
                           </div>
                           <div className="arrival-inputs">
-                            <label><span>From day</span><input aria-label={`${portion.label} arrival start day`} type="number" min="1" max="31" placeholder="e.g. 10" value={portion.window?.startDay ?? ""} onChange={(event) => { const startDay = Number(event.target.value); patchPortion(member.id, portion.id, { window: startDay ? { startDay, endDay: portion.window?.endDay ?? startDay } : null }); }} /></label>
+                            <label><span>From day</span><input aria-label={`${portion.label} arrival start day`} type="number" min="1" max="31" placeholder="e.g. 10" value={portion.window?.startDay ?? ""} onChange={(event) => { const raw = Number(event.target.value); const startDay = raw ? Math.max(1, Math.min(31, raw)) : 0; patchPortion(member.id, portion.id, { window: startDay ? { startDay, endDay: portion.window?.endDay ?? startDay } : null }); }} /></label>
                             <span>to</span>
-                            <label><span>To day</span><input aria-label={`${portion.label} arrival end day`} type="number" min="1" max="31" placeholder="e.g. 15" value={portion.window?.endDay ?? ""} onChange={(event) => { const endDay = Number(event.target.value); patchPortion(member.id, portion.id, { window: endDay ? { startDay: portion.window?.startDay ?? endDay, endDay } : null }); }} /></label>
+                            <label><span>To day</span><input aria-label={`${portion.label} arrival end day`} type="number" min="1" max="31" placeholder="e.g. 15" value={portion.window?.endDay ?? ""} onChange={(event) => { const raw = Number(event.target.value); const endDay = raw ? Math.max(1, Math.min(31, raw)) : 0; patchPortion(member.id, portion.id, { window: endDay ? { startDay: portion.window?.startDay ?? endDay, endDay } : null }); }} /></label>
                           </div>
                         </div>
                       </div>
@@ -246,14 +297,14 @@ export function SettingsModal({
                 </div>
               </div>
             ))}
-            <datalist id="mizan-currencies">{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
+            <datalist id={currenciesId}>{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
           </div>
         </div>
       )}
 
       {activeTab === "budget" && (
         <>
-          <div className="settings-section">
+          <div className="settings-section" id="settings-panel-budget" role="tabpanel" aria-labelledby="settings-tab-budget">
             <h3>Currency & target</h3>
             <div className="form-grid">
               <label className="field">
@@ -312,19 +363,35 @@ export function SettingsModal({
               </div>
               <button
                 className="secondary"
-                onClick={() => onUpdateFixedCosts([...fixedCosts, { id: uid("fixed"), label: "New cost", amount: 0, category: "housing" }])}
+                onClick={() => onUpdateFixedCosts([...fixedCosts, {
+                  id: uid("fixed"),
+                  label: "New cost",
+                  amount: 0,
+                  category: "housing",
+                  beneficiary: { type: "household" },
+                }])}
               >
                 Add cost
               </button>
             </div>
             {fixedCosts.map((fixed) => (
               <div className="fixed-row" key={fixed.id}>
-                <input value={fixed.label} onChange={(event) => patchFixed(fixed.id, { label: event.target.value })} />
-                <input type="number" value={fixed.amount} onChange={(event) => patchFixed(fixed.id, { amount: Number(event.target.value) })} />
-                <select value={fixed.category} onChange={(event) => patchFixed(fixed.id, { category: event.target.value as CategoryKey })}>
+                <input aria-label="Commitment name" value={fixed.label} onChange={(event) => patchFixed(fixed.id, { label: event.target.value })} />
+                <input aria-label={`Amount for ${fixed.label}`} type="number" min="0" value={fixed.amount} onChange={(event) => patchFixed(fixed.id, { amount: Math.max(0, Number(event.target.value) || 0) })} />
+                <select aria-label={`Purpose for ${fixed.label}`} value={fixed.category} onChange={(event) => patchFixed(fixed.id, { category: event.target.value as CategoryKey })}>
                   {categoryChoices.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                 </select>
+                <select
+                  aria-label={`Beneficiary for ${fixed.label}`}
+                  value={beneficiaryValue(fixed.beneficiary)}
+                  onChange={(event) => patchFixed(fixed.id, { beneficiary: beneficiaryFromValue(event.target.value) })}
+                >
+                  <option value="household">Household</option>
+                  {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
+                  <option value="unassigned">Unassigned</option>
+                </select>
                 <input
+                  aria-label={`Last month for ${fixed.label}`}
                   value={fixed.until ?? ""}
                   placeholder="until YYYY-MM"
                   onChange={(event) => patchFixed(fixed.id, { until: event.target.value || undefined })}
@@ -338,7 +405,7 @@ export function SettingsModal({
 
       {activeTab === "categories" && (
         <>
-          <div className="settings-section">
+          <div className="settings-section" id="settings-panel-categories" role="tabpanel" aria-labelledby="settings-tab-categories">
             <div className="section-title">
               <div>
                 <h3>Custom categories</h3>
@@ -391,27 +458,53 @@ export function SettingsModal({
 
       {activeTab === "accounts" && (
         <>
-          <div className="settings-section">
+          <div className="settings-section" id="settings-panel-accounts" role="tabpanel" aria-labelledby="settings-tab-accounts">
             <div className="section-title">
               <div>
                 <h3>Accounts</h3>
                 <p className="muted">
-                  Label, whose spending it is, and match text so imported statements land on the right account automatically.
+                  Keep who funded the account separate from who its spending is usually for. For a household card funded by one member,
+                  choose that member under Paid/funded by and Household under Usually for; use Joint only when funding is genuinely joint.
                 </p>
               </div>
               <button
                 className="secondary"
-                onClick={() => onUpdateAccounts([...data.accounts, { id: uid("acc"), label: "", currency, owner: "joint", match: [] }])}
+                onClick={() => onUpdateAccounts([...data.accounts, {
+                  id: uid("acc"), label: "", currency, owner: "joint", beneficiaryDefault: "review", match: [],
+                }])}
               >
                 Add account
               </button>
             </div>
+            {data.accounts.length > 0 && (
+              <div className="account-row account-row-headings" aria-hidden="true">
+                <span>Account</span>
+                <span>Paid/funded by</span>
+                <span>Usually for</span>
+                <span>Currency</span>
+                <span>Statement match</span>
+                <span />
+              </div>
+            )}
             {data.accounts.map((account) => (
               <div className="account-row" key={account.id}>
                 <input value={account.label} placeholder="Account label" onChange={(event) => patchAccount(account.id, { label: event.target.value })} />
-                <select value={account.owner} onChange={(event) => patchAccount(account.id, { owner: event.target.value })}>
+                <select
+                  aria-label={`${account.label || "Account"} paid or funded by`}
+                  value={account.owner}
+                  onChange={(event) => patchAccount(account.id, { owner: event.target.value })}
+                >
                   {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-                  <option value="joint">Joint</option>
+                  <option value="joint">Joint / unknown</option>
+                </select>
+                <select
+                  aria-label={`${account.label || "Account"} usually for`}
+                  value={account.beneficiaryDefault}
+                  onChange={(event) => patchAccount(account.id, { beneficiaryDefault: event.target.value as Account["beneficiaryDefault"] })}
+                >
+                  <option value="owner" disabled={account.owner === "joint"}>Account owner</option>
+                  <option value="household">Household</option>
+                  <option value="review">Always review</option>
                 </select>
                 <input
                   aria-label={`${account.label || "Account"} currency`}
@@ -440,10 +533,9 @@ export function SettingsModal({
             <div className="rules-list">
               {Object.entries(data.merchantRules).map(([merchant, rule]) => {
                 const person = rule.counterpartyId ? counterparties.find((cp) => cp.id === rule.counterpartyId)?.name : "";
-                const label =
-                  rule.kind === "expense"
-                    ? categoryInfo(rule.category, members, customCategories).label
-                    : `${movementInfo(rule.kind).label}${person ? ` · ${person}` : ""}`;
+                const label = isSpendKind(rule.kind)
+                  ? `${rule.kind === "expense" ? "" : `${movementInfo(rule.kind).label} · `}${categoryInfo(rule.category, members, customCategories).label} · ${beneficiaryLabel(rule.beneficiary, members)}`
+                  : `${movementInfo(rule.kind).label}${person ? ` · ${person}` : ""}`;
                 return (
                   <div key={merchant}>
                     <span>{merchant}</span>
@@ -462,7 +554,7 @@ export function SettingsModal({
 
       {activeTab === "sync" && (
         <>
-          <div className="settings-section sync-section">
+          <div className="settings-section sync-section" id="settings-panel-sync" role="tabpanel" aria-labelledby="settings-tab-sync">
             <h3>Google sign-in & Firestore</h3>
             <p className="muted">
               Google sign-in identifies who is using Mizan. Financial data is stored in the active Firestore household.
@@ -536,6 +628,11 @@ export function SettingsModal({
               <button className="secondary" onClick={onExport}>Export JSON</button>
               <button className="secondary" onClick={() => importRef.current?.click()}>Import JSON</button>
               <button className="secondary danger" onClick={onClearData}>Clear legacy browser data</button>
+              <HouseholdTransactionClearAction
+                canClearTransactions={canClearTransactions}
+                hasTransactions={hasTransactions}
+                onClearTransactions={onClearTransactions}
+              />
               <HouseholdResetAction
                 canResetHousehold={canResetHousehold}
                 hasResettableData={hasResettableData}

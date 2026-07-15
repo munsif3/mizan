@@ -1,4 +1,4 @@
-const CACHE_NAME = "mizan-app-v1";
+const CACHE_NAME = "mizan-app-v2";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -30,21 +30,30 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  const isAppShell = APP_SHELL.includes(url.pathname);
   const isBuildAsset = url.pathname.startsWith("/assets/");
-  if (!isAppShell && !isBuildAsset) return;
+  const isNavigation = request.mode === "navigate" || url.pathname === "/" || url.pathname === "/index.html";
+  const isMutableShellAsset = url.pathname === "/manifest.webmanifest";
+  if (!isNavigation && !isMutableShellAsset && !isBuildAsset) return;
 
-  event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-
-      return fetch(request).then((response) => {
+  if (isNavigation || isMutableShellAsset) {
+    event.respondWith(
+      fetch(request).then((response) => {
         if (response.ok) {
           const copy = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
         }
         return response;
-      });
-    }),
-  );
+      }).catch(async () => (await caches.match(request)) ?? (await caches.match("/index.html")) ?? Response.error()),
+    );
+    return;
+  }
+
+  // Vite asset names are content-hashed, so a cached response is immutable.
+  event.respondWith(caches.match(request).then((cached) => cached ?? fetch(request).then((response) => {
+    if (response.ok) {
+      const copy = response.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+    }
+    return response;
+  })));
 });

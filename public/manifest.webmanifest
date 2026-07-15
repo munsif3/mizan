@@ -1,7 +1,7 @@
 {
   "name": "Mizan",
   "short_name": "Mizan",
-  "description": "Deterministic, offline household finance awareness for your household.",
+  "description": "Deterministic household finance awareness with an offline-capable app shell.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

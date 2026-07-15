@@ -9,6 +9,7 @@ function txn(amount: number): Transaction {
     description: "FUND TRANSFER USD 1900 @332",
     amount,
     category: "uncategorized",
+    beneficiary: { type: "unassigned" },
     account: "NTB PFC",
     note: "",
     source: "imported",

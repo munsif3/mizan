@@ -11,22 +11,18 @@ export type FixedCategoryKey =
   | "investments"
   | "uncategorized";
 
-/** One personal-spend bucket per household member: `personal:<memberId>`. */
+/** Legacy schema key accepted only while migrating pre-v12 data. */
 export type PersonalCategoryKey = `personal:${string}`;
 
 /** A user-defined category, keyed `custom:<id>` (see `settings.customCategories`). */
 export type CustomCategoryKey = `custom:${string}`;
 
-export type CategoryKey = FixedCategoryKey | PersonalCategoryKey | CustomCategoryKey;
+/** What money was spent on. Beneficiary is stored independently from purpose. */
+export type CategoryKey = FixedCategoryKey | CustomCategoryKey;
 
-/** Build the personal-category key for a member. */
+/** Build a legacy personal-category key. New app data must use `beneficiary`. */
 export function personalCategory(id: MemberId): PersonalCategoryKey {
   return `personal:${id}`;
-}
-
-/** The member id inside a `personal:<id>` key, or null for a fixed category. */
-export function personalMemberId(key: string): MemberId | null {
-  return key.startsWith("personal:") ? key.slice("personal:".length) : null;
 }
 
 /** Build the custom-category key for a custom-category id. */
@@ -77,6 +73,12 @@ export interface CustomCategory {
 
 export type MemberId = string;
 
+/** Who consumed a spend, independently from its purpose and paying account. */
+export type SpendBeneficiary =
+  | { type: "household" }
+  | { type: "member"; memberId: MemberId }
+  | { type: "unassigned" };
+
 /** Reserved owner/filter sentinels that a member id may never take. */
 export const RESERVED_IDS = ["all", "joint"] as const;
 
@@ -96,7 +98,7 @@ export interface IncomePortion {
 export interface Member {
   id: MemberId;
   name: string;
-  /** hex colour; drives the person tab, panel, and this member's personal category */
+  /** hex colour; identifies this member throughout household views */
   color: string;
   portions: IncomePortion[];
 }
@@ -115,6 +117,8 @@ export interface IncomeReceipt {
   receivedCurrency?: string;
   /** Household-currency units used per receivedCurrency unit for this confirmation. */
   fxRate?: number;
+  /** Legacy receipt whose native currency could not be repaired safely. */
+  currencyReview?: boolean;
   date?: string;
   /** Statement-credit provenance only; income still resolves from `amount`. */
   transactionId?: string;
@@ -123,8 +127,8 @@ export interface IncomeReceipt {
 /** Who pays from an account: a member id, or "joint" for shared/unknown. */
 export type AccountOwner = MemberId | "joint";
 
-/** The person-tab filter: a member id, or "all". */
-export type OwnerFilter = MemberId | "all";
+/** How a registered account supplies the beneficiary for otherwise unresolved spend. */
+type AccountBeneficiaryDefault = "owner" | "household" | "review";
 
 export interface Account {
   id: string;
@@ -132,8 +136,10 @@ export interface Account {
   label: string;
   /** ISO 4217 currency of the underlying bank account; defaults to household currency. */
   currency?: string;
-  /** whose spending this account represents for settlement */
+  /** who funds transactions posted to this account for fronting/settlement */
   owner: AccountOwner;
+  /** usual consumer for spend on this account; independent from who funds it */
+  beneficiaryDefault: AccountBeneficiaryDefault;
   /**
    * case-insensitive substrings matched against the account text detected in a
    * statement (card number fragment, bank name) or the statement file name;
@@ -156,7 +162,14 @@ export interface Transaction {
   description: string;
   /** positive household-currency value; recognizable FX rows are normalized from their explicit rate */
   amount: number;
+  /** Purpose: what the money bought. */
   category: CategoryKey;
+  /** Consumer: household, one member, or unresolved. */
+  beneficiary: SpendBeneficiary;
+  /** Present only when the concrete beneficiary was derived from the account policy. */
+  beneficiarySource?: "account_default";
+  /** A ledger-only override that merchant-wide rules must not replace. */
+  classificationLocked?: boolean;
   /** Canonical account label shown in the ledger. */
   account: string;
   /** Stable registry link, so renaming an account also updates its existing rows. */
@@ -208,6 +221,7 @@ export interface FixedCost {
   label: string;
   amount: number;
   category: CategoryKey;
+  beneficiary: SpendBeneficiary;
   /** last month this cost applies, "YYYY-MM" inclusive; empty/undefined = ongoing */
   until?: string;
 }
@@ -234,7 +248,7 @@ export interface CsvMapping {
   accountLabel?: string;
 }
 
-export interface HouseholdSettings {
+interface HouseholdSettings {
   members: Member[];
   /** percent of income the household aims to save each month */
   targetSaveRate: number;
@@ -253,12 +267,14 @@ export interface HouseholdSettings {
 }
 
 /**
- * What Mizan does with a recognized merchant: which category, what movement
- * kind, and (for lending/gifts) which counterparty. Set once by categorizing a
- * merchant; applied to every past and future occurrence.
+ * What Mizan does with a recognized merchant: which purpose, beneficiary,
+ * movement kind, and (for lending/gifts) which counterparty. Set once by
+ * classifying a merchant; applied to every unlocked past and future occurrence.
  */
 export interface MerchantRule {
   category: CategoryKey;
+  /** A concrete override, or a policy that resolves separately for each row's account. */
+  beneficiary: SpendBeneficiary | { type: "account_default" };
   kind: MovementKind;
   counterpartyId?: string;
 }
@@ -266,7 +282,7 @@ export interface MerchantRule {
 export type MerchantRules = Record<string, MerchantRule>;
 
 export interface AppData {
-  schemaVersion: 10;
+  schemaVersion: 12;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
   merchantRules: MerchantRules;

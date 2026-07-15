@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ownerOf } from "../domain/accounts";
+import { ownerOfTransaction } from "../domain/accounts";
 import {
   allocateSharedContribution,
   recoveryRowsForContribution,
@@ -8,7 +8,7 @@ import {
   transactionContributionAmount,
   type SharedContributionCandidate,
 } from "../domain/contributions";
-import { personalMemberId, type Account, type Member, type SharedContribution, type Transaction } from "../domain/types";
+import type { Account, Member, SharedContribution, Transaction } from "../domain/types";
 import { Modal } from "./bits";
 
 export function SharedContributionModal({
@@ -47,7 +47,7 @@ export function SharedContributionModal({
 
   const memberIds = useMemo(() => new Set(members.map((member) => member.id)), [members]);
   const debits = transactions.filter((txn) => {
-    const owner = ownerOf(txn.account, accounts);
+    const owner = ownerOfTransaction(txn, accounts);
     return txn.direction === "debit" && memberIds.has(owner) && (txn.kind === "expense" || txn.kind === "internal_transfer");
   });
   const selectedDebit = transactions.find((txn) => txn.id === debitId);
@@ -68,12 +68,12 @@ export function SharedContributionModal({
     .filter((txn) =>
       txn.direction === "debit"
         && txn.kind === "loan_payment"
-        && !personalMemberId(txn.category)
+        && txn.beneficiary.type === "household"
         && (!selectedCredit || (sameAccount(selectedCredit, txn) && nearby(selectedCredit.date, txn.date))),
     )
     .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
   const selectedExpenses = expenses.filter((txn) => selectedExpenseIds.includes(txn.id));
-  const contributorMemberId = selectedDebit ? ownerOf(selectedDebit.account, accounts) : "joint";
+  const contributorMemberId = selectedDebit ? ownerOfTransaction(selectedDebit, accounts) : "joint";
   const amount = selectedDebit ? transactionContributionAmount(selectedDebit) : 0;
   const allocations = selectedCredit
     ? allocateSharedContribution(amount, selectedCredit.date, selectedExpenses, contributions, contribution?.id)
@@ -94,7 +94,7 @@ export function SharedContributionModal({
     : "";
   const error = capacityError || (draft ? sharedContributionError(draft, transactions, accounts, members, contributions) : "Select both transfer rows and at least one loan recovery deduction.");
   const contributor = members.find((member) => member.id === contributorMemberId);
-  const payerId = selectedExpenses[0] ? ownerOf(selectedExpenses[0].account, accounts) : "joint";
+  const payerId = selectedExpenses[0] ? ownerOfTransaction(selectedExpenses[0], accounts) : "joint";
   const payer = members.find((member) => member.id === payerId);
   const groupTotal = selectedExpenses.reduce((sum, expense) => sum + transactionContributionAmount(expense), 0);
   const allocatedByExpense = new Map(allocations.map((allocation) => [allocation.expenseTransactionId, allocation.amount]));

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseCsv } from "../import/csv";
-import { headerSignature, inferMapping, mapCsvRows } from "../import/csvMap";
+import { csvPresetSignature, headerSignature, inferMapping, mapCsvRows } from "../import/csvMap";
 import type { CsvMapping } from "../domain/types";
 import { Modal } from "./bits";
 
@@ -29,16 +29,17 @@ export function CsvImportModal({
         const parsed = parseCsv(String(reader.result));
         if (!parsed.length) throw new Error("empty file");
         setRows(parsed);
-        const signature = headerSignature(parsed);
-        setMapping(presets[signature] ?? { ...inferMapping(parsed), accountLabel: defaultAccount });
+        const inferred = inferMapping(parsed);
+        const signature = csvPresetSignature(parsed, inferred.hasHeader);
+        const preset = presets[signature] ?? presets[headerSignature(parsed)];
+        setMapping({ ...(preset ?? inferred), accountLabel: defaultAccount });
       } catch {
         setError("That file could not be read as CSV.");
       }
     };
     reader.onerror = () => setError("That file could not be read.");
     reader.readAsText(file);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file]);
+  }, [defaultAccount, file, presets]);
 
   const columns = useMemo(() => {
     const header = rows[0] ?? [];
@@ -54,7 +55,9 @@ export function CsvImportModal({
 
   const run = () => {
     if (!mapping || !preview) return;
-    onSavePreset(headerSignature(rows), mapping);
+    const layout = { ...mapping };
+    delete layout.accountLabel;
+    onSavePreset(csvPresetSignature(rows, mapping.hasHeader), layout);
     onImport(preview.transactions, preview.skipped.length);
     onClose();
   };

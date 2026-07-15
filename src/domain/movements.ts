@@ -1,7 +1,39 @@
 import type { MovementKind } from "./types";
 
+type MovementDirection = "debit" | "credit";
+
+export interface MovementInfo {
+  kind: MovementKind;
+  label: string;
+  /** short tag shown as a badge in the ledger for non-spend movements */
+  badge?: string;
+  directions: readonly MovementDirection[];
+  defaultDirection: MovementDirection;
+  spend: boolean;
+  needsCategory: boolean;
+  needsCounterparty: boolean;
+}
+
+const MOVEMENT_DEFINITIONS = {
+  expense: { label: "Expense", directions: ["debit"], defaultDirection: "debit", spend: true, needsCategory: true, needsCounterparty: false },
+  loan_payment: { label: "Loan / debt payment", directions: ["debit"], defaultDirection: "debit", spend: true, needsCategory: true, needsCounterparty: false },
+  gift_or_handout: { label: "Gift / handout", directions: ["debit"], defaultDirection: "debit", spend: true, needsCategory: true, needsCounterparty: true },
+  money_lent: { label: "Money lent", badge: "Lent", directions: ["debit"], defaultDirection: "debit", spend: false, needsCategory: true, needsCounterparty: true },
+  repayment_received: { label: "Repayment received", badge: "Repaid", directions: ["credit"], defaultDirection: "credit", spend: false, needsCategory: true, needsCounterparty: true },
+  internal_transfer: { label: "Internal transfer", badge: "Transfer", directions: ["debit", "credit"], defaultDirection: "debit", spend: false, needsCategory: false, needsCounterparty: false },
+  investment_transfer: { label: "Investment transfer", badge: "Invested", directions: ["debit"], defaultDirection: "debit", spend: false, needsCategory: false, needsCounterparty: false },
+  account_credit: { label: "Account credit", badge: "Credit", directions: ["credit"], defaultDirection: "credit", spend: false, needsCategory: false, needsCounterparty: false },
+} as const satisfies Record<MovementKind, Omit<MovementInfo, "kind">>;
+
+/** Movement kinds in the order they appear in pickers. */
+export const MOVEMENT_OPTIONS: readonly MovementInfo[] = (Object.entries(MOVEMENT_DEFINITIONS) as Array<
+  [MovementKind, Omit<MovementInfo, "kind">]
+>).map(([kind, definition]) => ({ kind, ...definition }));
+
 /** Movement kinds that count as spend. Spend is always money out. */
-export const SPEND_KINDS = new Set<MovementKind>(["expense", "gift_or_handout", "loan_payment"]);
+export const SPEND_KINDS: ReadonlySet<MovementKind> = new Set(
+  MOVEMENT_OPTIONS.filter((definition) => definition.spend).map((definition) => definition.kind),
+);
 
 export function isSpendKind(kind: MovementKind): boolean {
   return SPEND_KINDS.has(kind);
@@ -9,51 +41,22 @@ export function isSpendKind(kind: MovementKind): boolean {
 
 /** Whether a movement kind is valid for the raw bank-row direction. */
 export function kindAllowedFor(kind: MovementKind, direction: "debit" | "credit"): boolean {
-  return direction !== "credit" || !isSpendKind(kind);
+  return MOVEMENT_DEFINITIONS[kind].directions.includes(direction as never);
 }
-
-export interface MovementInfo {
-  kind: MovementKind;
-  label: string;
-  /** short tag shown as a badge in the ledger for non-spend movements */
-  badge?: string;
-}
-
-/** Movement kinds in the order they appear in pickers. */
-export const MOVEMENT_OPTIONS: MovementInfo[] = [
-  { kind: "expense", label: "Expense" },
-  { kind: "loan_payment", label: "Loan / debt payment" },
-  { kind: "gift_or_handout", label: "Gift / handout" },
-  { kind: "money_lent", label: "Money lent", badge: "Lent" },
-  { kind: "repayment_received", label: "Repayment received", badge: "Repaid" },
-  { kind: "internal_transfer", label: "Internal transfer", badge: "Transfer" },
-  { kind: "investment_transfer", label: "Investment transfer", badge: "Invested" },
-  { kind: "account_credit", label: "Account credit", badge: "Credit" },
-];
-
-const BY_KIND = new Map(MOVEMENT_OPTIONS.map((info) => [info.kind, info]));
 
 export function movementInfo(kind: MovementKind): MovementInfo {
-  return BY_KIND.get(kind) ?? MOVEMENT_OPTIONS[0]!;
+  const definition = MOVEMENT_DEFINITIONS[kind] ?? MOVEMENT_DEFINITIONS.expense;
+  return { kind, ...definition };
 }
-
-/** These movements carry a "what for" category; the rest don't. */
-const NO_CATEGORY = new Set<MovementKind>(["internal_transfer", "account_credit", "investment_transfer"]);
 
 export function kindNeedsCategory(kind: MovementKind): boolean {
-  return !NO_CATEGORY.has(kind);
+  return MOVEMENT_DEFINITIONS[kind].needsCategory;
 }
-
-/** These movements involve another person and can carry a counterparty. */
-const NEEDS_COUNTERPARTY = new Set<MovementKind>(["money_lent", "repayment_received", "gift_or_handout"]);
 
 export function kindNeedsCounterparty(kind: MovementKind): boolean {
-  return NEEDS_COUNTERPARTY.has(kind);
+  return MOVEMENT_DEFINITIONS[kind].needsCounterparty;
 }
 
-/** Money-in movements; the rest move money out. Used to set a manual row's sign. */
-const MONEY_IN = new Set<MovementKind>(["account_credit", "repayment_received"]);
-
 export function directionForKind(kind: MovementKind): "debit" | "credit" {
-  return MONEY_IN.has(kind) ? "credit" : "debit";
+  return MOVEMENT_DEFINITIONS[kind].defaultDirection;
 }

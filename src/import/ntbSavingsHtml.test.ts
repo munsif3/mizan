@@ -47,6 +47,7 @@ describe("parseDepositStatement", () => {
 
     const txns = parseDepositStatement(html, "fallback");
     expect(txns).toHaveLength(3);
+    expect(txns.every((t) => t.beneficiary.type === "unassigned")).toBe(true);
 
     const credit = txns.find((t) => t.description === "monthly common share")!;
     expect(credit).toMatchObject({ date: "2026-06-23", amount: 150000, direction: "credit" });
@@ -143,7 +144,7 @@ describe("parseDepositStatement", () => {
         transactionCredit: "0"
       });
     </script></html>`;
-    expect(() => parseDepositStatement(html, "fallback")).toThrow(/couldn't read any of them/i);
+    expect(() => parseDepositStatement(html, "fallback")).toThrow(/could safely read only 0/i);
   });
 
   it("throws rather than silently truncating when the account count and transaction-batch count disagree", () => {

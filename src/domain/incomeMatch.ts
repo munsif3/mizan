@@ -1,7 +1,8 @@
-import { ownerOf, resolveAccountLabel, transactionDisplayCurrency } from "./accounts";
+import { accountForTransaction, ownerOfTransaction, transactionDisplayCurrency } from "./accounts";
 import { monthOf } from "./dates";
 import { expectedDeposit, fxRateFor, receiptFor, windowDaysFor } from "./income";
-import { cleanMerchant } from "./rules";
+import { INCOME_MATCH_TOLERANCE, normalizeCurrency, relativeVariance, resolveIncomeCurrency } from "./money";
+import { maximumCardinalityMinCostMatch } from "./matching";
 import type { Account, IncomePortion, IncomeReceipt, Member, MemberId, Transaction } from "./types";
 
 export interface IncomeCandidate {
@@ -26,12 +27,10 @@ export interface IncomeMatchOptions {
   windowSlackDays?: number;
 }
 
-const DEFAULT_TOLERANCE = 0.15;
 const DEFAULT_WINDOW_SLACK = 5;
 
 function registeredAccount(transaction: Transaction, accounts: Account[]): boolean {
-  const resolved = cleanMerchant(resolveAccountLabel(transaction.account, accounts));
-  return accounts.some((account) => cleanMerchant(account.label) === resolved);
+  return Boolean(accountForTransaction(transaction, accounts));
 }
 
 function daysOutsideWindow(portion: IncomePortion, month: string, transaction: Transaction): number {
@@ -74,7 +73,7 @@ function eligibleCreditsWithin(
       if (monthOf(transaction.date) !== month) return false;
       if (transaction.direction !== "credit" || transaction.kind !== "account_credit") return false;
       if (linked.has(transaction.id) || !registeredAccount(transaction, accounts)) return false;
-      const owner = ownerOf(transaction.account, accounts);
+      const owner = ownerOfTransaction(transaction, accounts);
       if (owner !== memberId && owner !== "joint") return false;
       return daysOutsideWindow(portion, month, transaction) <= windowSlackDays;
     })
@@ -92,20 +91,29 @@ export function detectIncomeCandidates(
   month: string,
   options: IncomeMatchOptions = {},
 ): IncomeCandidate[] {
-  const tolerance = Math.max(0, options.tolerance ?? DEFAULT_TOLERANCE);
+  const tolerance = Math.max(0, options.tolerance ?? INCOME_MATCH_TOLERANCE);
   const windowSlackDays = Math.max(0, options.windowSlackDays ?? DEFAULT_WINDOW_SLACK);
   const pairs: IncomeCandidate[] = [];
 
   for (const member of members) {
     for (const portion of member.portions) {
-      if (receiptFor(receipts, month, portion.id)) continue;
+      if (receiptFor(receipts, month, member.id, portion.id)) continue;
       const expected = expectedDeposit(portion, householdCurrency, fxRates);
       if (expected.missingRate || expected.amount <= 0) continue;
-      const portionCurrency = portion.currency.trim().toUpperCase() || householdCurrency.trim().toUpperCase();
+      const portionCurrency = normalizeCurrency(portion.currency, householdCurrency);
       const rate = fxRateFor(portionCurrency, householdCurrency, fxRates);
       if (rate === null) continue;
       for (const transaction of eligibleCreditsWithin(portion, member.id, transactions, accounts, receipts, month, windowSlackDays)) {
-        const creditCurrency = transactionDisplayCurrency(transaction, accounts, householdCurrency).trim().toUpperCase();
+        const accountCurrency = transactionDisplayCurrency(transaction, accounts, householdCurrency);
+        const creditCurrency = resolveIncomeCurrency({
+          accountCurrency,
+          portionCurrency,
+          householdCurrency,
+          statementAmount: transaction.amount,
+          portionAmount: portion.amount,
+          fxRate: rate,
+          tolerance,
+        }).currency;
         let sourceAmount: number;
         let amount: number;
         let variance: number;
@@ -114,11 +122,11 @@ export function detectIncomeCandidates(
           amount = sourceAmount * rate;
           const expectedSource = Number(portion.amount) || 0;
           if (expectedSource <= 0) continue;
-          variance = (sourceAmount - expectedSource) / expectedSource;
-        } else if (creditCurrency === householdCurrency.trim().toUpperCase()) {
+          variance = relativeVariance(sourceAmount, expectedSource);
+        } else if (creditCurrency === normalizeCurrency(householdCurrency)) {
           sourceAmount = Number(transaction.amount) || 0;
           amount = sourceAmount;
-          variance = (amount - expected.amount) / expected.amount;
+          variance = relativeVariance(amount, expected.amount);
         } else {
           continue;
         }
@@ -131,7 +139,7 @@ export function detectIncomeCandidates(
           amount,
           sourceAmount,
           sourceCurrency: creditCurrency,
-          fxRate: creditCurrency === householdCurrency.trim().toUpperCase() ? 1 : rate,
+          fxRate: creditCurrency === normalizeCurrency(householdCurrency) ? 1 : rate,
           variance,
           daysOutsideWindow: outside,
         });
@@ -148,12 +156,18 @@ export function detectIncomeCandidates(
       a.transaction.id.localeCompare(b.transaction.id),
   );
 
-  const usedPortions = new Set<string>();
-  const usedTransactions = new Set<string>();
-  return pairs.filter((pair) => {
-    if (usedPortions.has(pair.portionId) || usedTransactions.has(pair.transaction.id)) return false;
-    usedPortions.add(pair.portionId);
-    usedTransactions.add(pair.transaction.id);
-    return true;
-  });
+  return maximumCardinalityMinCostMatch(pairs.map((pair) => ({
+    left: `${pair.memberId}\u0000${pair.portionId}`,
+    right: pair.transaction.id,
+    cost: pair.daysOutsideWindow * 1_000_000 + Math.abs(pair.variance) * 100_000,
+    value: pair,
+  }))).sort(
+    (a, b) =>
+      a.daysOutsideWindow - b.daysOutsideWindow
+      || Math.abs(a.variance) - Math.abs(b.variance)
+      || b.amount - a.amount
+      || a.memberId.localeCompare(b.memberId)
+      || a.portionId.localeCompare(b.portionId)
+      || a.transaction.id.localeCompare(b.transaction.id),
+  );
 }
