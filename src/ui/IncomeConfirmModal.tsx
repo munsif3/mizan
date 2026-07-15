@@ -135,7 +135,7 @@ export function IncomeConfirmModal({
             <span className="soft-label">From your statement</span>
             <strong>{selectedTransaction.description}</strong>
             <small>{selectedTransaction.account} · {selectedTransaction.date} · {statementMoney(selectedTransaction, selectedTransaction.amount)}</small>
-            <button type="button" className="link-button" onClick={() => setTransactionId("")}>Unlink / enter manually</button>
+            <button type="button" className="link-button" onClick={() => setTransactionId("")}>Unlink statement credit</button>
           </div>
         )}
         {available.length > 0 && (
@@ -190,9 +190,9 @@ export function IncomeConfirmModal({
           <p className="income-net-caption">{receivedMoney(amount)} × {rate || 0} = {money(householdAmount)} for household totals.</p>
         )}
         <div className="modal-actions">
-          {item.receipt && <button className="secondary danger" onClick={onRemove}>Remove confirmation</button>}
+          {item.receipt && <button className="secondary danger" onClick={onRemove}>Delete income confirmation</button>}
           <button className="secondary" onClick={onClose}>Cancel</button>
-          <button disabled={amount <= 0 || (foreignReceipt && rate <= 0)} onClick={save}>Confirm received</button>
+          <button disabled={amount <= 0 || (foreignReceipt && rate <= 0)} onClick={save}>{item.receipt ? "Save changes" : "Confirm income"}</button>
         </div>
       </div>
     </Modal>

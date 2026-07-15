@@ -96,7 +96,7 @@ describe("UI render smoke", () => {
     expect(html).toContain("Expected and received");
     expect(html).toContain("Monthly income");
     expect(html).toContain("Bring transactions up to date");
-    expect(html).toContain("Review now");
+    expect(html).toContain("Review queue");
     // Someone must be settling up given uneven shared spend.
     expect(html).toMatch(/pays/);
   });
@@ -269,7 +269,7 @@ describe("UI render smoke", () => {
       />,
     );
     expect(html).toContain("need a default");
-    expect(html).toContain('aria-label="Save default for UNKNOWN SHOP"');
+    expect(html).toContain('aria-label="Save merchant default for UNKNOWN SHOP"');
     expect(html).toContain("aria-label=\"Category for UNKNOWN SHOP\"");
     expect(html).toContain("aria-label=\"Account for UNKNOWN SHOP\"");
     expect(html).toContain("aria-label=\"Split UNKNOWN SHOP\"");
@@ -334,6 +334,7 @@ describe("UI render smoke", () => {
     expect(html).toContain("income-member-header");
     expect(html).toContain("income-deposit-card");
     expect(html).toContain("arrival-inputs");
+    expect(html).toContain('aria-label="Delete Ana"');
     expect(html).toContain("Accounts &amp; rules");
     expect(html).toContain("Sync &amp; backup");
     expect(html).toContain("aria-label=\"Close Settings\"");
@@ -383,7 +384,7 @@ describe("UI render smoke", () => {
     );
     expect(html).toContain("This permanently clears");
     expect(html).toContain("Shared budget");
-    expect(html).toContain("Export JSON first");
+    expect(html).toContain("Export JSON");
     expect(html).toContain("Type");
     expect(html).toContain("RESET");
     expect(html).toContain("Budget members");
@@ -425,7 +426,7 @@ describe("UI render smoke", () => {
     expect(html).toContain("Transactions removed");
     expect(html).toContain("Contribution links removed");
     expect(html).toContain("Income links detached");
-    expect(html).toContain("Export JSON first");
+    expect(html).toContain("Export JSON");
     expect(html).toContain("disabled=\"\"");
     expect(isClearTransactionsConfirmation("CLEAR")).toBe(true);
     expect(isClearTransactionsConfirmation("clear")).toBe(false);
@@ -477,9 +478,16 @@ describe("UI render smoke", () => {
     const splitHtml = renderToString(
       <SplitModal txn={transaction} onSave={() => {}} onClear={() => {}} onClose={() => {}} />,
     );
+    const existingSplitHtml = renderToString(
+      <SplitModal txn={{ ...transaction, split: { mine: 1, of: 2 } }} onSave={() => {}} onClear={() => {}} onClose={() => {}} />,
+    );
     expect(csvHtml).toContain("Import CSV");
     expect(splitHtml).toContain("Split transaction");
     expect(splitHtml).toContain("Total parts");
+    expect(splitHtml).toContain("Save split");
+    expect(splitHtml).toContain("Cancel");
+    expect(splitHtml).not.toContain("Remove split");
+    expect(existingSplitHtml).toContain("Remove split");
   });
 
   it("renders a guarded shared-contribution preview across partial recovery rows", () => {
@@ -490,6 +498,14 @@ describe("UI render smoke", () => {
       { id: "loan-early", date: "2026-06-30", description: "BANK RECOVERY FOR500240015943", amount: 40_000, category: "housing", beneficiary: { type: "household" }, account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
       { id: "loan-late", date: "2026-07-02", description: "BANK RECOVERY FOR500240015943", amount: 50_000, category: "housing", beneficiary: { type: "household" }, account: "Ana Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
     ];
+    const contribution = {
+      id: "shared-1",
+      allocations: [{ expenseTransactionId: "loan-late", amount: 45_000 }],
+      transferDebitTransactionId: "out",
+      transferCreditTransactionId: "in",
+      contributorMemberId: "b",
+      amount: 45_000,
+    };
     const html = renderToString(
       <SharedContributionModal
         transactions={data.transactions}
@@ -512,6 +528,19 @@ describe("UI render smoke", () => {
         onClose={() => {}}
       />,
     );
+    const editHtml = renderToString(
+      <SharedContributionModal
+        transactions={data.transactions}
+        accounts={data.accounts}
+        members={data.settings.members}
+        contributions={[contribution]}
+        contribution={contribution}
+        money={(value) => `USD ${value}`}
+        onSave={() => {}}
+        onRemove={() => {}}
+        onClose={() => {}}
+      />,
+    );
     expect(html).toContain("Confirm shared contribution");
     expect(html).toContain("Ben");
     expect(html).toContain("funded");
@@ -522,6 +551,8 @@ describe("UI render smoke", () => {
     expect(html).toContain("Loan recovery deductions funded");
     expect(html).toContain("Total recovered");
     expect(html).toContain("BANK RECOVERY FOR500240015943");
+    expect(editHtml).toContain("Save changes");
+    expect(editHtml).toContain("Unlink contribution");
   });
 
   it("App requires Firebase sign-in before any household data screen", () => {

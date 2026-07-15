@@ -157,9 +157,11 @@ export function SharedContributionModal({
         )}
         {error && <p className="form-error">{error}</p>}
         <div className="modal-actions">
-          {contribution && <button className="danger secondary" onClick={() => onRemove(contribution.id)}>Remove link</button>}
+          {contribution && <button className="danger secondary" onClick={() => onRemove(contribution.id)}>Unlink contribution</button>}
           <button className="secondary" onClick={onClose}>Cancel</button>
-          <button disabled={!draft || Boolean(error)} onClick={() => draft && !error && onSave(draft)}>Confirm contribution</button>
+          <button disabled={!draft || Boolean(error)} onClick={() => draft && !error && onSave(draft)}>
+            {contribution ? "Save changes" : "Confirm contribution"}
+          </button>
         </div>
       </div>
     </Modal>

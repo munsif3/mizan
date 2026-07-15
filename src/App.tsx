@@ -1,11 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { BarChart2, ChevronLeft, ChevronRight, Eye, EyeOff, Home, List, Moon, Settings, Sun } from "lucide-react";
+import { BarChart2, Eye, EyeOff, Home, List, Moon, Settings, Sun } from "lucide-react";
 import { authErrorMessage, signInWithGoogle, signOutUser, useAuthState } from "./auth/authStore";
 import {
   applyAccountBeneficiaryDefaults,
   applyAccounts,
   assignAccount,
-  resolveAccountLabel,
   transactionDisplayCurrency,
   withAccountBeneficiaryDefault,
 } from "./domain/accounts";
@@ -26,7 +25,7 @@ import { detectIncomeCandidates, eligibleCredits, type IncomeCandidate } from ".
 import { formatMoney } from "./domain/money";
 import { directionForKind, isSpendKind } from "./domain/movements";
 import { applyRules, cleanMerchant, matchingRuleKey, withRule } from "./domain/rules";
-import { computeHistory, computeMonthSummary, monthsWithData, needsClassificationReview, reviewQueue } from "./domain/summary";
+import { computeHistory, computeMonthSummary, monthsWithData, needsClassificationReview, reviewQueue, selectableMonths } from "./domain/summary";
 import { detectTransferCandidates } from "./domain/transfers";
 import {
   defaultKind,
@@ -72,6 +71,7 @@ import { ImportModal, type ImportResult } from "./ui/ImportModal";
 import { IncomeConfirmModal } from "./ui/IncomeConfirmModal";
 import { CsvImportModal } from "./ui/CsvImportModal";
 import { ManualModal, type ManualEntry } from "./ui/ManualModal";
+import { MonthNavigator } from "./ui/MonthNavigator";
 import { OnboardingView } from "./ui/OnboardingView";
 import { RESET_CONFIRMATION, ResetHouseholdModal } from "./ui/ResetHouseholdModal";
 import { SettingsModal } from "./ui/SettingsModal";
@@ -459,17 +459,19 @@ export default function App() {
 
   const today = new Date();
   const todayMonth = isoDateOf(today).slice(0, 7);
-  const months = useMemo(() => monthsWithData(data, new Date()), [data]);
-  const currentMonth = month || months[months.length - 1] || todayMonth;
+  const historyMonths = useMemo(() => monthsWithData(data, today), [data, todayMonth]);
+  const navigationMonths = useMemo(() => selectableMonths(data, today), [data, todayMonth]);
+  const monthRangeReady = bootstrapPhase === "ready";
+  const currentMonth = month && (!monthRangeReady || navigationMonths.includes(month)) ? month : todayMonth;
   useEffect(() => {
-    if (month && !months.includes(month)) setMonth(months[months.length - 1] ?? "");
-  }, [month, months]);
+    if (monthRangeReady && month && month !== currentMonth) setMonth(currentMonth);
+  }, [currentMonth, month, monthRangeReady]);
   const summary = useMemo(
     () => computeMonthSummary(data, currentMonth, new Date()),
     [data, currentMonth],
   );
   const queue = useMemo(() => reviewQueue(data.transactions), [data]);
-  const history = useMemo(() => computeHistory(data, months, new Date()), [data, months]);
+  const history = useMemo(() => computeHistory(data, historyMonths, new Date()), [data, historyMonths]);
   const transferCandidates = useMemo(
     () =>
       detectTransferCandidates(data.transactions, data.accounts).filter(
@@ -679,20 +681,22 @@ export default function App() {
   }
 
   function addManual(entry: ManualEntry) {
-    const account = resolveAccountLabel(entry.account, data.accounts);
+    const { accountId, ...manualEntry } = entry;
+    const registeredAccount = accountId ? data.accounts.find((account) => account.id === accountId) : undefined;
     const txn: Transaction = {
       id: uid("txn"),
       source: "manual",
       direction: directionForKind(entry.kind),
       classificationLocked: true,
-      ...entry,
-      account,
+      ...manualEntry,
+      account: registeredAccount?.label ?? entry.account,
+      ...(registeredAccount ? { accountId: registeredAccount.id } : {}),
     };
+    if (!registeredAccount && txn.beneficiarySource === "account_default") delete txn.beneficiarySource;
     if (!txn.counterpartyId) delete txn.counterpartyId;
-    const [linked] = applyAccounts([txn], data.accounts);
     setData((previous) => ({
       ...previous,
-      transactions: [...previous.transactions, linked!].sort((a, b) => a.date.localeCompare(b.date)),
+      transactions: [...previous.transactions, txn].sort((a, b) => a.date.localeCompare(b.date)),
     }));
     setMonth(monthOf(txn.date));
   }
@@ -1424,7 +1428,6 @@ export default function App() {
       />
     ) : null;
 
-  const monthIndex = months.indexOf(currentMonth);
   const syncHasError = /failed|could not/i.test(syncStatus);
   const syncLabel = syncHasError
     ? "Sync issue"
@@ -1625,27 +1628,14 @@ export default function App() {
           description={VIEW_DESCRIPTIONS[view]}
           actions={
             <>
-            <div className="month-nav">
-              <IconButton
-                label="Previous month"
-                icon={ChevronLeft}
-                disabled={monthIndex <= 0}
-                onClick={() => monthIndex > 0 && setMonth(months[monthIndex - 1]!)}
-              />
-              <select aria-label="Month" value={currentMonth} onChange={(event) => setMonth(event.target.value)}>
-                {months.map((item) => (
-                  <option key={item} value={item}>{monthLabel(item)}</option>
-                ))}
-              </select>
-              <IconButton
-                label="Next month"
-                icon={ChevronRight}
-                disabled={monthIndex < 0 || monthIndex >= months.length - 1}
-                onClick={() => monthIndex >= 0 && monthIndex < months.length - 1 && setMonth(months[monthIndex + 1]!)}
-              />
-            </div>
-            <button className="secondary" onClick={() => setModal("manual")}>+ Manual</button>
-            <button onClick={() => setModal("import")}>Import</button>
+            <MonthNavigator
+              value={currentMonth}
+              months={navigationMonths}
+              todayMonth={todayMonth}
+              onChange={setMonth}
+            />
+            <button className="secondary" onClick={() => setModal("manual")}>Add transaction</button>
+            <button onClick={() => setModal("import")}>Import activity</button>
             </>
           }
         />

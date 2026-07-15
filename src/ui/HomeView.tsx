@@ -331,7 +331,7 @@ export function HomeView({
       return {
         title: `Confirm ${contributor}'s loan contribution`,
         body: `${money(candidate.amount)} moved into ${candidate.credit.account} near ${candidate.expenses.length} recovery deduction${candidate.expenses.length === 1 ? "" : "s"} totalling ${money(recovered)}. Review the transfer pair and recovery group before changing settlement.`,
-        action: onConfirmContribution ? <button onClick={() => onConfirmContribution(candidate)}>Review match</button> : <span className="attention-pill">Review</span>,
+        action: onConfirmContribution ? <button onClick={() => onConfirmContribution(candidate)}>Review contribution</button> : <span className="attention-pill">Review</span>,
       };
     }),
     ...s.incomeItems.filter((item) => !item.receipt && (item.status === "overdue" || candidates.has(item.portion.id))).map((item) => ({
@@ -349,7 +349,7 @@ export function HomeView({
     ...s.incomeItems.filter((item) => item.missingRate).map((item) => ({
       title: `Add ${item.portion.currency} exchange rate`,
       body: `${item.portion.label} cannot be included in the projection until its exchange rate is set.`,
-      action: <button className="secondary" onClick={onOpenSettings}>Open Settings</button>,
+      action: <button className="secondary" onClick={onOpenSettings}>Open settings</button>,
     })),
     ...(dataNeedsUpdate
       ? [
@@ -367,7 +367,7 @@ export function HomeView({
           {
             title: "Classify new spending",
             body: `${s.unresolvedCount} transaction${s.unresolvedCount === 1 ? "" : "s"} need a purpose or beneficiary before the month is trustworthy.`,
-            action: <button onClick={onReviewQueue}>Review now</button>,
+            action: <button onClick={onReviewQueue}>Review queue</button>,
           },
         ]
       : []),
@@ -424,7 +424,7 @@ export function HomeView({
           </p>
         </div>
         <div className="hero-meter">
-          <button onClick={onOpenSettings}>Open Settings</button>
+          <button onClick={onOpenSettings}>Open settings</button>
         </div>
       </section>
     );
@@ -457,7 +457,7 @@ export function HomeView({
             {!forecastReady ? (
               <button onClick={onOpenImport}>Import activity</button>
             ) : s.unresolvedCount ? (
-              <button onClick={onReviewQueue}>Review {s.unresolvedCount}</button>
+              <button onClick={onReviewQueue}>Review queue</button>
             ) : (
               <button className="secondary" onClick={onOpenSettings}>Adjust budget</button>
             )}
@@ -517,7 +517,7 @@ export function HomeView({
               </div>
               <b>{moneyIn(item.nativeNet, item.nativeCurrency)}</b>
               <span className={`income-status ${item.receipt?.currencyReview || item.missingRate ? "missing" : item.status}`}>{statusLabel}</span>
-              <button className="secondary" onClick={() => onConfirmIncome(item, candidate)}>{item.receipt ? "Edit" : "Confirm"}</button>
+              <button className="secondary" onClick={() => onConfirmIncome(item, candidate)}>{item.receipt ? "Edit income" : "Confirm income"}</button>
             </div>;
           })}
         </div>

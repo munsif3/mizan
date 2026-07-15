@@ -102,8 +102,10 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     initialFilters: LedgerFilters,
     onCategorizeMerchant = vi.fn(),
     onRememberMerchant = vi.fn(),
+    mutateData?: (data: AppData) => void,
   ) {
     const data = fixture();
+    mutateData?.(data);
     const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     function Harness() {
       const [filters, setFilters] = useState(initialFilters);
@@ -150,7 +152,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     expect(container?.textContent).toContain("Merchant: KEELLS");
 
     const clear = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
-      .find((button) => button.textContent === "Clear all");
+      .find((button) => button.textContent === "Clear filters");
     await act(async () => clear?.click());
     expect(container?.textContent).toContain("UBER");
     expect(container?.textContent).toContain("UNKNOWN SHOP");
@@ -164,7 +166,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     const category = container?.querySelector<HTMLSelectElement>('select[aria-label="Category for UNKNOWN SHOP"]');
     const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary for UNKNOWN SHOP"]');
     const apply = container?.querySelector<HTMLButtonElement>(
-      'button[aria-label="Save default for UNKNOWN SHOP"]',
+      'button[aria-label="Save merchant default for UNKNOWN SHOP"]',
     );
     expect(container?.textContent).toContain("What was it?");
     expect(container?.textContent).toContain("Who was it for?");
@@ -192,12 +194,12 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     });
 
     const remember = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
-      .find((button) => button.textContent?.trim() === "Remember for merchant" && !button.disabled);
+      .find((button) => button.textContent?.trim() === "Save merchant default" && !button.disabled);
     await act(async () => remember?.click());
     expect(onRemember).toHaveBeenCalledWith("sam-transport");
   });
 
-  it("keeps the primary review decisions labeled and reveals movement details on demand", async () => {
+  it("keeps the primary review decisions labeled and exposes movement directly", async () => {
     await mount({ category: "all", beneficiary: "all", payer: "all" });
 
     const card = container?.querySelector<HTMLElement>(
@@ -207,8 +209,6 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     expect([...card!.querySelectorAll<HTMLElement>(".review-field > span")].map((label) => label.textContent))
       .toEqual(["Movement", "What was it?", "Who was it for?"]);
 
-    const changeMovement = card?.querySelector<HTMLButtonElement>(".review-value-button");
-    await act(async () => changeMovement?.click());
     const movement = card?.querySelector<HTMLSelectElement>('select[aria-label="Movement for UNKNOWN SHOP"]');
     expect(movement).not.toBeNull();
 
@@ -219,7 +219,33 @@ describe("TransactionsView beneficiary and payer workflow", () => {
       }
     });
     expect(card?.textContent).toContain("Other person");
-    expect(card?.querySelector('button[aria-label="Save default for UNKNOWN SHOP"]')).not.toBeNull();
+    expect(card?.querySelector('button[aria-label="Save merchant default for UNKNOWN SHOP"]')).not.toBeNull();
+  });
+
+  it("shows every paying account and owner on a grouped review card", async () => {
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      vi.fn(),
+      vi.fn(),
+      (data) => {
+        const base = data.transactions.find((transaction) => transaction.id === "unknown")!;
+        const withoutAccountId = { ...base };
+        delete withoutAccountId.accountId;
+        data.transactions.push(
+          { ...base, id: "unknown-joint-2" },
+          { ...base, id: "unknown-alex", account: "Old Alex label", accountId: "alex-card" },
+          { ...withoutAccountId, id: "unknown-unregistered", account: "DFCC 9999", rawAccount: "DFCC 9999" },
+        );
+      },
+    );
+
+    const card = container?.querySelector<HTMLElement>(
+      '.merchant-review-card [title="UNKNOWN SHOP"]',
+    )?.closest<HTMLElement>(".merchant-review-card");
+    expect(card?.textContent).toContain("Paid from:");
+    expect(card?.textContent).toContain("Joint Cash · Joint / unknown ×2");
+    expect(card?.textContent).toContain("Alex Card · Alex");
+    expect(card?.textContent).toContain("DFCC 9999");
   });
 
   it("saves an account-relative merchant beneficiary for an inferred personal row", async () => {
@@ -227,7 +253,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     await mount({ category: "all", beneficiary: "all", payer: "all" }, onCategorize);
     const category = container?.querySelector<HTMLSelectElement>('select[aria-label="Category for COOL PLANET"]');
     const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary for COOL PLANET"]');
-    const apply = container?.querySelector<HTMLButtonElement>('button[aria-label="Save default for COOL PLANET"]');
+    const apply = container?.querySelector<HTMLButtonElement>('button[aria-label="Save merchant default for COOL PLANET"]');
     expect(beneficiary?.value).toBe("account_default");
     await act(async () => {
       if (!category) return;

@@ -100,8 +100,145 @@ describe("ManualModal beneficiary classification", () => {
     await act(async () => container?.querySelector<HTMLFormElement>("form")?.requestSubmit());
     expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({
       account: "Sara Card",
+      accountId: "sara-card",
       beneficiary: { type: "member", memberId: "sara" },
       beneficiarySource: "account_default",
     }));
+  });
+
+  it("switches registered accounts by stable id and adopts the new default", async () => {
+    const onAdd = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <ManualModal
+        accounts={[
+          { id: "sara-card", label: "Sara Card", owner: "sara", beneficiaryDefault: "owner", match: [] },
+          { id: "home-card", label: "Home Card", owner: "sara", beneficiaryDefault: "household", match: [] },
+        ]}
+        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }]}
+        customCategories={[]}
+        counterparties={[]}
+        onAdd={onAdd}
+        onClose={() => {}}
+      />,
+    ));
+
+    const setInput = async (label: string, value: string) => {
+      const field = container?.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+        field?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setInput("Amount", "3200");
+    await setInput("Description", "GROCERIES");
+    const account = container?.querySelector<HTMLSelectElement>('select[aria-label="Account"]');
+    await act(async () => {
+      if (!account) return;
+      account.value = "home-card";
+      account.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]')?.value).toBe("household");
+
+    await act(async () => container?.querySelector<HTMLFormElement>("form")?.requestSubmit());
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({
+      account: "Home Card",
+      accountId: "home-card",
+      beneficiary: { type: "household" },
+      beneficiarySource: "account_default",
+    }));
+  });
+
+  it("preserves an explicit beneficiary across account changes", async () => {
+    const onAdd = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <ManualModal
+        accounts={[
+          { id: "sara-card", label: "Sara Card", owner: "sara", beneficiaryDefault: "owner", match: [] },
+          { id: "sam-card", label: "Sam Card", owner: "sam", beneficiaryDefault: "owner", match: [] },
+        ]}
+        members={[
+          { id: "sara", name: "Sara", color: "#5b8cff", portions: [] },
+          { id: "sam", name: "Sam", color: "#ff80b5", portions: [] },
+        ]}
+        customCategories={[]}
+        counterparties={[]}
+        onAdd={onAdd}
+        onClose={() => {}}
+      />,
+    ));
+
+    const setInput = async (label: string, value: string) => {
+      const field = container?.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+        field?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setInput("Amount", "4500");
+    await setInput("Description", "FAMILY DINNER");
+    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]');
+    await act(async () => {
+      if (!beneficiary) return;
+      beneficiary.value = "household";
+      beneficiary.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const account = container?.querySelector<HTMLSelectElement>('select[aria-label="Account"]');
+    await act(async () => {
+      if (!account) return;
+      account.value = "sam-card";
+      account.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(beneficiary?.value).toBe("household");
+
+    await act(async () => container?.querySelector<HTMLFormElement>("form")?.requestSubmit());
+    const entry = onAdd.mock.calls[0]?.[0];
+    expect(entry).toMatchObject({ account: "Sam Card", accountId: "sam-card", beneficiary: { type: "household" } });
+    expect(entry).not.toHaveProperty("beneficiarySource");
+  });
+
+  it("supports an unregistered Cash account when no accounts are configured", async () => {
+    const onAdd = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <ManualModal
+        accounts={[]}
+        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }]}
+        customCategories={[]}
+        counterparties={[]}
+        onAdd={onAdd}
+        onClose={() => {}}
+      />,
+    ));
+
+    expect(container?.querySelector<HTMLSelectElement>('select[aria-label="Account"]')?.value).toBe("__other__");
+    expect(container?.querySelector<HTMLInputElement>('input[aria-label="Account name"]')?.value).toBe("Cash");
+    const setInput = async (label: string, value: string) => {
+      const field = container?.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+        field?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setInput("Amount", "500");
+    await setInput("Description", "CASH PURCHASE");
+    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]');
+    await act(async () => {
+      if (!beneficiary) return;
+      beneficiary.value = "household";
+      beneficiary.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => container?.querySelector<HTMLFormElement>("form")?.requestSubmit());
+    const entry = onAdd.mock.calls[0]?.[0];
+    expect(entry).toMatchObject({ account: "Cash", beneficiary: { type: "household" } });
+    expect(entry).not.toHaveProperty("accountId");
+    expect(entry).not.toHaveProperty("beneficiarySource");
   });
 });

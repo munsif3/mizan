@@ -166,7 +166,7 @@ export function CsvImportModal({
           <div className="modal-actions">
             <button className="secondary" onClick={onClose}>Cancel</button>
             <button onClick={run} disabled={!preview || preview.transactions.length === 0}>
-              Import {preview ? preview.transactions.length : 0}
+              Import {preview ? preview.transactions.length : 0} transaction{preview?.transactions.length === 1 ? "" : "s"}
             </button>
           </div>
         </>

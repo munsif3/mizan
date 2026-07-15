@@ -39,6 +39,7 @@ describe("ImportModal retries", () => {
         <ImportModal onImport={onImport} onCsv={() => {}} onReview={() => {}} onClose={() => {}} />,
       );
     });
+    expect(button(container, "Cancel").disabled).toBe(false);
 
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     Object.defineProperty(fileInput, "files", {
@@ -46,17 +47,21 @@ describe("ImportModal retries", () => {
       value: [new File(["statement"], "statement.pdf", { type: "application/pdf" })],
     });
     await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
-    await act(async () => button(container!, "Import").click());
+    await act(async () => button(container!, "Import 1 statement").click());
 
     expect(container.textContent).toContain("Incorrect password");
     expect(button(container, "Retry import").disabled).toBe(false);
+    expect(button(container, "Close").disabled).toBe(false);
+    expect(container.textContent).not.toContain("Cancel");
 
     await act(async () => button(container!, "Retry import").click());
 
     expect(onImport).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain("Imported 3");
     expect(container.textContent).not.toContain("Retry import");
-    expect(button(container, "Done").disabled).toBe(false);
+    expect(button(container, "Close").disabled).toBe(false);
+    expect([...container.querySelectorAll("button")].filter((candidate) => candidate.textContent?.trim() === "Close")).toHaveLength(1);
+    expect(container.textContent).not.toContain("Done");
 
     await act(async () => root.unmount());
   });

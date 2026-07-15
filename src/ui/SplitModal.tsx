@@ -31,16 +31,19 @@ export function SplitModal({
         <label className="field"><span>Our parts</span><input type="number" min="1" value={mine} onChange={(event) => setMine(event.target.value)} /></label>
       </div>
       <div className="modal-actions">
-        <button
-          className="secondary"
-          onClick={() => {
-            onClear(txn.id);
-            onClose();
-          }}
-        >
-          Clear
-        </button>
-        <button onClick={save}>Save</button>
+        {txn.split && (
+          <button
+            className="secondary danger"
+            onClick={() => {
+              onClear(txn.id);
+              onClose();
+            }}
+          >
+            Remove split
+          </button>
+        )}
+        <button className="secondary" onClick={onClose}>Cancel</button>
+        <button onClick={save}>Save split</button>
       </div>
     </Modal>
   );

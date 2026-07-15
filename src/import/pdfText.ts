@@ -23,9 +23,36 @@ export interface PdfLine {
   cells: string[];
 }
 
-/** Open a (possibly password-protected) PDF. Throws a friendly error on a wrong/missing password. */
-export async function openPdf(file: File, password: string): Promise<PDFDocumentProxy> {
-  const data = await file.arrayBuffer();
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function destroyLoadingTask(loadingTask: ReturnType<typeof getDocument>): Promise<void> {
+  try {
+    await loadingTask.destroy();
+  } catch {
+    // Teardown is best-effort: it must not discard parsed transactions or
+    // replace the useful open/parse error that the caller should receive.
+  }
+}
+
+/**
+ * Open a (possibly password-protected) PDF, use it, and always release its
+ * worker/loading task. Keeping task ownership here prevents callers from
+ * mistaking PDFDocumentProxy for the object that owns `destroy()`.
+ */
+export async function withPdf<T>(
+  file: File,
+  password: string,
+  useDocument: (doc: PDFDocumentProxy) => Promise<T>,
+): Promise<T> {
+  let data: ArrayBuffer;
+  try {
+    data = await file.arrayBuffer();
+  } catch (error) {
+    throw new Error(`Could not open PDF: ${errorMessage(error)}`);
+  }
+
   const loadingTask = getDocument({ data, password: password || undefined });
   // Fail fast instead of pdf.js's default of prompting again for another password.
   loadingTask.onPassword = (_callback: (password: string) => void, reason: number) => {
@@ -33,10 +60,19 @@ export async function openPdf(file: File, password: string): Promise<PDFDocument
       ? new Error("Incorrect password.")
       : new Error("This PDF is password protected.");
   };
+
+  let doc: PDFDocumentProxy;
   try {
-    return await loadingTask.promise;
+    doc = await loadingTask.promise;
   } catch (error) {
-    throw new Error(`Could not open PDF: ${(error as Error).message}`);
+    await destroyLoadingTask(loadingTask);
+    throw new Error(`Could not open PDF: ${errorMessage(error)}`);
+  }
+
+  try {
+    return await useDocument(doc);
+  } finally {
+    await destroyLoadingTask(loadingTask);
   }
 }
 

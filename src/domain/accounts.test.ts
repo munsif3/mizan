@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyAccountBeneficiaryDefaults,
   applyAccounts,
+  assignAccount,
   guessOwner,
   ownerOfTransaction,
   resolveAccountLabel,
@@ -103,6 +104,21 @@ describe("applyAccounts", () => {
   it("does not bind unknown rows to a blank account draft", () => {
     const draft: Account[] = [{ id: "draft", label: "", currency: "USD", owner: "joint", beneficiaryDefault: "review", match: [] }];
     expect(applyAccounts([txn("New account")], draft)[0]).toEqual(txn("New account"));
+  });
+
+  it("reassigns the stable account without losing imported provenance or the row lock", () => {
+    const original = {
+      ...txn("Alex Visa"),
+      accountId: "a4",
+      rawAccount: "DFCC 489099******0001",
+      classificationLocked: true,
+    };
+    expect(assignAccount(original, REGISTRY[1]!)).toMatchObject({
+      account: "Alex Master Debit",
+      accountId: "a2",
+      rawAccount: "DFCC 489099******0001",
+      classificationLocked: true,
+    });
   });
 });
 

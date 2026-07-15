@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthState } from "./auth/authStore";
+import { addMonths, isoDateOf, monthLabel } from "./domain/dates";
 import type { AppData } from "./domain/types";
 import type { HouseholdMeta, UserProfile } from "./household/types";
 import { emptyData } from "./storage/schema";
@@ -183,6 +184,76 @@ describe("signed-in startup bootstrap", () => {
     await act(async () => button(container, "Retry household load").click());
     await vi.waitFor(() => expect(container.textContent).toContain("Money check-in"));
     expect(bootstrap.loadUserProfile).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves an older saved month until authoritative household data extends the range", async () => {
+    const oldMonth = addMonths(isoDateOf(new Date()).slice(0, 7), -36);
+    const oldProfile = { ...profile, lastMonth: oldMonth };
+    const data = householdData();
+    data.transactions = [{
+      id: "old-row",
+      date: `${oldMonth}-10`,
+      description: "OLD PURCHASE",
+      amount: 1_000,
+      category: "food",
+      beneficiary: { type: "household" },
+      account: "Cash",
+      note: "",
+      source: "imported",
+      direction: "debit",
+      kind: "expense",
+    }];
+    const dataRequest = deferred<AppData>();
+    bootstrap.loadUserProfile.mockResolvedValue(oldProfile);
+    bootstrap.loadUserHouseholds.mockResolvedValue([]);
+    bootstrap.loadHouseholdMeta.mockResolvedValue(meta);
+    bootstrap.repositoryLoad.mockReturnValue(dataRequest.promise);
+
+    await act(async () => root.render(<App />));
+    await vi.waitFor(() => expect(bootstrap.repositoryLoad).toHaveBeenCalledTimes(1));
+    expect(bootstrap.saveUserProfile).not.toHaveBeenCalled();
+
+    await act(async () => dataRequest.resolve(data));
+    await vi.waitFor(() => expect(container.textContent).toContain("Money check-in"));
+
+    expect(container.querySelector(".month-trigger")?.textContent).toContain(monthLabel(oldMonth));
+    expect(bootstrap.saveUserProfile).not.toHaveBeenCalled();
+  });
+
+  it("keeps an empty calendar month global without adding it to History", async () => {
+    const data = householdData();
+    data.settings.members[0]!.portions = [{
+      id: "salary",
+      label: "Monthly income",
+      amount: 100_000,
+      currency: "LKR",
+      taxRate: 0,
+      taxWithheld: true,
+      window: null,
+    }];
+    bootstrap.loadUserProfile.mockResolvedValue(profile);
+    bootstrap.loadUserHouseholds.mockResolvedValue([]);
+    bootstrap.loadHouseholdMeta.mockResolvedValue(meta);
+    bootstrap.repositoryLoad.mockResolvedValue(data);
+
+    await act(async () => root.render(<App />));
+    await vi.waitFor(() => expect(container.textContent).toContain("Money check-in"));
+
+    const todayMonth = isoDateOf(new Date()).slice(0, 7);
+    const previousMonth = addMonths(todayMonth, -1);
+    const previousLabel = monthLabel(previousMonth);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Previous month"]')?.click());
+
+    expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
+    expect(container.textContent).toContain(previousLabel);
+
+    await act(async () => button(container, "Transactions").click());
+    expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
+    expect(container.textContent).toContain("The ledger is clear for this view");
+
+    await act(async () => button(container, "History").click());
+    expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
+    expect(container.textContent).toContain(`No recorded data for ${previousLabel}.`);
   });
 
   it("ignores an in-flight household result after sign-out", async () => {

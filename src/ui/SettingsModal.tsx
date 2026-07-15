@@ -158,7 +158,7 @@ export function SettingsModal({
     .sort();
   const removeMember = (member: Member) => {
     if (members.length <= 1) return;
-    if (!window.confirm(`Remove ${member.name}? Spending assigned to them becomes Unassigned and their accounts become Joint.`)) return;
+    if (!window.confirm(`Delete ${member.name}? Spending assigned to them becomes Unassigned and their accounts become Joint.`)) return;
     onUpdateMembers(members.filter((item) => item.id !== member.id));
   };
   const patchFixed = (id: string, patch: Partial<FixedCost>) =>
@@ -231,8 +231,8 @@ export function SettingsModal({
                       <span>Colour</span>
                       <input aria-label={`${member.name || "Member"} colour`} type="color" value={member.color} onChange={(event) => patchMember(member.id, { color: event.target.value })} />
                     </label>
-                    <button onClick={() => addPortion(member.id)}>+ Add deposit</button>
-                    <IconButton label={`Remove ${member.name || "member"}`} title="Remove member" icon={Trash2} danger disabled={members.length <= 1} onClick={() => removeMember(member)} />
+                    <button onClick={() => addPortion(member.id)}>Add deposit</button>
+                    <IconButton label={`Delete ${member.name || "member"}`} title="Delete member" icon={Trash2} danger disabled={members.length <= 1} onClick={() => removeMember(member)} />
                   </div>
                 </div>
                 <div className="income-deposit-list">
@@ -243,7 +243,7 @@ export function SettingsModal({
                           <span className="income-deposit-number">Deposit {portionIndex + 1}</span>
                           <strong>{portion.label.trim() || "Untitled income"}</strong>
                         </div>
-                        <IconButton label={`Remove ${portion.label}`} icon={Trash2} danger onClick={() => removePortion(member.id, portion.id)} title="Remove deposit" />
+                        <IconButton label={`Delete ${portion.label}`} icon={Trash2} danger onClick={() => removePortion(member.id, portion.id)} title="Delete deposit" />
                       </div>
 
                       <label className="deposit-name-field">
@@ -293,7 +293,7 @@ export function SettingsModal({
                       </div>
                     </section>
                   ))}
-                  {!member.portions.length && <div className="income-deposit-empty"><strong>No deposits yet</strong><p>Add the salary, allowance, or other income expected each month.</p><button onClick={() => addPortion(member.id)}>+ Add first deposit</button></div>}
+                  {!member.portions.length && <div className="income-deposit-empty"><strong>No deposits yet</strong><p>Add the salary, allowance, or other income expected each month.</p><button onClick={() => addPortion(member.id)}>Add first deposit</button></div>}
                 </div>
               </div>
             ))}
@@ -396,7 +396,7 @@ export function SettingsModal({
                   placeholder="until YYYY-MM"
                   onChange={(event) => patchFixed(fixed.id, { until: event.target.value || undefined })}
                 />
-                <IconButton label={`Remove ${fixed.label}`} icon={Trash2} danger onClick={() => onUpdateFixedCosts(fixedCosts.filter((item) => item.id !== fixed.id))} />
+                <IconButton label={`Delete ${fixed.label}`} icon={Trash2} danger onClick={() => onUpdateFixedCosts(fixedCosts.filter((item) => item.id !== fixed.id))} />
               </div>
             ))}
           </div>
@@ -423,7 +423,7 @@ export function SettingsModal({
                 <div className="member-row" key={cat.id}>
                   <input aria-label={`${cat.label || "Category"} name`} value={cat.label} onChange={(event) => patchCustom(cat.id, { label: event.target.value })} />
                   <input aria-label={`${cat.label || "Category"} colour`} type="color" value={cat.color} onChange={(event) => patchCustom(cat.id, { color: event.target.value })} />
-                  <IconButton label={`Remove ${cat.label || "category"}`} icon={Trash2} danger onClick={() => onUpdateCustomCategories(customCategories.filter((item) => item.id !== cat.id))} />
+                  <IconButton label={`Delete ${cat.label || "category"}`} icon={Trash2} danger onClick={() => onUpdateCustomCategories(customCategories.filter((item) => item.id !== cat.id))} />
                 </div>
               ))}
               {!customCategories.length && <p className="muted">No custom categories yet.</p>}
@@ -447,7 +447,7 @@ export function SettingsModal({
               {counterparties.map((cp) => (
                 <div className="member-row" key={cp.id}>
                   <input aria-label={`${cp.name || "Person"} name`} value={cp.name} onChange={(event) => patchCounterparty(cp.id, event.target.value)} />
-                  <IconButton label={`Remove ${cp.name || "person"}`} icon={Trash2} danger onClick={() => onUpdateCounterparties(counterparties.filter((item) => item.id !== cp.id))} />
+                  <IconButton label={`Delete ${cp.name || "person"}`} icon={Trash2} danger onClick={() => onUpdateCounterparties(counterparties.filter((item) => item.id !== cp.id))} />
                 </div>
               ))}
               {!counterparties.length && <p className="muted">No people yet.</p>}
@@ -520,7 +520,7 @@ export function SettingsModal({
                     patchAccount(account.id, { match: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })
                   }
                 />
-                <IconButton label={`Remove ${account.label}`} icon={Trash2} danger onClick={() => onUpdateAccounts(data.accounts.filter((item) => item.id !== account.id))} />
+                <IconButton label={`Delete ${account.label}`} icon={Trash2} danger onClick={() => onUpdateAccounts(data.accounts.filter((item) => item.id !== account.id))} />
               </div>
             ))}
             <datalist id="account-currencies">{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
@@ -529,7 +529,7 @@ export function SettingsModal({
 
           <div className="settings-section">
             <h3>Merchant rules</h3>
-            <p className="muted">Removing a rule returns the transactions it controlled to the review queue (or to the next matching fallback rule).</p>
+            <p className="muted">Deleting a rule returns the transactions it controlled to the review queue (or to the next matching fallback rule).</p>
             <div className="rules-list">
               {Object.entries(data.merchantRules).map(([merchant, rule]) => {
                 const person = rule.counterpartyId ? counterparties.find((cp) => cp.id === rule.counterpartyId)?.name : "";
@@ -540,7 +540,7 @@ export function SettingsModal({
                   <div key={merchant}>
                     <span>{merchant}</span>
                     <strong>{label}</strong>
-                    <IconButton label={`Undo rule for ${merchant}`} icon={Trash2} danger onClick={() => onDeleteRule(merchant)} />
+                    <IconButton label={`Delete merchant rule for ${merchant}`} icon={Trash2} danger onClick={() => onDeleteRule(merchant)} />
                   </div>
                 );
               })}
@@ -599,7 +599,7 @@ export function SettingsModal({
                   <div className="invite-box">
                     <span className="soft-label">Invite code</span>
                     <code>{sync.household.inviteCode}</code>
-                    <button className="secondary" onClick={onRotateInvite}>Rotate</button>
+                    <button className="secondary" onClick={onRotateInvite}>Rotate invite code</button>
                   </div>
                 )}
                 {sync.households.length > 0 && (

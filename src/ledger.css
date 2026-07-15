@@ -667,7 +667,7 @@ textarea:focus-visible,
 
 .page-actions .month-nav {
   display: grid;
-  grid-template-columns: 42px minmax(120px, 150px) 42px;
+  grid-template-columns: 44px minmax(140px, 170px) 44px;
   gap: 0;
   padding: 0;
   border: 1px solid var(--ledger-line);
@@ -675,19 +675,133 @@ textarea:focus-visible,
   background: var(--ledger-surface);
 }
 
-.page-actions .month-nav .icon-btn {
+.page-actions .month-nav > .icon-btn {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
   border: 0;
   border-radius: 0;
+  background: transparent;
+  color: var(--ledger-ink);
 }
 
-.page-actions .month-nav select {
+.month-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.month-nav .month-trigger {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
   border-width: 0 1px;
   border-color: var(--ledger-line);
   border-radius: 0;
   background: transparent;
+  color: var(--ledger-ink);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.month-nav .month-trigger:hover,
+.month-nav .month-trigger[aria-expanded="true"] {
+  background: var(--ledger-paper-deep);
+}
+
+.month-trigger svg {
+  flex: 0 0 auto;
+  color: var(--ledger-forest-2);
+}
+
+.month-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 30;
+  width: min(320px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--ledger-line);
+  border-radius: 4px;
+  background: var(--ledger-surface);
+  color: var(--ledger-ink);
+  box-shadow: var(--ledger-shadow);
+  transform: translateX(-50%);
+}
+
+.month-popover-header {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.month-popover-header strong {
   text-align: center;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.month-nav .month-popover-header .icon-btn {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  border: 1px solid var(--ledger-line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ledger-ink);
+}
+
+.month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.month-nav .month-option {
+  width: 100%;
+  height: auto;
+  min-height: 44px;
+  padding: 8px 6px;
+  border: 1px solid var(--ledger-line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ledger-ink);
+  font-size: 13px;
+}
+
+.month-nav .month-option:hover:not(:disabled) {
+  border-color: var(--ledger-forest-2);
+  background: var(--ledger-sage);
+}
+
+.month-nav .month-option.current:not(.selected) {
+  border-color: var(--ledger-forest-2);
+  box-shadow: inset 0 0 0 1px var(--ledger-forest-2);
+}
+
+.month-nav .month-option.selected {
+  border-color: var(--ledger-forest);
+  background: var(--ledger-forest);
+  color: var(--ledger-on-accent);
+}
+
+.month-nav .month-option.selected:hover {
+  background: var(--ledger-action-hover);
+}
+
+.month-nav .month-option:disabled,
+.month-nav .month-option:disabled:hover {
+  border-color: var(--ledger-line);
+  background: var(--ledger-paper-deep);
+  color: var(--ledger-muted);
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .notice {
@@ -1397,6 +1511,23 @@ textarea:focus-visible,
   font-variant-numeric: tabular-nums;
 }
 
+.review-account-contexts {
+  display: grid;
+  gap: 3px;
+  margin-top: 10px;
+  color: var(--ledger-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.review-account-contexts > span:first-child {
+  color: var(--ledger-ink);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .review-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
@@ -1417,45 +1548,11 @@ textarea:focus-visible,
   text-transform: uppercase;
 }
 
-.review-field select,
-.review-value-button {
+.review-field select {
   width: 100%;
   min-width: 0;
   min-height: 44px;
-}
-
-.review-field select {
   background: var(--ledger-surface);
-}
-
-.review-value-button {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  justify-content: space-between;
-  padding-inline: 12px;
-  border: 1px solid var(--ledger-line);
-  border-radius: 4px;
-  background: var(--ledger-surface);
-  color: var(--ledger-ink);
-  font-size: 14px;
-  font-weight: 700;
-  text-align: left;
-}
-
-.review-value-button:hover {
-  border-color: var(--ledger-forest-2);
-  background: var(--ledger-sage);
-  color: var(--ledger-ink);
-}
-
-.review-value-button small {
-  margin: 0;
-  color: var(--ledger-forest-2);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .review-apply-button {
@@ -1506,6 +1603,28 @@ textarea:focus-visible,
 
 .ledger-table table {
   color: var(--ledger-ink);
+  min-width: 1080px;
+  table-layout: fixed;
+}
+
+.ledger-table .ledger-col-date {
+  width: 88px;
+}
+
+.ledger-table .ledger-col-description {
+  width: 19%;
+}
+
+.ledger-table .ledger-col-account {
+  width: 17%;
+}
+
+.ledger-table .ledger-col-net {
+  width: 116px;
+}
+
+.ledger-table .ledger-col-actions {
+  width: 150px;
 }
 
 .ledger-table th {
@@ -1517,6 +1636,37 @@ textarea:focus-visible,
 .ledger-table td {
   border-color: var(--ledger-line);
   color: var(--ledger-muted);
+  vertical-align: middle;
+}
+
+.ledger-table th:first-child,
+.ledger-table td:first-child,
+.ledger-table td.right {
+  white-space: nowrap;
+}
+
+.ledger-table td:nth-child(2) {
+  overflow-wrap: anywhere;
+}
+
+.ledger-table td.row-actions {
+  width: auto;
+  text-align: right;
+}
+
+.ledger-table .movement-controls {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.ledger-table .movement-controls > select,
+.ledger-table .beneficiary-control {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.ledger-table .beneficiary-control select {
+  flex: none;
 }
 
 .ledger-table td strong,
@@ -2199,6 +2349,22 @@ td small {
     grid-column: 1 / -1;
     grid-template-columns: 44px minmax(0, 1fr) 44px;
     width: 100%;
+  }
+
+  .page-actions .month-nav > .icon-btn,
+  .month-nav .month-trigger {
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .page-actions .month-nav > .icon-btn {
+    width: 44px;
+  }
+
+  .month-popover {
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
   }
 
   .page-actions > button {

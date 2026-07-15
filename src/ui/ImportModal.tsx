@@ -165,12 +165,13 @@ export function ImportModal({
         )}
 
         <div className="modal-actions">
-          <button className="secondary" onClick={onClose} disabled={!!busy}>Cancel</button>
+          <button className="secondary" onClick={onClose} disabled={!!busy}>{result ? "Close" : "Cancel"}</button>
           {result?.needsReview ? <button onClick={onReview}>Review queue</button> : null}
-          {result && !result.needsReview && !result.failures.length ? <button onClick={onClose}>Done</button> : null}
           {mode === "statement" && (!result || result.failures.length) ? (
             <button onClick={run} disabled={!files.length || !!busy}>
-              {busy || (result?.failures.length ? "Retry import" : "Import")}
+              {busy || (result?.failures.length
+                ? "Retry import"
+                : `Import ${files.length} statement${files.length === 1 ? "" : "s"}`)}
             </button>
           ) : null}
         </div>

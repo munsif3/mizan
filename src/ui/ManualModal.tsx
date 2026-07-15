@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { beneficiaryForAccount, resolveAccount } from "../domain/accounts";
+import { beneficiaryForAccount } from "../domain/accounts";
 import { spendingCategoryOptions } from "../domain/categories";
 import { isoDateOf } from "../domain/dates";
 import { isSpendKind, kindNeedsCategory, kindNeedsCounterparty, MOVEMENT_OPTIONS } from "../domain/movements";
@@ -14,10 +14,13 @@ export interface ManualEntry {
   beneficiary: SpendBeneficiary;
   beneficiarySource?: "account_default";
   account: string;
+  accountId?: string;
   note: string;
   kind: MovementKind;
   counterpartyId?: string;
 }
+
+const OTHER_ACCOUNT = "__other__";
 
 export function ManualModal({
   accounts,
@@ -39,12 +42,14 @@ export function ManualModal({
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState<CategoryKey>("food");
-  const initialAccount = accounts[0];
+  const configuredAccounts = accounts.filter((account) => account.label.trim());
+  const initialAccount = configuredAccounts[0];
   const initialBeneficiary = beneficiaryForAccount(initialAccount, members);
   const beneficiaryValue = (value: SpendBeneficiary) => value.type === "member" ? `member:${value.memberId}` : value.type;
   const [beneficiary, setBeneficiary] = useState(beneficiaryValue(initialBeneficiary));
   const [beneficiaryTouched, setBeneficiaryTouched] = useState(false);
-  const [account, setAccount] = useState(initialAccount?.label ?? "Cash");
+  const [accountChoice, setAccountChoice] = useState(initialAccount?.id ?? OTHER_ACCOUNT);
+  const [otherAccount, setOtherAccount] = useState("Cash");
   const [note, setNote] = useState("");
   const [kind, setKind] = useState<MovementKind>("expense");
   const [showType, setShowType] = useState(false);
@@ -72,8 +77,13 @@ export function ManualModal({
       setError("Choose who this spending was for.");
       return;
     }
-    const resolvedAccount = resolveAccount(account, accounts);
-    const accountDefault = beneficiaryForAccount(resolvedAccount, members);
+    const selectedAccount = configuredAccounts.find((candidate) => candidate.id === accountChoice);
+    const account = selectedAccount?.label.trim() ?? otherAccount.trim();
+    if (!account) {
+      setError("Enter an account name.");
+      return;
+    }
+    const accountDefault = beneficiaryForAccount(selectedAccount, members);
     const usesAccountDefault = !beneficiaryTouched
       && accountDefault.type !== "unassigned"
       && beneficiaryValue(accountDefault) === beneficiary;
@@ -88,7 +98,8 @@ export function ManualModal({
           : { type: "member", memberId: beneficiary.slice("member:".length) }
         : { type: "unassigned" },
       ...(isSpendKind(kind) && usesAccountDefault ? { beneficiarySource: "account_default" as const } : {}),
-      account: account.trim() || "Manual",
+      account,
+      ...(selectedAccount ? { accountId: selectedAccount.id } : {}),
       note: note.trim(),
       kind,
       counterpartyId: showCounterparty && counterpartyId ? counterpartyId : undefined,
@@ -124,7 +135,14 @@ export function ManualModal({
           </label>
         ) : (
           <div className="field">
-            <button type="button" className="link-button" onClick={() => setShowType(true)}>Movement: Expense · change</button>
+            <button
+              type="button"
+              className="link-button"
+              aria-label="Change movement from Expense"
+              onClick={() => setShowType(true)}
+            >
+              Expense · Change movement
+            </button>
           </div>
         )}
       </div>
@@ -151,23 +169,34 @@ export function ManualModal({
         </label>
       )}
       <div className="form-grid">
-        <label className="field">
+        <div className="field">
           <span>Account</span>
-          <input aria-label="Account" list="mizan-accounts" value={account} onChange={(event) => {
+          <select aria-label="Account" value={accountChoice} onChange={(event) => {
             const value = event.target.value;
-            setAccount(value);
-            if (!beneficiaryTouched) setBeneficiary(beneficiaryValue(beneficiaryForAccount(resolveAccount(value, accounts), members)));
-          }} />
-          <datalist id="mizan-accounts">
-            {accounts.map((option) => <option key={option.id} value={option.label} />)}
-          </datalist>
-        </label>
+            setAccountChoice(value);
+            if (!beneficiaryTouched) {
+              const selected = configuredAccounts.find((candidate) => candidate.id === value);
+              setBeneficiary(beneficiaryValue(beneficiaryForAccount(selected, members)));
+            }
+          }}>
+            {configuredAccounts.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            <option value={OTHER_ACCOUNT}>Other / unregistered</option>
+          </select>
+          {accountChoice === OTHER_ACCOUNT && (
+            <input
+              aria-label="Account name"
+              required
+              value={otherAccount}
+              onChange={(event) => setOtherAccount(event.target.value)}
+            />
+          )}
+        </div>
         <label className="field"><span>Note</span><input aria-label="Note" value={note} onChange={(event) => setNote(event.target.value)} /></label>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="modal-actions">
         <button type="button" className="secondary" onClick={onClose}>Cancel</button>
-        <button type="submit">Add</button>
+        <button type="submit">Add transaction</button>
       </div>
       </form>
     </Modal>

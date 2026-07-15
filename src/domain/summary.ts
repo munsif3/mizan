@@ -211,6 +211,33 @@ export function monthsWithData(data: AppData, today: Date): string[] {
 }
 
 /**
+ * Continuous months available to the global month navigator. The rolling
+ * 24-month window is a minimum: older recorded activity extends the range,
+ * while future-dated activity never makes future months selectable.
+ */
+export function selectableMonths(data: AppData, today: Date): string[] {
+  const todayMonth = isoDateOf(today).slice(0, 7);
+  let firstMonth = addMonths(todayMonth, -23);
+  const validMonth = /^\d{4}-(0[1-9]|1[0-2])$/;
+  const recordedMonths = [
+    ...data.transactions.map((txn) => monthOf(txn.date)),
+    ...data.incomeReceipts.map((receipt) => receipt.month),
+  ];
+
+  for (const month of recordedMonths) {
+    const validRecordedMonth = validMonth.test(month) && Number(month.slice(0, 4)) >= 1;
+    if (validRecordedMonth && month <= todayMonth && month < firstMonth) firstMonth = month;
+  }
+
+  const months: string[] = [];
+  for (let month = firstMonth; ; month = addMonths(month, 1)) {
+    months.push(month);
+    if (month === todayMonth) break;
+  }
+  return months;
+}
+
+/**
  * Greedy minimal-transfer settlement: repeatedly send from the largest debtor
  * to the largest creditor. Deterministic (ties break by member order), emits at
  * most N-1 transfers, and drops sub-unit residue. `rows` nets should sum to ~0.
@@ -676,11 +703,18 @@ export interface ReviewItem {
   merchant: string;
   count: number;
   total: number;
+  accountContexts: ReviewAccountContext[];
   /** Uniform known values are retained so review asks only for the missing axis. */
   suggestedCategory?: CategoryKey;
   suggestedBeneficiary?: MerchantRule["beneficiary"];
   suggestedKind?: Transaction["kind"];
   suggestedCounterpartyId?: string;
+}
+
+export interface ReviewAccountContext {
+  account: string;
+  accountId?: string;
+  count: number;
 }
 
 /** Merchants missing a purpose or beneficiary, grouped largest spend first. */
@@ -697,6 +731,21 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
   }
   return [...groups.values()]
     .map(({ rows, ...item }): ReviewItem => {
+      const accountContexts = new Map<string, ReviewAccountContext>();
+      for (const row of rows) {
+        const fallbackAccount = (row.rawAccount ?? row.account).replace(/\s+/g, " ").trim() || "Unknown account";
+        const key = row.accountId ? `id:${row.accountId}` : `raw:${fallbackAccount.toUpperCase()}`;
+        const current = accountContexts.get(key);
+        if (current) {
+          current.count += 1;
+        } else {
+          accountContexts.set(key, {
+            account: row.accountId ? row.account || fallbackAccount : fallbackAccount,
+            ...(row.accountId ? { accountId: row.accountId } : {}),
+            count: 1,
+          });
+        }
+      }
       const knownCategories = [...new Set(rows.map((row) => row.category).filter((category) => category !== "uncategorized"))];
       const knownBeneficiaries = rows
         .map((row): MerchantRule["beneficiary"] => row.beneficiarySource === "account_default"
@@ -708,6 +757,9 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
       const counterparties = [...new Set(rows.map((row) => row.counterpartyId).filter((id): id is string => Boolean(id)))];
       return {
         ...item,
+        accountContexts: [...accountContexts.values()].sort(
+          (a, b) => b.count - a.count || a.account.localeCompare(b.account),
+        ),
         ...(knownCategories.length === 1 ? { suggestedCategory: knownCategories[0] } : {}),
         ...(firstBeneficiary && knownBeneficiaries.every((beneficiary) => beneficiaryEquals(beneficiary, firstBeneficiary))
           ? { suggestedBeneficiary: firstBeneficiary }

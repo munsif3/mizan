@@ -227,7 +227,7 @@ export function TransactionsView({
           disabled={needsClassificationReview(txn)}
           onClick={() => onRememberMerchant(txn.id)}
         >
-          Remember for merchant
+          Save merchant default
         </button>
       )}
     </div>
@@ -271,7 +271,7 @@ export function TransactionsView({
         })}
         {evidence && <small className="movement-badge">Contribution evidence</small>}
         {sharedLoan && !funded.length && (
-          <button className="link-button" onClick={() => onLinkContribution?.(txn.id)}>+ Link contribution</button>
+          <button className="link-button" onClick={() => onLinkContribution?.(txn.id)}>Link contribution</button>
         )}
       </div>
     );
@@ -338,6 +338,7 @@ export function TransactionsView({
                 key={item.merchant}
                 item={item}
                 members={members}
+                accounts={accounts}
                 customCategories={customCategories}
                 counterparties={counterparties}
                 money={money}
@@ -400,7 +401,7 @@ export function TransactionsView({
                 onFiltersChange({ category: "all", beneficiary: "all", payer: "all" });
                 setAccountFilter("all");
                 setMovementFilter("all");
-              }}>Clear all</button>
+              }}>Clear filters</button>
             </div>
           )}
         </div>
@@ -413,6 +414,14 @@ export function TransactionsView({
         )}
         <div className="table-wrap ledger-table">
           <table>
+            <colgroup>
+              <col className="ledger-col-date" />
+              <col className="ledger-col-description" />
+              <col className="ledger-col-account" />
+              <col className="ledger-col-classification" />
+              <col className="ledger-col-net" />
+              <col className="ledger-col-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th>Date</th>
@@ -490,6 +499,7 @@ export function TransactionsView({
 function ReviewCard({
   item,
   members,
+  accounts,
   customCategories,
   counterparties,
   money,
@@ -497,6 +507,7 @@ function ReviewCard({
 }: {
   item: ReviewItem;
   members: Member[];
+  accounts: Account[];
   customCategories: CustomCategory[];
   counterparties: Counterparty[];
   money: (value: number) => string;
@@ -504,7 +515,6 @@ function ReviewCard({
 }) {
   const spendingOptions = spendingCategoryOptions(members, customCategories);
   const [kind, setKind] = useState<MovementKind>(item.suggestedKind ?? "expense");
-  const [showType, setShowType] = useState(item.suggestedKind !== undefined && item.suggestedKind !== "expense");
   const [counterpartyId, setCounterpartyId] = useState(item.suggestedCounterpartyId ?? "");
   const [category, setCategory] = useState<CategoryKey>(item.suggestedCategory ?? "uncategorized");
   const [beneficiary, setBeneficiary] = useState<RuleBeneficiaryValue>(
@@ -526,31 +536,35 @@ function ReviewCard({
     });
 
   const transactionLabel = `${item.count} transaction${item.count === 1 ? "" : "s"}`;
+  const accountContextLabel = (context: ReviewItem["accountContexts"][number]) => {
+    const registered = context.accountId ? accounts.find((account) => account.id === context.accountId) : undefined;
+    const accountLabel = registered?.label.trim() || context.account || "Unknown account";
+    if (!registered) return `${accountLabel}${context.count > 1 ? ` ×${context.count}` : ""}`;
+    const owner = registered.owner === "joint"
+      ? "Joint / unknown"
+      : members.find((member) => member.id === registered.owner)?.name ?? "Former member";
+    return `${accountLabel} · ${owner}${context.count > 1 ? ` ×${context.count}` : ""}`;
+  };
 
   return (
     <article className="review-card merchant-review-card">
       <div className="review-card-summary">
         <span className="review-merchant" title={item.merchant}>{item.merchant}</span>
         <small>{transactionLabel} · {money(item.total)}</small>
+        <div className="review-account-contexts">
+          <span>Paid from:</span>
+          <span>{item.accountContexts.map(accountContextLabel).join("; ")}</span>
+        </div>
       </div>
       <div className="review-fields">
-        {showType || kind !== "expense" ? (
-          <label className="review-field">
-            <span>Movement</span>
-            <select aria-label={`Movement for ${item.merchant}`} value={kind} onChange={(event) => setKind(event.target.value as MovementKind)}>
-              {MOVEMENT_OPTIONS.map((option) => (
-                <option key={option.kind} value={option.kind}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <div className="review-field">
-            <span>Movement</span>
-            <button type="button" className="review-value-button" onClick={() => setShowType(true)}>
-              Expense <small>Change</small>
-            </button>
-          </div>
-        )}
+        <label className="review-field">
+          <span>Movement</span>
+          <select aria-label={`Movement for ${item.merchant}`} value={kind} onChange={(event) => setKind(event.target.value as MovementKind)}>
+            {MOVEMENT_OPTIONS.map((option) => (
+              <option key={option.kind} value={option.kind}>{option.label}</option>
+            ))}
+          </select>
+        </label>
         {needsCategory && (
           <label className="review-field">
             <span>What was it?</span>
@@ -588,11 +602,11 @@ function ReviewCard({
       <button
         type="button"
         className="review-apply-button"
-        aria-label={`Save default for ${item.merchant}`}
+        aria-label={`Save merchant default for ${item.merchant}`}
         disabled={!canApply}
         onClick={apply}
       >
-        <span>Save default</span>
+        <span>Save merchant default</span>
         <small>Apply to {transactionLabel}</small>
       </button>
     </article>

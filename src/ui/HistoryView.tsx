@@ -13,7 +13,7 @@ export function HistoryView({
   money: (value: number) => string;
 }) {
   const best = [...rows].sort((a, b) => b.rate - a.rate || a.month.localeCompare(b.month))[0];
-  const current = rows.find((row) => row.month === currentMonth) ?? rows[rows.length - 1];
+  const current = rows.find((row) => row.month === currentMonth);
   const averageRate = rows.length ? rows.reduce((sum, row) => sum + row.rate, 0) / rows.length : 0;
 
   if (!rows.length) {
@@ -29,11 +29,11 @@ export function HistoryView({
     <div className="history-view">
       <section className="history-summary">
         <div>
-          <span className="soft-label">Current month</span>
-          <strong className={current && current.rate >= targetSaveRate ? "good-text" : "bad-text"}>
-            {current ? `${current.rate.toFixed(1)}%` : "0.0%"}
+          <span className="soft-label">Selected month</span>
+          <strong className={current ? (current.rate >= targetSaveRate ? "good-text" : "bad-text") : ""}>
+            {current ? `${current.rate.toFixed(1)}%` : "No data"}
           </strong>
-          <p>{current ? `${monthLabel(current.month)} save rate` : "No current month data yet"}</p>
+          <p>{current ? `${monthLabel(current.month)} save rate` : `No recorded data for ${monthLabel(currentMonth)}.`}</p>
         </div>
         <div>
           <span className="soft-label">Best month</span>

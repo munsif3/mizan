@@ -1244,7 +1244,7 @@ td small {
   align-items: center;
 }
 
-.movement-controls select {
+.movement-controls > select {
   flex: 1 1 120px;
   min-width: 0;
 }
@@ -1259,6 +1259,8 @@ td small {
 
 .beneficiary-control select {
   width: 100%;
+  flex: none;
+  min-width: 0;
 }
 
 .beneficiary-control small {
@@ -1616,7 +1618,7 @@ button.link-button:hover {
   }
 }
 
-@media (max-width: 860px) {
+@media (max-width: 1080px) {
   .ledger-table {
     display: none;
   }

@@ -1,9 +1,39 @@
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import { describe, expect, it } from "vitest";
-import { parseLines } from "./dfccPdf";
+import { dfccPdfParser, parseLines } from "./dfccPdf";
 import type { PdfLine } from "./pdfText";
 
 function line(y: number, ...cells: string[]): PdfLine {
   return { y, cells };
+}
+
+async function generatedLegacyStatement(): Promise<File> {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage([600, 800]);
+  const row = (y: number, cells: { x: number; text: string }[]) => {
+    for (const cell of cells) page.drawText(cell.text, { x: cell.x, y, size: 10, font });
+  };
+
+  row(700, [{ x: 20, text: "512345******6789 - 000011112222 - SAMPLE HOLDER" }]);
+  row(670, [
+    { x: 20, text: "09/12/2025" },
+    { x: 100, text: "05/12/2025" },
+    { x: 190, text: "LEGACY MARKET" },
+    { x: 500, text: "580.00" },
+  ]);
+  row(658, [
+    { x: 20, text: "09/12/2025" },
+    { x: 100, text: "08/12/2025" },
+    { x: 190, text: "Credit Transfer" },
+    { x: 470, text: "12,345.67 (CR)" },
+  ]);
+
+  const data = Uint8Array.from(await pdf.save()).buffer;
+  const file = new File([data], "legacy-dfcc.pdf", { type: "application/pdf" });
+  // jsdom's File shim does not implement arrayBuffer(), while the browser does.
+  Object.defineProperty(file, "arrayBuffer", { value: async () => data.slice(0) });
+  return file;
 }
 
 describe("parseLines", () => {
@@ -42,6 +72,59 @@ describe("parseLines", () => {
       kind: "account_credit",
     });
     expect(txns[3]).toMatchObject({ date: "2026-06-15", description: "Dialog Axiata PLC Colombo 02", amount: 200 });
+  });
+
+  it("parses the sanitized historical layout without depending on its front matter", () => {
+    const lines: PdfLine[] = [
+      line(550, "CREDIT CARD STATEMENT"),
+      line(528, "Statement Period", "2025-12-07 TO 2026-01-06"),
+      line(502, "512345******6789 - 000011112222 - SAMPLE HOLDER"),
+      // Historical rows are 11-12 PDF units apart, but are still identified by their own strict shape.
+      line(448, "09/12/2025", "05/12/2025", "LEGACY MARKET", "CITY CENTER", "580.00"),
+      line(436, "09/12/2025", "08/12/2025", "Credit Transfer", "12,345.67 (CR)"),
+      line(425, "10/12/2025", "09/12/2025", "TRANSIT PASS", "700.00"),
+      line(414, "512345******6789 SUB TOTAL - DEBITS", "1,280.00"),
+    ];
+
+    const txns = parseLines(lines, "fallback");
+    expect(txns).toHaveLength(3);
+    expect(txns.every((txn) => txn.account === "DFCC 512345******6789")).toBe(true);
+    expect(txns[0]).toMatchObject({
+      date: "2025-12-05",
+      description: "LEGACY MARKET CITY CENTER",
+      amount: 580,
+      direction: "debit",
+    });
+    expect(txns[1]).toMatchObject({
+      date: "2025-12-08",
+      description: "Credit Transfer",
+      amount: 12345.67,
+      direction: "credit",
+      kind: "account_credit",
+    });
+  });
+
+  it("opens, extracts, parses, and tears down a generated PDF repeatedly", async () => {
+    const file = await generatedLegacyStatement();
+
+    const first = await dfccPdfParser.parse(file, "");
+    const second = await dfccPdfParser.parse(file, "");
+
+    expect(first).toHaveLength(2);
+    expect(first).toEqual(second);
+    expect(first[0]).toMatchObject({
+      date: "2025-12-05",
+      description: "LEGACY MARKET",
+      amount: 580,
+      account: "DFCC 512345******6789",
+      direction: "debit",
+    });
+    expect(first[1]).toMatchObject({
+      date: "2025-12-08",
+      description: "Credit Transfer",
+      amount: 12345.67,
+      direction: "credit",
+    });
   });
 
   it("does not attach a continuation line across a non-transaction row", () => {

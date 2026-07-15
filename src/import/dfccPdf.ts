@@ -2,7 +2,7 @@ import { toISODate } from "../domain/dates";
 import { parseAmount } from "../domain/money";
 import type { Transaction } from "../domain/types";
 import { makeImportedTransaction } from "./importedTransaction";
-import { extractLines, openPdf, type PdfLine } from "./pdfText";
+import { extractLines, withPdf, type PdfLine } from "./pdfText";
 import type { StatementParser } from "./types";
 
 const DATE_CELL = /^\d{2}\/\d{2}\/\d{4}$/;
@@ -93,13 +93,10 @@ export function parseLines(lines: PdfLine[], fallbackAccount: string): Transacti
 }
 
 async function parse(file: File, password: string): Promise<Transaction[]> {
-  const doc = await openPdf(file, password);
-  try {
+  return withPdf(file, password, async (doc) => {
     const lines = await extractLines(doc);
     return parseLines(lines, file.name.replace(/\.[^.]+$/, ""));
-  } finally {
-    await (doc as unknown as { destroy(): Promise<void> }).destroy();
-  }
+  });
 }
 
 export const dfccPdfParser: StatementParser = {

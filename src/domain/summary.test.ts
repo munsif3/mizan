@@ -9,6 +9,7 @@ import {
   monthsWithData,
   netAmount,
   reviewQueue,
+  selectableMonths,
   settleUp,
 } from "./summary";
 import {
@@ -151,6 +152,25 @@ describe("computeMonthSummary", () => {
       suggestedBeneficiary: { type: "member", memberId: "sam" },
       suggestedKind: "expense",
     });
+  });
+
+  it("keeps a deterministic account breakdown when one merchant spans accounts", () => {
+    const unresolved = (id: string, account: string): Transaction => ({
+      ...txn(id, "2026-07-08", "CITY RIDE", 5_000, "uncategorized", account),
+      beneficiary: { type: "unassigned" },
+    });
+    const rows = [
+      { ...unresolved("alex-1", "Alex Visa"), accountId: "mv", rawAccount: "DFCC 1111" },
+      { ...unresolved("alex-2", "Old Alex label"), accountId: "mv", rawAccount: "DFCC 2222" },
+      { ...unresolved("sam", "Sam Visa"), accountId: "sv", rawAccount: "NTB 3333" },
+      { ...unresolved("unknown", "NTB 9999"), rawAccount: "NTB 9999" },
+    ];
+
+    expect(reviewQueue(rows)[0]?.accountContexts).toEqual([
+      { account: "Alex Visa", accountId: "mv", count: 2 },
+      { account: "NTB 9999", count: 1 },
+      { account: "Sam Visa", accountId: "sv", count: 1 },
+    ]);
   });
 
   it("treats a past month as complete (no projection inflation)", () => {
@@ -688,5 +708,93 @@ describe("history", () => {
     const data = fixture();
     data.incomeReceipts = [{ id: "rcpt_2026-05_por_alex", month: "2026-05", memberId: "alex", portionId: "por_alex", amount: 600000 }];
     expect(monthsWithData(data, JULY_15)).toContain("2026-05");
+  });
+});
+
+describe("selectableMonths", () => {
+  it("builds a continuous 24-month range across year boundaries", () => {
+    const months = selectableMonths(emptyData(), new Date(2026, 0, 15));
+
+    expect(months).toHaveLength(24);
+    expect(months[0]).toBe("2024-02");
+    expect(months.slice(10, 13)).toEqual(["2024-12", "2025-01", "2025-02"]);
+    expect(months.at(-1)).toBe("2026-01");
+  });
+
+  it("returns the minimum rolling window when there is no recorded data", () => {
+    const months = selectableMonths(emptyData(), JULY_15);
+
+    expect(months).toHaveLength(24);
+    expect(months[0]).toBe("2024-08");
+    expect(months.at(-1)).toBe("2026-07");
+  });
+
+  it("extends backward to an older transaction and keeps empty gaps selectable", () => {
+    const data = emptyData();
+    data.transactions = [txn("old", "2023-01-10", "OLD PURCHASE", 100, "food", "Cash")];
+
+    const months = selectableMonths(data, JULY_15);
+
+    expect(months[0]).toBe("2023-01");
+    expect(months.slice(0, 3)).toEqual(["2023-01", "2023-02", "2023-03"]);
+    expect(months).toContain("2024-07");
+    expect(months.at(-1)).toBe("2026-07");
+  });
+
+  it("extends backward to a receipt-only older month", () => {
+    const data = emptyData();
+    data.incomeReceipts = [{
+      id: "old-receipt",
+      month: "2022-04",
+      memberId: "member",
+      portionId: "portion",
+      amount: 1_000,
+    }];
+
+    const months = selectableMonths(data, JULY_15);
+
+    expect(months[0]).toBe("2022-04");
+    expect(months.at(-1)).toBe("2026-07");
+  });
+
+  it("ignores future transactions and receipts", () => {
+    const data = emptyData();
+    data.transactions = [txn("future", "2027-02-10", "FUTURE PURCHASE", 100, "food", "Cash")];
+    data.incomeReceipts = [{
+      id: "future-receipt",
+      month: "2028-03",
+      memberId: "member",
+      portionId: "portion",
+      amount: 1_000,
+    }];
+
+    const months = selectableMonths(data, JULY_15);
+
+    expect(months).toHaveLength(24);
+    expect(months[0]).toBe("2024-08");
+    expect(months.at(-1)).toBe("2026-07");
+    expect(months).not.toContain("2027-02");
+    expect(months).not.toContain("2028-03");
+  });
+
+  it("ignores malformed and year-zero recorded months", () => {
+    const data = emptyData();
+    data.transactions = [
+      txn("zero-year", "0000-01-10", "INVALID PURCHASE", 100, "food", "Cash"),
+      txn("malformed", "not-a-date", "INVALID PURCHASE", 100, "food", "Cash"),
+    ];
+    data.incomeReceipts = [{
+      id: "invalid-receipt",
+      month: "0000-02",
+      memberId: "member",
+      portionId: "portion",
+      amount: 1_000,
+    }];
+
+    const months = selectableMonths(data, JULY_15);
+
+    expect(months).toHaveLength(24);
+    expect(months[0]).toBe("2024-08");
+    expect(months.at(-1)).toBe("2026-07");
   });
 });

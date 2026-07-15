@@ -63,7 +63,7 @@ export function ResetHouseholdModal({
         </div>
 
         <button type="button" className="secondary" disabled={busy} onClick={onExport}>
-          Export JSON first
+          Export JSON
         </button>
 
         <label className="field">

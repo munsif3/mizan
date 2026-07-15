@@ -75,7 +75,7 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
     expect(container.textContent).toContain("LKR 700453.6");
     expect(container.querySelector<HTMLSelectElement>('select[aria-label="Currency received"]')?.value).toBe("USD");
 
-    const confirm = [...container.querySelectorAll("button")].find((button) => button.textContent === "Confirm received")!;
+    const confirm = [...container.querySelectorAll("button")].find((button) => button.textContent === "Confirm income")!;
     await act(async () => confirm.click());
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
@@ -95,6 +95,48 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
     await act(async () => confirm.click());
     expect(onSave.mock.calls[1]?.[0]).toMatchObject({ amount: 2109.8, transactionId: "salary" });
     expect(onSave.mock.calls[1]?.[0].receivedCurrency).toBeUndefined();
+    await act(async () => root.unmount());
+  });
+
+  it("uses edit-specific actions for an existing income confirmation", async () => {
+    const portion: IncomePortion = {
+      id: "salary",
+      label: "Salary",
+      amount: 1000,
+      currency: "LKR",
+      taxRate: 0,
+      taxWithheld: true,
+      window: null,
+    };
+    const members: Member[] = [{ id: "sara", name: "Sara", color: "#ff80b5", portions: [portion] }];
+    const receipt = {
+      id: "rcpt_2026-07_salary",
+      month: "2026-07",
+      memberId: "sara",
+      portionId: "salary",
+      amount: 1000,
+    };
+    const item = resolveMonthIncome(members, [receipt], "LKR", {}, "2026-07", new Date(2026, 6, 15)).items[0]!;
+    container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <IncomeConfirmModal
+          item={item}
+          householdCurrency="LKR"
+          money={(value) => `LKR ${value}`}
+          onSave={() => {}}
+          onRemove={() => {}}
+          onClose={() => {}}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Save changes");
+    expect(container.textContent).toContain("Delete income confirmation");
+    expect(container.textContent).not.toContain("Confirm income");
     await act(async () => root.unmount());
   });
 });
