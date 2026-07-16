@@ -2,7 +2,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { computeMonthSummary } from "../domain/summary";
-import type { AppData } from "../domain/types";
+import type { EfficiencySnapshot } from "../domain/efficiency";
+import type { AppData, EfficiencyOpportunity } from "../domain/types";
 import { emptyData } from "../storage/schema";
 import { HomeView } from "./HomeView";
 
@@ -142,5 +143,70 @@ describe("HomeView spending attribution", () => {
 
     // Privacy formatting is reused by visible and accessible amount labels.
     expect(householdGroceries?.getAttribute("aria-label")).not.toContain("20000");
+  });
+
+  it("shows the top three efficiency opportunities and expands the same-screen backlog", async () => {
+    const summary = computeMonthSummary(fixture(), "2026-07", new Date(2026, 6, 15));
+    const opportunities: EfficiencyOpportunity[] = Array.from({ length: 4 }, (_, index) => ({
+      fingerprint: `opp-${index + 1}`,
+      kind: "recurring_value_check",
+      subject: { type: "merchant", merchantKey: `MERCHANT ${index + 1}`, category: "dining", beneficiary: { type: "household" } },
+      subjectLabel: `Opportunity ${index + 1}`,
+      confidence: "high",
+      evidenceMonths: ["2026-04", "2026-05", "2026-06"],
+      currentMonthlyCost: 100 - index,
+      baselineMonthlyCost: 100 - index,
+      estimatedMonthlySavings: 0,
+      estimatedAnnualSavings: 0,
+      saveRatePoints: 0,
+      targetGapCoverage: 0,
+      score: 100 - index,
+      suggestedAction: "keep",
+      evidence: ["Stable recurring evidence."],
+    }));
+    const efficiency: EfficiencySnapshot = {
+      readiness: "ready",
+      readinessReason: "Based on 3 completed months of classified recorded spending.",
+      baselineMonths: ["2026-04", "2026-05", "2026-06"],
+      targetGap: 50,
+      opportunities,
+      topOpportunities: opportunities.slice(0, 3),
+      awaitingVerification: [],
+    };
+    const onReview = vi.fn();
+    const onOpenTransactions = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <HomeView
+        summary={summary}
+        money={(value) => `LKR ${value}`}
+        lastCheckInAt=""
+        onOpenSettings={() => {}}
+        onOpenImport={() => {}}
+        onReviewQueue={() => {}}
+        onCompleteCheckIn={() => {}}
+        onConfirmIncome={() => {}}
+        onOpenTransactions={onOpenTransactions}
+        efficiency={efficiency}
+        onReviewEfficiency={onReview}
+        onVerifyEfficiency={() => {}}
+      />,
+    ));
+
+    expect(container.textContent).toContain("Efficiency opportunities");
+    expect(container.textContent).toContain("Opportunity 3");
+    expect(container.textContent).not.toContain("Opportunity 4");
+    const expand = [...container.querySelectorAll("button")].find((item) => item.textContent?.includes("See all 4"));
+    await act(async () => expand?.click());
+    expect(container.textContent).toContain("Opportunity 4");
+
+    const review = [...container.querySelectorAll("button")].find((item) => item.textContent === "Review opportunity");
+    await act(async () => review?.click());
+    expect(onReview).toHaveBeenCalledWith(opportunities[0]);
+    const evidence = [...container.querySelectorAll("button")].find((item) => item.textContent === "Open evidence");
+    await act(async () => evidence?.click());
+    expect(onOpenTransactions).toHaveBeenCalledWith({ category: "dining", beneficiary: "household", merchant: "MERCHANT 1" });
   });
 });

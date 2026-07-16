@@ -315,6 +315,7 @@ describe("UI render smoke", () => {
         onRotateInvite={() => {}}
         onExport={() => {}}
         onImportBackup={() => {}}
+        hasLegacyBrowserData={false}
         onClearData={() => {}}
         canClearTransactions={true}
         hasTransactions={true}

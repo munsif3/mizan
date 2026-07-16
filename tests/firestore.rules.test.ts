@@ -68,9 +68,11 @@ describe("Firestore household authorization", () => {
 
     await assertFails(getDoc(doc(outsider, META_PATH)));
     await assertFails(getDoc(doc(outsider, `households/${HOUSEHOLD_ID}/snapshots/rev_1`)));
+    await assertFails(getDoc(doc(outsider, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`)));
     await assertSucceeds(getDoc(doc(owner, META_PATH)));
     await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`), { schemaVersion: 5 }));
     await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`), { amount: 10 }));
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`), { action: "reduce" }));
   });
 
   it("permits only the invite-proven user to add itself as a regular member", async () => {
@@ -94,6 +96,7 @@ describe("Firestore household authorization", () => {
     await assertSucceeds(batch.commit());
     await assertSucceeds(getDoc(doc(joiner, META_PATH)));
     await assertSucceeds(setDoc(doc(joiner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`), { amount: 10 }));
+    await assertSucceeds(setDoc(doc(joiner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`), { action: "keep" }));
   });
 
   it("rejects a wrong invite, privilege escalation, and metadata tampering", async () => {

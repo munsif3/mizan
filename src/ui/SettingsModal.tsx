@@ -95,6 +95,7 @@ export function SettingsModal({
   onRotateInvite,
   onExport,
   onImportBackup,
+  hasLegacyBrowserData,
   onClearData,
   canClearTransactions,
   hasTransactions,
@@ -123,6 +124,7 @@ export function SettingsModal({
   onRotateInvite: () => void;
   onExport: () => void;
   onImportBackup: (file: File) => void;
+  hasLegacyBrowserData: boolean;
   onClearData: () => void;
   canClearTransactions: boolean;
   hasTransactions: boolean;
@@ -747,7 +749,9 @@ export function SettingsModal({
             <div className="modal-actions">
               <button className="secondary" onClick={onExport}>Export JSON</button>
               <button className="secondary" onClick={() => importRef.current?.click()}>Import JSON</button>
-              <button className="secondary danger" onClick={onClearData}>Clear legacy browser data</button>
+              {hasLegacyBrowserData && (
+                <button className="secondary danger" onClick={onClearData}>Remove old browser copy</button>
+              )}
               <HouseholdTransactionClearAction
                 canClearTransactions={canClearTransactions}
                 hasTransactions={hasTransactions}

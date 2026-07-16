@@ -20,11 +20,14 @@ Firestore household before any financial data screen is available.
 - **Installable PWA.** Works offline for the app shell and installs to your home screen.
 - **A repeatable check-in.** Home shows whether transaction data is current, keeps old review debt
   separate from the selected month, and records a user-specific weekly review for each household.
+- **Explainable efficiency opportunities.** Mizan compares classified recorded spending with completed-month
+  baselines, asks the household what is actually valuable, and tracks planned changes without altering ledger math.
 
 ## Screens
 
 - **Home** - the weekly review of the current month: data freshness, projected save rate vs. your
-  target, the next cleanup action, per-member panels, settlement, and what changed since last month.
+  target, the next cleanup action, the top three efficiency opportunities, per-member panels, settlement,
+  and what changed since last month.
 - **Transactions** - the full ledger plus a review queue for teaching categories to new merchants.
 - **History** - month-by-month save rate.
 
@@ -92,7 +95,9 @@ and a rule is created and applied everywhere.
 
 - All financial and financial-adjacent app data is stored in Firestore for signed-in household
   members: transactions, members, income portions and monthly confirmations, FX rates, accounts, fixed costs, rules, categories, counterparties,
-  CSV presets, currency/locale, and target save rate.
+  CSV presets, shared efficiency decisions/outcomes, currency/locale, and target save rate.
+- Efficiency recommendations are deterministic and derived from current household data. No financial data is sent
+  to an AI or market-comparison service, and estimated or observed reductions never change actual savings figures.
 - Browser storage may keep non-financial convenience state such as the last active household and
   privacy toggle; the user profile stores a cloud counterpart for cross-device continuity.
 - Raw statement files and passwords are not uploaded by Mizan.

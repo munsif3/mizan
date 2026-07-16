@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { HistoryRow } from "../domain/summary";
+import type { EfficiencyPlan } from "../domain/types";
 import { HistoryView } from "./HistoryView";
 
 const rows: HistoryRow[] = [
@@ -24,7 +25,7 @@ describe("HistoryView selected month", () => {
     container = null;
   });
 
-  async function render(currentMonth: string) {
+  async function render(currentMonth: string, efficiencyPlans: EfficiencyPlan[] = []) {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -35,6 +36,7 @@ describe("HistoryView selected month", () => {
           currentMonth={currentMonth}
           targetSaveRate={15}
           money={(value) => `LKR ${value}`}
+          efficiencyPlans={efficiencyPlans}
         />,
       );
     });
@@ -63,5 +65,24 @@ describe("HistoryView selected month", () => {
     await render("2026-07");
     expect(container?.textContent).toContain("LKR 50000 one-off");
     expect(container?.textContent).toContain("LKR 50000 protected");
+  });
+
+  it("shows verified efficiency outcomes without adding them to ledger savings", async () => {
+    const plan: EfficiencyPlan = {
+      id: "plan", fingerprint: "subject",
+      subject: { type: "category", category: "dining", beneficiary: { type: "household" } },
+      subjectLabel: "Dining · Household", value: "questionable", action: "reduce", effort: "easy", state: "verified",
+      baseline: { months: ["2026-04", "2026-05"], monthlyAmount: 20_000, measurementScope: "category" },
+      targetMonthlySavings: 5_000, targetMonth: "2026-06", revisitAfterMonth: "2026-12",
+      createdAt: "2026-05-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z",
+      outcome: {
+        month: "2026-06", observedMonthlyReduction: 4_000, result: "partial",
+        confirmedAt: "2026-07-01T00:00:00.000Z", dataComplete: true, substitutionWarning: false,
+      },
+    };
+    await render("2026-06", [plan]);
+    expect(container?.textContent).toContain("Dining · Household: LKR 4000 observed reduction · partial");
+    expect(container?.textContent).toContain("not added to saved or save-rate figures");
+    expect(container?.textContent).toContain("Saved LKR 20000");
   });
 });

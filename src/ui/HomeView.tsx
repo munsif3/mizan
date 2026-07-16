@@ -4,8 +4,9 @@ import { monthLabel } from "../domain/dates";
 import type { PortionResolution } from "../domain/income";
 import type { IncomeCandidate } from "../domain/incomeMatch";
 import type { SharedContributionCandidate } from "../domain/contributions";
+import type { EfficiencySnapshot } from "../domain/efficiency";
 import type { MonthSummary } from "../domain/summary";
-import type { CategoryKey, Member, MemberId } from "../domain/types";
+import type { CategoryKey, EfficiencyOpportunity, Member, MemberId } from "../domain/types";
 import { DrilldownAmount } from "./bits";
 
 export interface HomeTransactionFilters {
@@ -24,6 +25,109 @@ function openTarget(
   filters: HomeTransactionFilters,
 ) {
   return onOpenTransactions ? () => onOpenTransactions(filters) : undefined;
+}
+
+function efficiencyTitle(kind: EfficiencyOpportunity["kind"]): string {
+  if (kind === "recurring_value_check") return "Check the value";
+  if (kind === "questionable_recurring") return "Questionable recurring cost";
+  if (kind === "recurring_price_increase") return "Recurring price increase";
+  if (kind === "category_above_baseline") return "Above your baseline";
+  if (kind === "commitment_ending") return "Money becoming available";
+  return "Outcome ready to verify";
+}
+
+function efficiencyFilters(opportunity: EfficiencyOpportunity): HomeTransactionFilters {
+  const beneficiary = opportunity.subject.beneficiary.type === "member"
+    ? opportunity.subject.beneficiary.memberId
+    : opportunity.subject.beneficiary.type;
+  return {
+    category: opportunity.subject.category,
+    beneficiary,
+    ...(opportunity.subject.type === "merchant" ? { merchant: opportunity.subject.merchantKey } : {}),
+  };
+}
+
+function EfficiencySection({
+  snapshot,
+  money,
+  onReview,
+  onVerify,
+  onOpenTransactions,
+}: {
+  snapshot: EfficiencySnapshot;
+  money: (value: number) => string;
+  onReview: (opportunity: EfficiencyOpportunity) => void;
+  onVerify: (opportunity: EfficiencyOpportunity) => void;
+  onOpenTransactions?: (filters: HomeTransactionFilters) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? snapshot.opportunities : snapshot.topOpportunities;
+  return (
+    <section className="friendly-section efficiency-section">
+      <div className="friendly-heading efficiency-heading">
+        <div>
+          <span className="soft-label">Efficiency opportunities</span>
+          <h3>{snapshot.opportunities.length ? "Improve costs without losing what matters" : "Watching for useful changes"}</h3>
+        </div>
+        <div className="efficiency-readiness">
+          <span className={`attention-pill ${snapshot.readiness === "ready" ? "" : "danger"}`}>{snapshot.readiness.replaceAll("_", " ")}</span>
+          <p>{snapshot.readinessReason}</p>
+          {snapshot.targetGap > 0 && <strong>{money(snapshot.targetGap)} projected target gap</strong>}
+        </div>
+      </div>
+
+      {visible.length ? (
+        <div className="efficiency-grid">
+          {visible.map((opportunity) => {
+            const verification = opportunity.kind === "verification_due";
+            const ending = opportunity.kind === "commitment_ending";
+            const valueCheck = opportunity.kind === "recurring_value_check";
+            return (
+              <article className={`efficiency-card ${verification ? "verification" : ""}`} key={opportunity.fingerprint}>
+                <div className="efficiency-card-heading">
+                  <span className="soft-label">{efficiencyTitle(opportunity.kind)}</span>
+                  <span className="efficiency-confidence">{opportunity.confidence} confidence</span>
+                </div>
+                <h4>{opportunity.subjectLabel}</h4>
+                <p>{opportunity.evidence[0]}</p>
+                <div className="efficiency-impact">
+                  <span>{verification ? "Observed reduction" : ending ? "Could release" : valueCheck ? "Current monthly cost" : "Estimated monthly saving"}</span>
+                  <strong>{money(verification ? opportunity.observedMonthlyReduction ?? 0 : valueCheck ? opportunity.currentMonthlyCost : opportunity.estimatedMonthlySavings)}</strong>
+                </div>
+                {!valueCheck && opportunity.estimatedMonthlySavings > 0 && (
+                  <div className="efficiency-metrics">
+                    <span>{money(opportunity.estimatedAnnualSavings)} annual estimate</span>
+                    {opportunity.saveRatePoints > 0 && <span>+{opportunity.saveRatePoints.toFixed(1)} save-rate points</span>}
+                    {opportunity.targetGapCoverage > 0 && <span>{opportunity.targetGapCoverage.toFixed(0)}% of target gap</span>}
+                  </div>
+                )}
+                {opportunity.substitutionWarning && <p className="efficiency-warning">Possible same-category substitution needs review.</p>}
+                <div className="efficiency-actions">
+                  <button onClick={() => verification ? onVerify(opportunity) : onReview(opportunity)}>
+                    {verification ? "Verify outcome" : "Review opportunity"}
+                  </button>
+                  {onOpenTransactions && opportunity.subject.type !== "fixed_cost" && (
+                    <button className="secondary" onClick={() => onOpenTransactions(efficiencyFilters(opportunity))}>Open evidence</button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="efficiency-empty">
+          <strong>{snapshot.readiness === "ready" ? "No material opportunity is active" : "Recommendations are deliberately paused"}</strong>
+          <p>{snapshot.readiness === "ready" ? "Mizan will surface a change when the evidence clears the materiality threshold." : snapshot.readinessReason}</p>
+        </div>
+      )}
+
+      {snapshot.opportunities.length > 3 && (
+        <button className="link-button efficiency-expand" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "Show top three" : `See all ${snapshot.opportunities.length} opportunities`}
+        </button>
+      )}
+    </section>
+  );
 }
 
 function PurposeMatrix({
@@ -280,6 +384,9 @@ export function HomeView({
   members,
   onConfirmContribution,
   onOpenTransactions,
+  efficiency,
+  onReviewEfficiency,
+  onVerifyEfficiency,
 }: {
   summary: MonthSummary;
   money: (value: number) => string;
@@ -296,6 +403,9 @@ export function HomeView({
   members?: Member[];
   onConfirmContribution?: (candidate: SharedContributionCandidate) => void;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
+  efficiency?: EfficiencySnapshot;
+  onReviewEfficiency?: (opportunity: EfficiencyOpportunity) => void;
+  onVerifyEfficiency?: (opportunity: EfficiencyOpportunity) => void;
 }) {
   const s = summary;
   const moneyIn = currencyMoney ?? ((value: number, _currency: string) => money(value));
@@ -571,6 +681,16 @@ export function HomeView({
           )}
         </div>
       </section>}
+
+      {efficiency && onReviewEfficiency && onVerifyEfficiency && (
+        <EfficiencySection
+          snapshot={efficiency}
+          money={money}
+          onReview={onReviewEfficiency}
+          onVerify={onVerifyEfficiency}
+          onOpenTransactions={onOpenTransactions}
+        />
+      )}
 
       {hasActivity ? (
         <>

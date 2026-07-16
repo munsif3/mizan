@@ -234,7 +234,7 @@ describe("migrate (v7 income portions)", () => {
       schemaVersion: 6,
       settings: { members: [{ id: "m", name: "Member", color: "#123456", income: 1000 }], currency: "LKR" },
     });
-    expect(data.schemaVersion).toBe(14);
+    expect(data.schemaVersion).toBe(15);
     expect(data.settings.members[0]?.portions).toEqual([
       { id: "por_m", label: "Monthly income", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" },
     ]);
@@ -321,7 +321,7 @@ describe("migrate (v13 -> v14 scheduled income)", () => {
       },
       incomeReceipts: [{ id: "old", month: "2026-07", memberId: "m", portionId: "salary", amount: 1100 }],
     });
-    expect(data.schemaVersion).toBe(14);
+    expect(data.schemaVersion).toBe(15);
     expect(data.settings.members[0]?.portions[0]).toMatchObject({
       schedule: { frequency: "monthly" },
       budgetTreatment: "ordinary",
@@ -349,6 +349,7 @@ describe("migrate (v13 -> v14 scheduled income)", () => {
         }],
       },
     });
+    expect(data.efficiencyPlans).toEqual([]);
     expect(data.settings.members[0]?.portions[0]).toMatchObject({
       schedule: { frequency: "one_off", month: "2026-12" },
       budgetTreatment: "protected",
@@ -418,7 +419,7 @@ describe("migrate (v11 -> v12 purpose and beneficiary classification)", () => {
 
   it("preserves purpose categories and separates valid legacy personal beneficiaries", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(14);
+    expect(data.schemaVersion).toBe(15);
     expect(data.transactions.map(({ id, category, beneficiary }) => ({ id, category, beneficiary }))).toEqual([
       { id: "shared", category: "food", beneficiary: { type: "household" } },
       { id: "personal", category: "uncategorized", beneficiary: { type: "member", memberId: "sam" } },
@@ -549,7 +550,7 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
 
   it("preserves valid statement-backed contribution links", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(14);
+    expect(data.schemaVersion).toBe(15);
     expect(data.sharedContributions).toEqual([{
       id: "c1",
       allocations: [{ expenseTransactionId: "loan", amount: 125000 }],

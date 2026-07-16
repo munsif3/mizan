@@ -50,6 +50,13 @@ describe("clearTransactionHistory", () => {
       { id: "receipt-bonus", month: "2026-07", memberId: "member-1", portionId: "bonus", amount: 2000, transactionId: "salary-credit" },
       { id: "receipt-2", month: "2026-06", memberId: "member-1", portionId: "salary", amount: 4800 },
     ];
+    data.efficiencyPlans = [{
+      id: "plan-1", fingerprint: "effsub_food", subject: { type: "category", category: "food", beneficiary: { type: "household" } },
+      subjectLabel: "Food · Household", value: "worthwhile", action: "keep", effort: "moderate", state: "watching",
+      baseline: { months: ["2026-05", "2026-06"], monthlyAmount: 100, measurementScope: "category" },
+      targetMonthlySavings: 0, revisitAfterMonth: "2027-01",
+      createdAt: "2026-07-14T00:00:00.000Z", updatedAt: "2026-07-14T00:00:00.000Z",
+    }];
 
     const cleared = clearTransactionHistory(data);
 
@@ -64,6 +71,7 @@ describe("clearTransactionHistory", () => {
     expect(cleared.settings).toBe(data.settings);
     expect(cleared.fixedCosts).toBe(data.fixedCosts);
     expect(cleared.merchantRules).toBe(data.merchantRules);
+    expect(cleared.efficiencyPlans).toBe(data.efficiencyPlans);
     expect(data.transactions).toHaveLength(1);
     expect(data.sharedContributions).toHaveLength(1);
     expect(data.incomeReceipts[0]?.transactionId).toBe("salary-credit");

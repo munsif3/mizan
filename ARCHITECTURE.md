@@ -50,21 +50,23 @@ One deterministic system for a household's financial awareness.
 | 27 | Account identity is stable and keeps import provenance | Accounts have a stable id, currency, payer, and explicit beneficiary default (`owner`, `household`, or `review`). Transactions retain `rawAccount` plus `accountId`; later match rules and label edits can repair rows without losing source text. Account-derived beneficiaries carry provenance so only inferred or unresolved rows are recalculated. |
 | 28 | Shared contributions are confirmed statement evidence | A `SharedContribution` links one member's outgoing transfer, the matching credit into another member's account, and explicit allocations across one or more partial loan-recovery debits. Transfer legs stay non-spend and every recovery remains a single spend source; settlement reallocates only the proven amount. Suggestions never create links silently. |
 | 29 | Beneficiary precedence is explicit | A locked one-row override wins, then an explicit merchant beneficiary, then the registered account's beneficiary default, then Unassigned. Merchant rules may select `account_default`, so one merchant can stay personal to whichever member card paid while a household merchant overrides every account. |
-| 30 | Transaction clearing preserves reusable household setup | The owner may delete every ledger row without rebuilding the household. Transaction-backed contribution records are removed and income-receipt statement links are detached, while accounts, card/bank matching, members, income confirmations, rules, fixed costs, categories, presets, settings, household access, and the invite remain. Like a full reset, the clear is serialized after queued saves so stale autosaves cannot restore deleted rows. |
+| 30 | Transaction clearing preserves reusable household setup | The owner may delete every ledger row without rebuilding the household. Transaction-backed contribution records are removed and income-receipt statement links are detached, while accounts, card/bank matching, members, income confirmations, rules, fixed costs, efficiency decisions, categories, presets, settings, household access, and the invite remain. Like a full reset, the clear is serialized after queued saves so stale autosaves cannot restore deleted rows. |
 | 31 | Recurring commitment type is separate from purpose | A fixed commitment stores `kind: expense | loan_payment` independently from `category`. The settings editor labels both fields, so a car loan can be a Loan / debt payment for the Transport purpose without treating Transport as the loan type. Both remain forecast spend; imported statement rows remain the actual ledger evidence. Legacy loan-like names get a user-confirmed suggestion, never silent reclassification. |
 | 32 | One-off income is scheduled and protected by default | An income portion has a monthly or exact-month one-off schedule plus an ordinary/protected budget treatment. Confirmed bonuses count in income, savings, and save rate, while protected amounts do not expand target spend or daily allowance. A combined salary-and-bonus credit may evidence several atomically saved receipts; the credit remains provenance only and is never counted again. |
+| 33 | Efficiency advice is derived; household decisions are stored | `computeEfficiencySnapshot` uses classified recorded spend, beneficiary-aware merchant groups, and completed-month medians to surface explainable opportunities. Only value/action plans and confirmed outcomes persist. Estimates and observed reductions remain counterfactual annotations and never change ledger spend, settlement, savings, or save rate. |
 
-## Data model (schema v14)
+## Data model (schema v15)
 
 ```
 AppData
-├── schemaVersion: 14
+├── schemaVersion: 15
 ├── transactions: Transaction[]   { id, date, description, amount, category, beneficiary, beneficiarySource?, classificationLocked?, account, accountId?, rawAccount?, note, source, direction, kind, counterpartyId?, split? }
 ├── sharedContributions: SharedContribution[] { id, allocations: { expenseTransactionId, amount }[], transferDebitTransactionId, transferCreditTransactionId, contributorMemberId, amount }
 ├── merchantRules: { CLEANED_MERCHANT: { category, beneficiary | account_default, kind, counterpartyId? } }
 ├── accounts: Account[]           { id, label, currency, owner, beneficiaryDefault, match[] }
 ├── fixedCosts: FixedCost[]       { id, label, amount, kind, category, beneficiary, until? }   // kind = expense | loan_payment; until = "YYYY-MM", inclusive
 ├── incomeReceipts: IncomeReceipt[] { id, month, memberId, portionId, amount, receivedAmount?, receivedCurrency?, fxRate?, currencyReview?, date?, transactionId?, label?, taxRate?, taxWithheld?, budgetTreatment? }
+├── efficiencyPlans: EfficiencyPlan[] { id, subject, value, action, effort, state, baseline, targetMonthlySavings, targetMonth?, revisitAfterMonth?, outcome? }
 └── settings:
     ├── members: Member[]         { id, name, color, portions: IncomePortion[] { schedule: monthly | one_off(YYYY-MM), budgetTreatment: ordinary | protected } }
     ├── fxRates: { [ISO currency]: householdCurrencyPerUnit }
@@ -103,7 +105,7 @@ history. `settings.fxRates` converts foreign expected portions for projections a
   `gift_or_handout`. Counterparties are a **label only** — Mizan tracks no running
   outstanding balance (deliberate: keeps to three screens).
 
-## Cloud household model (sync v7)
+## Cloud household model (sync v8)
 
 `AppData` remains the canonical in-app shape. Firestore publishes one active snapshot revision
 through a small manifest; each revision keeps the same split-collection layout:
@@ -118,6 +120,7 @@ households/{householdId}/snapshots/{revision}/sharedContributions/{contributionI
 households/{householdId}/snapshots/{revision}/accounts/{accountId}
 households/{householdId}/snapshots/{revision}/fixedCosts/{fixedCostId}
 households/{householdId}/snapshots/{revision}/incomeReceipts/{receiptId}
+households/{householdId}/snapshots/{revision}/efficiencyPlans/{planId}
 households/{householdId}/snapshots/{revision}/members/{memberId}
 households/{householdId}/snapshots/{revision}/customCategories/{categoryId}
 households/{householdId}/snapshots/{revision}/counterparties/{counterpartyId}
@@ -145,7 +148,7 @@ If a legacy `mizan_v2` or `trackr_v1` browser payload is found, only an explicit
 household receives it. Joining or switching never overwrites an existing household, and the browser
 financial keys are cleared only after the Firestore save succeeds.
 
-**Migration.** `migrate()` normalizes any known shape into v14; unrelated junk degrades to empty
+**Migration.** `migrate()` normalizes any known shape into v15; unrelated junk degrades to empty
 data, while a newer schema fails loudly so an older client cannot discard unknown fields. Legacy
 data (schema v4, or a v1 "trackr" backup) seeds members from ids already present
 and pins the previous currency. v5 → v6 adds movement kinds, v6 → v7 adds income portions, v7 → v8
@@ -157,9 +160,10 @@ previously classified shared-purpose categories remain Household, and uncategori
 remain Unassigned. Existing accounts start with `beneficiaryDefault: "review"`; choosing a policy fills only
 unlocked Unassigned rows, while explicit Household/member history stays untouched. Split-cloud v4 hydrates
 as pre-beneficiary data, v5 round-trips account policies, rule policies, and beneficiary provenance,
-v12 → v13 defaults existing fixed commitments to `kind: "expense"`, and v13 → v14 defaults income
-portions to monthly/ordinary while conservatively snapshotting receipt metadata. Split-cloud v7 retains
-scheduled income and protected-budget semantics.
+v12 → v13 defaults existing fixed commitments to `kind: "expense"`, v13 → v14 defaults income
+portions to monthly/ordinary while conservatively snapshotting receipt metadata, and v14 → v15 adds an
+empty household-shared efficiency-plan list. Split-cloud v7 retains scheduled income and protected-budget
+semantics; split-cloud v8 round-trips efficiency decisions in their own revisioned collection.
 The migrator preserves statement provenance, movement semantics, contribution evidence, and locked one-row
 classifications. Fresh data with no member list triggers onboarding.
 
@@ -182,7 +186,7 @@ after becoming overdue. History annotates one-off and protected amounts explicit
 ```
 src/
 ├── auth/            Firebase Auth wrapper + Google sign-in state
-├── domain/          pure, tested: types, income, incomeMatch, categories, movements, money, dates, rules, dedupe, accounts, transfers, contributions, summary
+├── domain/          pure, tested: types, income, incomeMatch, categories, movements, money, dates, rules, dedupe, accounts, transfers, contributions, summary, efficiency
 ├── firebase/        Firebase client initialization from Vite env vars
 ├── household/       household metadata, invite helpers, Firestore repository
 ├── import/          pure-ish, tested: statement parser registry + CSV importer

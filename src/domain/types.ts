@@ -246,6 +246,107 @@ export interface FixedCost {
   until?: string;
 }
 
+/** A household judgment about the real-life value received from a cost. */
+export type LifeValue = "essential" | "worthwhile" | "questionable";
+
+/** The practical friction expected when changing a cost. */
+export type ChangeEffort = "easy" | "moderate" | "hard";
+
+/** The household's chosen response to an efficiency opportunity. */
+export type EfficiencyAction = "keep" | "reduce" | "replace" | "stop";
+
+/** A stable, beneficiary-aware subject used by the deterministic opportunity engine. */
+export type EfficiencySubject =
+  | {
+      type: "merchant";
+      merchantKey: string;
+      category: CategoryKey;
+      beneficiary: SpendBeneficiary;
+    }
+  | {
+      type: "category";
+      category: CategoryKey;
+      beneficiary: SpendBeneficiary;
+    }
+  | {
+      type: "fixed_cost";
+      fixedCostId: string;
+      category: CategoryKey;
+      beneficiary: SpendBeneficiary;
+    };
+
+export type EfficiencyPlanState = "watching" | "planned" | "verified" | "closed";
+export type EfficiencyOutcomeResult = "achieved" | "partial" | "not_achieved";
+
+/** The evidence snapshot retained when a household makes a decision. */
+export interface EfficiencyBaseline {
+  months: string[];
+  monthlyAmount: number;
+  measurementScope: "merchant" | "category" | "fixed_cost";
+}
+
+/** A confirmed counterfactual outcome. It never changes ledger savings. */
+export interface EfficiencyOutcome {
+  month: string;
+  observedMonthlyReduction: number;
+  result: EfficiencyOutcomeResult;
+  confirmedAt: string;
+  dataComplete: true;
+  substitutionWarning: boolean;
+}
+
+/** A household-shared decision; recommendations themselves remain derived. */
+export interface EfficiencyPlan {
+  id: string;
+  fingerprint: string;
+  subject: EfficiencySubject;
+  subjectLabel: string;
+  value: LifeValue;
+  action: EfficiencyAction;
+  effort: ChangeEffort;
+  state: EfficiencyPlanState;
+  baseline: EfficiencyBaseline;
+  targetMonthlySavings: number;
+  targetMonth?: string;
+  revisitAfterMonth?: string;
+  createdAt: string;
+  updatedAt: string;
+  outcome?: EfficiencyOutcome;
+  closedReason?: "subject_removed";
+}
+
+export type EfficiencyOpportunityKind =
+  | "recurring_value_check"
+  | "questionable_recurring"
+  | "recurring_price_increase"
+  | "category_above_baseline"
+  | "commitment_ending"
+  | "verification_due";
+
+export type EfficiencyConfidence = "high" | "medium";
+
+/** A deterministic, display-ready opportunity derived from current AppData. */
+export interface EfficiencyOpportunity {
+  fingerprint: string;
+  kind: EfficiencyOpportunityKind;
+  subject: EfficiencySubject;
+  subjectLabel: string;
+  confidence: EfficiencyConfidence;
+  evidenceMonths: string[];
+  currentMonthlyCost: number;
+  baselineMonthlyCost: number;
+  estimatedMonthlySavings: number;
+  estimatedAnnualSavings: number;
+  saveRatePoints: number;
+  targetGapCoverage: number;
+  score: number;
+  suggestedAction: EfficiencyAction;
+  evidence: string[];
+  planId?: string;
+  observedMonthlyReduction?: number;
+  substitutionWarning?: boolean;
+}
+
 /**
  * How a bank's CSV export maps onto transactions. Persisted per header
  * signature in `HouseholdSettings.csvPresets` so a repeat import auto-fills.
@@ -302,13 +403,14 @@ export interface MerchantRule {
 export type MerchantRules = Record<string, MerchantRule>;
 
 export interface AppData {
-  schemaVersion: 14;
+  schemaVersion: 15;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
   merchantRules: MerchantRules;
   accounts: Account[];
   fixedCosts: FixedCost[];
   incomeReceipts: IncomeReceipt[];
+  efficiencyPlans: EfficiencyPlan[];
   settings: HouseholdSettings;
 }
 

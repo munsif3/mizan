@@ -1,20 +1,24 @@
 import { monthLabel } from "../domain/dates";
 import type { HistoryRow } from "../domain/summary";
+import type { EfficiencyPlan } from "../domain/types";
 
 export function HistoryView({
   rows,
   currentMonth,
   targetSaveRate,
   money,
+  efficiencyPlans,
 }: {
   rows: HistoryRow[];
   currentMonth: string;
   targetSaveRate: number;
   money: (value: number) => string;
+  efficiencyPlans: EfficiencyPlan[];
 }) {
   const best = [...rows].sort((a, b) => b.rate - a.rate || a.month.localeCompare(b.month))[0];
   const current = rows.find((row) => row.month === currentMonth);
   const averageRate = rows.length ? rows.reduce((sum, row) => sum + row.rate, 0) / rows.length : 0;
+  const verifiedPlans = efficiencyPlans.filter((plan) => plan.state === "verified" && plan.outcome);
 
   if (!rows.length) {
     return (
@@ -56,7 +60,9 @@ export function HistoryView({
           <p>Target line: {targetSaveRate}%</p>
         </div>
         <div className="history-table">
-          {rows.map((row) => (
+          {rows.map((row) => {
+            const outcomes = verifiedPlans.filter((plan) => plan.outcome?.month === row.month);
+            return (
             <div className={row.month === currentMonth ? "current" : ""} key={row.month}>
               <strong>{monthLabel(row.month)}</strong>
               <span>
@@ -70,8 +76,18 @@ export function HistoryView({
                 <i style={{ width: `${Math.max(0, Math.min(100, row.rate))}%` }} />
                 <b className={row.rate >= targetSaveRate ? "good-text" : "bad-text"}>{row.rate.toFixed(1)}%</b>
               </span>
+              {outcomes.length > 0 && (
+                <span className="efficiency-history-marker">
+                  {outcomes.map((plan) => (
+                    <small key={plan.id}>
+                      Efficiency outcome · {plan.subjectLabel}: {money(plan.outcome!.observedMonthlyReduction)} observed reduction · {plan.outcome!.result.replaceAll("_", " ")}
+                    </small>
+                  ))}
+                  <em>Informational comparison only; not added to saved or save-rate figures.</em>
+                </span>
+              )}
             </div>
-          ))}
+          );})}
         </div>
       </section>
     </div>

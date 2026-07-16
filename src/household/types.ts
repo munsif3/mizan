@@ -3,6 +3,7 @@ import type {
   Counterparty,
   CsvMapping,
   CustomCategory,
+  EfficiencyPlan,
   FixedCost,
   IncomeReceipt,
   Member,
@@ -11,7 +12,7 @@ import type {
   Transaction,
 } from "../domain/types";
 
-export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 7;
+export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 8;
 export const CLOUD_SNAPSHOT_MANIFEST_VERSION = 1;
 
 type HouseholdRole = "owner" | "member";
@@ -64,6 +65,7 @@ export interface CloudCollections {
   accounts: Account[];
   fixedCosts: FixedCost[];
   incomeReceipts: IncomeReceipt[];
+  efficiencyPlans: EfficiencyPlan[];
   members: Member[];
   customCategories: CustomCategory[];
   counterparties: Counterparty[];

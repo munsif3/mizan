@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useState } from "react";
+import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppData } from "../domain/types";
@@ -65,6 +65,7 @@ describe("SettingsModal recurring commitments", () => {
           onRotateInvite={() => {}}
           onExport={() => {}}
           onImportBackup={() => {}}
+          hasLegacyBrowserData={false}
           onClearData={() => {}}
           canClearTransactions={false}
           hasTransactions={false}
@@ -108,6 +109,50 @@ describe("SettingsModal recurring commitments", () => {
     expect(container.textContent).toContain("Bill / regular expense");
   });
 
+  it("shows legacy cleanup only when an old browser copy exists", async () => {
+    const onClearData = vi.fn();
+    const props: ComponentProps<typeof SettingsModal> = {
+      data: emptyData(),
+      onUpdateMembers: () => {},
+      onUpdateTarget: () => {},
+      onUpdateCurrency: () => {},
+      onUpdateFxRates: () => {},
+      onUpdateFixedCosts: () => {},
+      onUpdateAccounts: () => {},
+      onDeleteRule: () => {},
+      onUpdateCounterparties: () => {},
+      onUpdateCustomCategories: () => {},
+      sync: { auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: "", household: null, households: [] },
+      onSignIn: () => {},
+      onSignOut: () => {},
+      onCreateHousehold: () => {},
+      onJoinHousehold: () => {},
+      onSwitchHousehold: () => {},
+      onRotateInvite: () => {},
+      onExport: () => {},
+      onImportBackup: () => {},
+      hasLegacyBrowserData: false,
+      onClearData,
+      canClearTransactions: false,
+      hasTransactions: false,
+      onClearTransactions: () => {},
+      canResetHousehold: false,
+      hasResettableData: false,
+      onResetHousehold: () => {},
+      onClose: () => {},
+    };
+
+    await act(async () => root.render(<SettingsModal {...props} />));
+    await act(async () => button(container, "Sync & backup").click());
+    expect(container.textContent).not.toContain("Remove old browser copy");
+    expect(container.textContent).not.toContain("Clear legacy browser data");
+
+    await act(async () => root.render(<SettingsModal {...props} hasLegacyBrowserData />));
+    await act(async () => button(container, "Remove old browser copy").click());
+
+    expect(onClearData).toHaveBeenCalledOnce();
+  });
+
   it("warns before deleting an income source with historical confirmations", async () => {
     const data = emptyData();
     data.settings.currency = "LKR";
@@ -142,6 +187,7 @@ describe("SettingsModal recurring commitments", () => {
         onRotateInvite={() => {}}
         onExport={() => {}}
         onImportBackup={() => {}}
+        hasLegacyBrowserData={false}
         onClearData={() => {}}
         canClearTransactions={false}
         hasTransactions={false}

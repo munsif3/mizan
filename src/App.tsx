@@ -19,6 +19,13 @@ import {
   type SharedContributionCandidate,
 } from "./domain/contributions";
 import { filterNew } from "./domain/dedupe";
+import {
+  closeInvalidEfficiencyPlans,
+  computeEfficiencySnapshot,
+  confirmEfficiencyOutcome,
+  createEfficiencyPlan,
+  type EfficiencyPlanInput,
+} from "./domain/efficiency";
 import { normalizeFxTransaction } from "./domain/fx";
 import { pruneReceipts, removeReceipt, unlinkTransaction, upsertReceipt, upsertReceiptGroup, type PortionResolution } from "./domain/income";
 import { detectIncomeCandidates, eligibleCredits, type IncomeCandidate } from "./domain/incomeMatch";
@@ -35,6 +42,8 @@ import {
   type Account,
   type Counterparty,
   type CustomCategory,
+  type EfficiencyOpportunity,
+  type EfficiencyOutcomeResult,
   type IncomeReceipt,
   type IncomePortion,
   type MerchantRule,
@@ -68,6 +77,7 @@ import { IconButton, PageHeader } from "./ui/bits";
 import { CLEAR_TRANSACTIONS_CONFIRMATION, ClearTransactionsModal } from "./ui/ClearTransactionsModal";
 import { HistoryView } from "./ui/HistoryView";
 import { HomeView } from "./ui/HomeView";
+import { EfficiencyOutcomeModal, EfficiencyReviewModal } from "./ui/EfficiencyModal";
 import { ImportModal, type ImportResult } from "./ui/ImportModal";
 import { IncomeConfirmModal } from "./ui/IncomeConfirmModal";
 import { CsvImportModal } from "./ui/CsvImportModal";
@@ -214,6 +224,8 @@ export default function App() {
     expenseId?: string;
     contribution?: SharedContribution;
   } | null>(null);
+  const [efficiencyReview, setEfficiencyReview] = useState<EfficiencyOpportunity | null>(null);
+  const [efficiencyVerification, setEfficiencyVerification] = useState<EfficiencyOpportunity | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [householdMeta, setHouseholdMeta] = useState<HouseholdMeta | null>(null);
   const [availableHouseholds, setAvailableHouseholds] = useState<UserHouseholdLink[]>([]);
@@ -471,6 +483,10 @@ export default function App() {
   const summary = useMemo(
     () => computeMonthSummary(data, currentMonth, new Date()),
     [data, currentMonth],
+  );
+  const efficiency = useMemo(
+    () => computeEfficiencySnapshot(data, currentMonth, new Date()),
+    [data, currentMonth, todayMonth],
   );
   const queue = useMemo(() => reviewQueue(data.transactions), [data]);
   const history = useMemo(() => computeHistory(data, historyMonths, new Date()), [data, historyMonths]);
@@ -770,6 +786,7 @@ export default function App() {
     const removedNow = data.settings.members
       .filter((member) => !members.some((next) => next.id === member.id))
       .map((member) => member.id);
+    const changedAt = new Date().toISOString();
     setData((previous) => {
       const removed = previous.settings.members.filter((m) => !members.some((next) => next.id === m.id)).map((m) => m.id);
       if (!removed.length) {
@@ -817,6 +834,12 @@ export default function App() {
         fixedCosts,
         merchantRules,
         accounts,
+        efficiencyPlans: closeInvalidEfficiencyPlans(
+          previous.efficiencyPlans,
+          new Set(members.map((member) => member.id)),
+          new Set(previous.settings.customCategories.map((category) => `custom:${category.id}`)),
+          changedAt,
+        ),
         sharedContributions: pruneSharedContributions(previous.sharedContributions, defaultedTransactions, accounts, members),
         incomeReceipts: pruneReceipts(previous.incomeReceipts, members),
         settings: { ...previous.settings, members },
@@ -989,6 +1012,7 @@ export default function App() {
 
   function updateCustomCategories(customCategories: CustomCategory[]) {
     const retainedCategoryKeys = new Set(customCategories.map((category) => `custom:${category.id}`));
+    const changedAt = new Date().toISOString();
     setData((previous) => {
       const reassign = (category: CategoryKey): CategoryKey =>
         category.startsWith("custom:") && !retainedCategoryKeys.has(category) ? "uncategorized" : category;
@@ -1009,6 +1033,12 @@ export default function App() {
         fixedCosts,
         merchantRules,
         sharedContributions: pruneSharedContributions(previous.sharedContributions, transactions, previous.accounts, previous.settings.members),
+        efficiencyPlans: closeInvalidEfficiencyPlans(
+          previous.efficiencyPlans,
+          new Set(previous.settings.members.map((member) => member.id)),
+          retainedCategoryKeys,
+          changedAt,
+        ),
         settings: { ...previous.settings, customCategories },
       };
     });
@@ -1430,6 +1460,39 @@ export default function App() {
     setNotice("Weekly money check-in recorded. Come back after your next statement update, or within seven days.");
   }
 
+  function saveEfficiencyDecision(opportunity: EfficiencyOpportunity, input: EfficiencyPlanInput) {
+    const existing = opportunity.planId
+      ? data.efficiencyPlans.find((plan) => plan.id === opportunity.planId)
+      : undefined;
+    const plan = createEfficiencyPlan(opportunity, input, currentMonth, new Date().toISOString(), existing);
+    setData((previous) => ({
+      ...previous,
+      efficiencyPlans: [...previous.efficiencyPlans.filter((item) => item.id !== plan.id), plan],
+    }));
+    setEfficiencyReview(null);
+    setNotice(input.action === "keep"
+      ? "Value check recorded. Mizan will revisit it in six months or after a material price increase."
+      : "Efficiency plan saved to the shared household board.");
+  }
+
+  function verifyEfficiencyOutcome(opportunity: EfficiencyOpportunity, result: EfficiencyOutcomeResult) {
+    const plan = opportunity.planId
+      ? data.efficiencyPlans.find((item) => item.id === opportunity.planId)
+      : undefined;
+    if (!plan) {
+      setNotice("That efficiency plan changed. Reopen the opportunity and try again.");
+      setEfficiencyVerification(null);
+      return;
+    }
+    const confirmed = confirmEfficiencyOutcome(plan, opportunity, result, new Date().toISOString());
+    setData((previous) => ({
+      ...previous,
+      efficiencyPlans: previous.efficiencyPlans.map((item) => item.id === confirmed.id ? confirmed : item),
+    }));
+    setEfficiencyVerification(null);
+    setNotice("Efficiency outcome recorded as an informational comparison. Ledger savings were not changed.");
+  }
+
   const canResetHousehold =
     auth.status === "signed-in" && Boolean(householdMeta) && householdMeta?.ownerUid === auth.user.uid;
   const canClearTransactions = canResetHousehold;
@@ -1586,6 +1649,7 @@ export default function App() {
             onRotateInvite={rotateInvite}
             onExport={exportBackup}
             onImportBackup={importBackup}
+            hasLegacyBrowserData={legacyPresent}
             onClearData={clearAllData}
             canClearTransactions={canClearTransactions}
             hasTransactions={data.transactions.length > 0}
@@ -1688,6 +1752,9 @@ export default function App() {
             contributionCandidates={contributionCandidates.filter((candidate) => candidate.expenses.some((expense) => monthOf(expense.date) === currentMonth))}
             members={data.settings.members}
             onConfirmContribution={(candidate) => setContributionConfirm({ candidate })}
+            efficiency={efficiency}
+            onReviewEfficiency={setEfficiencyReview}
+            onVerifyEfficiency={setEfficiencyVerification}
             onOpenTransactions={(filters) => {
               setLedgerFilters({
                 category: filters.category ?? "all",
@@ -1742,7 +1809,7 @@ export default function App() {
             onEditContribution={(contribution) => setContributionConfirm({ contribution })}
           />
         )}
-        {view === "history" && <HistoryView rows={history} currentMonth={currentMonth} targetSaveRate={summary.targetSaveRate} money={money} />}
+        {view === "history" && <HistoryView rows={history} currentMonth={currentMonth} targetSaveRate={summary.targetSaveRate} money={money} efficiencyPlans={data.efficiencyPlans} />}
       </section>
 
       {modal === "import" && (
@@ -1817,6 +1884,7 @@ export default function App() {
           onRotateInvite={rotateInvite}
           onExport={exportBackup}
           onImportBackup={importBackup}
+          hasLegacyBrowserData={legacyPresent}
           onClearData={clearAllData}
           canClearTransactions={canClearTransactions}
           hasTransactions={data.transactions.length > 0}
@@ -1829,6 +1897,26 @@ export default function App() {
       )}
       {clearTransactionsModal}
       {resetModal}
+      {efficiencyReview && (
+        <EfficiencyReviewModal
+          opportunity={efficiencyReview}
+          existingPlan={efficiencyReview.planId ? data.efficiencyPlans.find((plan) => plan.id === efficiencyReview.planId) : undefined}
+          contextMonth={currentMonth}
+          todayMonth={todayMonth}
+          money={money}
+          onSave={(input) => saveEfficiencyDecision(efficiencyReview, input)}
+          onClose={() => setEfficiencyReview(null)}
+        />
+      )}
+      {efficiencyVerification && efficiencyVerification.planId && data.efficiencyPlans.find((plan) => plan.id === efficiencyVerification.planId) && (
+        <EfficiencyOutcomeModal
+          opportunity={efficiencyVerification}
+          plan={data.efficiencyPlans.find((plan) => plan.id === efficiencyVerification.planId)!}
+          money={money}
+          onConfirm={(result) => verifyEfficiencyOutcome(efficiencyVerification, result)}
+          onClose={() => setEfficiencyVerification(null)}
+        />
+      )}
       {splitTxn && (
         <SplitModal
           txn={splitTxn}

@@ -39,6 +39,7 @@ export function hasLocalFinancialData(data: AppData): boolean {
       data.accounts.length ||
       data.fixedCosts.length ||
       data.incomeReceipts.length ||
+      data.efficiencyPlans.length ||
       data.settings.members.length ||
       data.settings.counterparties.length ||
       data.settings.customCategories.length ||
@@ -113,6 +114,7 @@ export function appDataToCloudCollections(appData: AppData, updatedBy: string, n
     accounts: appData.accounts,
     fixedCosts: appData.fixedCosts,
     incomeReceipts: appData.incomeReceipts,
+    efficiencyPlans: appData.efficiencyPlans,
     members: appData.settings.members,
     customCategories: appData.settings.customCategories,
     counterparties: appData.settings.counterparties,
@@ -130,14 +132,16 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
   }
   return migrate({
     // Split-cloud v4 stored AppData v10 semantics; v5 added beneficiaries,
-    // v6 recurring-commitment payment types, and v7 scheduled income sources.
-    schemaVersion: cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
+    // v6 recurring-commitment payment types, v7 scheduled income sources,
+    // and v8 household-shared efficiency plans.
+    schemaVersion: cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
     transactions: collections.transactions ?? [],
     sharedContributions: collections.sharedContributions ?? [],
     merchantRules,
     accounts: collections.accounts ?? [],
     fixedCosts: collections.fixedCosts ?? [],
     incomeReceipts: collections.incomeReceipts ?? [],
+    efficiencyPlans: collections.efficiencyPlans ?? [],
     settings: {
       members: collections.members ?? [],
       targetSaveRate: collections.settings?.targetSaveRate ?? 25,

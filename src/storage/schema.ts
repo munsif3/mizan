@@ -2,6 +2,7 @@ import { applyAccountBeneficiaryDefaults, seedAccounts, transactionDisplayCurren
 import { isCategoryKey } from "../domain/categories";
 import { pruneSharedContributions } from "../domain/contributions";
 import { normalizeFxTransaction } from "../domain/fx";
+import { efficiencySubjectFingerprint } from "../domain/efficiency";
 import { stableId } from "../domain/ids";
 import { defaultIncomePortion, fxRateFor, receiptId } from "../domain/income";
 import { normalizeCurrency, resolveIncomeCurrency } from "../domain/money";
@@ -16,24 +17,31 @@ import type {
   Counterparty,
   CsvMapping,
   CustomCategory,
+  EfficiencyAction,
+  EfficiencyPlan,
+  EfficiencyPlanState,
+  EfficiencyOutcomeResult,
+  EfficiencySubject,
   FixedCost,
   FixedCostKind,
   IncomeBudgetTreatment,
   IncomePortion,
   IncomeReceipt,
+  LifeValue,
   Member,
   MemberId,
   MerchantRule,
   MerchantRules,
   MovementKind,
   SharedContribution,
+  ChangeEffort,
   SpendBeneficiary,
   Split,
   Transaction,
 } from "../domain/types";
 import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-const SCHEMA_VERSION = 14 as const;
+const SCHEMA_VERSION = 15 as const;
 
 const MOVEMENT_KINDS = new Set<MovementKind>(MOVEMENT_OPTIONS.map((option) => option.kind));
 
@@ -50,6 +58,7 @@ export function emptyData(): AppData {
     accounts: [],
     fixedCosts: [],
     incomeReceipts: [],
+    efficiencyPlans: [],
     settings: {
       members: [],
       targetSaveRate: 25,
@@ -60,6 +69,93 @@ export function emptyData(): AppData {
       counterparties: [],
       customCategories: [],
     },
+  };
+}
+
+function asEfficiencySubject(value: unknown): EfficiencySubject | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const beneficiary = asStoredBeneficiary(raw.beneficiary);
+  if (!beneficiary) return null;
+  const category = asCategory(raw.category);
+  if (raw.type === "merchant") {
+    const merchantKey = cleanMerchant(raw.merchantKey);
+    return merchantKey ? { type: "merchant", merchantKey, category, beneficiary } : null;
+  }
+  if (raw.type === "category") return { type: "category", category, beneficiary };
+  if (raw.type === "fixed_cost") {
+    const fixedCostId = String(raw.fixedCostId ?? "").trim();
+    return fixedCostId ? { type: "fixed_cost", fixedCostId, category, beneficiary } : null;
+  }
+  return null;
+}
+
+const LIFE_VALUES = new Set<LifeValue>(["essential", "worthwhile", "questionable"]);
+const EFFICIENCY_ACTIONS = new Set<EfficiencyAction>(["keep", "reduce", "replace", "stop"]);
+const CHANGE_EFFORTS = new Set<ChangeEffort>(["easy", "moderate", "hard"]);
+const EFFICIENCY_STATES = new Set<EfficiencyPlanState>(["watching", "planned", "verified", "closed"]);
+
+function asEfficiencyPlan(value: unknown): EfficiencyPlan | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const subject = asEfficiencySubject(raw.subject);
+  if (!subject) return null;
+  const valueRating = String(raw.value ?? "") as LifeValue;
+  const action = String(raw.action ?? "") as EfficiencyAction;
+  const effort = String(raw.effort ?? "") as ChangeEffort;
+  const state = String(raw.state ?? "") as EfficiencyPlanState;
+  if (!LIFE_VALUES.has(valueRating) || !EFFICIENCY_ACTIONS.has(action) || !CHANGE_EFFORTS.has(effort) || !EFFICIENCY_STATES.has(state)) return null;
+  const baselineRaw = raw.baseline && typeof raw.baseline === "object" ? raw.baseline as Record<string, unknown> : {};
+  const measurementScope = baselineRaw.measurementScope;
+  if (measurementScope !== "merchant" && measurementScope !== "category" && measurementScope !== "fixed_cost") return null;
+  const monthlyAmount = Number(baselineRaw.monthlyAmount);
+  if (!Number.isFinite(monthlyAmount) || monthlyAmount < 0) return null;
+  const months = Array.isArray(baselineRaw.months)
+    ? baselineRaw.months.map(String).filter((month) => /^\d{4}-\d{2}$/.test(month))
+    : [];
+  const createdAt = String(raw.createdAt ?? "").trim();
+  const updatedAt = String(raw.updatedAt ?? "").trim();
+  if (!createdAt || !updatedAt) return null;
+  const targetMonthlySavings = Math.max(0, Number(raw.targetMonthlySavings) || 0);
+  const targetMonth = /^\d{4}-\d{2}$/.test(String(raw.targetMonth ?? "")) ? String(raw.targetMonth) : undefined;
+  const revisitAfterMonth = /^\d{4}-\d{2}$/.test(String(raw.revisitAfterMonth ?? "")) ? String(raw.revisitAfterMonth) : undefined;
+  const outcomeRaw = raw.outcome && typeof raw.outcome === "object" ? raw.outcome as Record<string, unknown> : null;
+  const outcomeResult = outcomeRaw?.result;
+  const outcomeMonth = String(outcomeRaw?.month ?? "");
+  const confirmedAt = String(outcomeRaw?.confirmedAt ?? "").trim();
+  const outcome = outcomeRaw
+    && /^\d{4}-\d{2}$/.test(outcomeMonth)
+    && (outcomeResult === "achieved" || outcomeResult === "partial" || outcomeResult === "not_achieved")
+    && confirmedAt
+    && outcomeRaw.dataComplete === true
+      ? {
+          month: outcomeMonth,
+          observedMonthlyReduction: Math.max(0, Number(outcomeRaw.observedMonthlyReduction) || 0),
+          result: outcomeResult as EfficiencyOutcomeResult,
+          confirmedAt,
+          dataComplete: true as const,
+          substitutionWarning: Boolean(outcomeRaw.substitutionWarning),
+        }
+      : undefined;
+  const subjectLabel = String(raw.subjectLabel ?? "").trim();
+  const id = String(raw.id ?? "").trim() || stableId("effplan", raw);
+  return {
+    id,
+    fingerprint: efficiencySubjectFingerprint(subject),
+    subject,
+    subjectLabel: subjectLabel || (subject.type === "merchant" ? subject.merchantKey : subject.type === "fixed_cost" ? subject.fixedCostId : subject.category),
+    value: valueRating,
+    action,
+    effort,
+    state,
+    baseline: { months, monthlyAmount, measurementScope },
+    targetMonthlySavings,
+    ...(targetMonth ? { targetMonth } : {}),
+    ...(revisitAfterMonth ? { revisitAfterMonth } : {}),
+    createdAt,
+    updatedAt,
+    ...(outcome ? { outcome } : {}),
+    ...(state === "closed" && raw.closedReason === "subject_removed" ? { closedReason: "subject_removed" as const } : {}),
   };
 }
 
@@ -573,6 +669,7 @@ export function migrate(raw: unknown): AppData {
     accounts,
     fixedCosts,
     incomeReceipts,
+    efficiencyPlans: asList(source.efficiencyPlans, asEfficiencyPlan),
     settings: {
       members,
       targetSaveRate: (() => {

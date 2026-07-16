@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git rev-list *)",
+      "Bash(npx --yes firebase-tools@15.22.4 deploy --project mizan-the-balance --non-interactive)"
+    ]
+  }
+}
