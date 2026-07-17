@@ -20,26 +20,14 @@ export function monthOf(date: string | undefined): string {
 }
 
 /**
- * The month most of these transactions fall in; ties resolve to the later month.
- * A card statement period straddles a calendar boundary, so an import lands rows
- * in two months — this picks the one worth showing. Row order is not a signal:
- * statements are printed in post-date order while `date` is the transaction date.
+ * The newest valid month represented by a transaction list. Row order is not a
+ * signal because statements can be printed in posting-date order.
  */
-export function dominantMonth(transactions: { date: string }[]): string {
-  const counts = new Map<string, number>();
-  for (const txn of transactions) {
+export function latestMonth(transactions: { date: string }[]): string {
+  return transactions.reduce((latest, txn) => {
     const month = monthOf(txn.date);
-    if (month) counts.set(month, (counts.get(month) ?? 0) + 1);
-  }
-  let best = "";
-  let bestCount = 0;
-  for (const [month, count] of counts) {
-    if (count > bestCount || (count === bestCount && month > best)) {
-      best = month;
-      bestCount = count;
-    }
-  }
-  return best;
+    return /^\d{4}-(0[1-9]|1[0-2])$/.test(month) && month > latest ? month : latest;
+  }, "");
 }
 
 /** "2026-07" -> "Jul 2026" */

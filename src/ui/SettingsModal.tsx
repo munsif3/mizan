@@ -8,7 +8,7 @@ import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, Fixed
 import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import type { RepositoryMode } from "../storage/repository";
 import { uid } from "../domain/types";
-import { IconButton, Modal } from "./bits";
+import { Button, ConfirmDialog, IconButton, Modal, StatusBadge, Tabs } from "./bits";
 import { COMMON_CURRENCIES } from "./currencies";
 
 export interface SyncSettingsState {
@@ -29,82 +29,7 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "sync", label: "Sync & backup" },
 ];
 
-function beneficiaryValue(beneficiary: SpendBeneficiary): string {
-  return beneficiary.type === "member" ? `member:${beneficiary.memberId}` : beneficiary.type;
-}
-
-function beneficiaryFromValue(value: string): SpendBeneficiary {
-  if (value.startsWith("member:")) return { type: "member", memberId: value.slice("member:".length) };
-  return value === "household" ? { type: "household" } : { type: "unassigned" };
-}
-
-function beneficiaryLabel(beneficiary: MerchantRule["beneficiary"], members: Member[]): string {
-  if (beneficiary.type === "account_default") return "Account default";
-  if (beneficiary.type === "household") return "Household";
-  if (beneficiary.type === "unassigned") return "Unassigned";
-  return members.find((member) => member.id === beneficiary.memberId)?.name ?? "Former member";
-}
-
-function looksLikeLoanCommitment(label: string): boolean {
-  return /\b(?:loan|mortgage|debt)\b/i.test(label);
-}
-
-export function HouseholdResetAction({
-  canResetHousehold,
-  hasResettableData,
-  onResetHousehold,
-}: {
-  canResetHousehold: boolean;
-  hasResettableData: boolean;
-  onResetHousehold: () => void;
-}) {
-  if (!canResetHousehold || !hasResettableData) return null;
-  return <button className="danger" onClick={onResetHousehold}>Reset household data</button>;
-}
-
-export function HouseholdTransactionClearAction({
-  canClearTransactions,
-  hasTransactions,
-  onClearTransactions,
-}: {
-  canClearTransactions: boolean;
-  hasTransactions: boolean;
-  onClearTransactions: () => void;
-}) {
-  if (!canClearTransactions || !hasTransactions) return null;
-  return <button className="secondary danger" onClick={onClearTransactions}>Clear transactions</button>;
-}
-
-export function SettingsModal({
-  data,
-  onUpdateMembers,
-  onUpdateTarget,
-  onUpdateCurrency,
-  onUpdateFxRates,
-  onUpdateFixedCosts,
-  onUpdateAccounts,
-  onDeleteRule,
-  onUpdateCounterparties,
-  onUpdateCustomCategories,
-  sync,
-  onSignIn,
-  onSignOut,
-  onCreateHousehold,
-  onJoinHousehold,
-  onSwitchHousehold,
-  onRotateInvite,
-  onExport,
-  onImportBackup,
-  hasLegacyBrowserData,
-  onClearData,
-  canClearTransactions,
-  hasTransactions,
-  onClearTransactions,
-  canResetHousehold,
-  hasResettableData,
-  onResetHousehold,
-  onClose,
-}: {
+type SettingsModalProps = {
   data: AppData;
   onUpdateMembers: (members: Member[]) => void;
   onUpdateTarget: (targetSaveRate: number) => void;
@@ -133,13 +58,70 @@ export function SettingsModal({
   hasResettableData: boolean;
   onResetHousehold: () => void;
   onClose: () => void;
-}) {
+};
+
+function beneficiaryValue(beneficiary: SpendBeneficiary): string {
+  return beneficiary.type === "member" ? `member:${beneficiary.memberId}` : beneficiary.type;
+}
+
+function beneficiaryFromValue(value: string): SpendBeneficiary {
+  if (value.startsWith("member:")) return { type: "member", memberId: value.slice("member:".length) };
+  return value === "household" ? { type: "household" } : { type: "unassigned" };
+}
+
+function beneficiaryLabel(beneficiary: MerchantRule["beneficiary"], members: Member[]): string {
+  if (beneficiary.type === "account_default") return "Account default";
+  if (beneficiary.type === "household") return "Household";
+  if (beneficiary.type === "unassigned") return "Unassigned";
+  return members.find((member) => member.id === beneficiary.memberId)?.name ?? "Former member";
+}
+
+function looksLikeLoanCommitment(label: string): boolean {
+  return /\b(?:loan|mortgage|debt)\b/i.test(label);
+}
+
+function useSettingsModel({
+  data,
+  onUpdateMembers,
+  onUpdateTarget,
+  onUpdateCurrency,
+  onUpdateFxRates,
+  onUpdateFixedCosts,
+  onUpdateAccounts,
+  onDeleteRule,
+  onUpdateCounterparties,
+  onUpdateCustomCategories,
+  sync,
+  onSignIn,
+  onSignOut,
+  onCreateHousehold,
+  onJoinHousehold,
+  onSwitchHousehold,
+  onRotateInvite,
+  onExport,
+  onImportBackup,
+  hasLegacyBrowserData,
+  onClearData,
+  canClearTransactions,
+  hasTransactions,
+  onClearTransactions,
+  canResetHousehold,
+  hasResettableData,
+  onResetHousehold,
+  onClose,
+}: SettingsModalProps) {
   const currenciesId = useId();
   const importRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("household");
+  const [pendingDelete, setPendingDelete] = useState<null | {
+    title: string;
+    body: string;
+    confirmLabel: string;
+    action: () => void;
+  }>(null);
   const { members, currency, locale, fxRates, counterparties, customCategories } = data.settings;
   const fixedCosts = data.fixedCosts;
-  const categoryChoices = categoryOptions(members, customCategories);
+  const categoryChoices = categoryOptions(customCategories);
 
   const patchCounterparty = (id: string, name: string) =>
     onUpdateCounterparties(counterparties.map((item) => (item.id === id ? { ...item, name } : item)));
@@ -154,12 +136,17 @@ export function SettingsModal({
       : member));
   const removePortion = (memberId: string, portionId: string) => {
     const confirmationCount = data.incomeReceipts.filter((receipt) => receipt.memberId === memberId && receipt.portionId === portionId).length;
-    if (confirmationCount && typeof window !== "undefined" && !window.confirm(
-      `Delete this income source and ${confirmationCount} historical confirmation${confirmationCount === 1 ? "" : "s"}? This cannot be undone.`,
-    )) return;
-    onUpdateMembers(members.map((member) => member.id === memberId
-      ? { ...member, portions: member.portions.filter((portion) => portion.id !== portionId) }
-      : member));
+    const portion = members.find((member) => member.id === memberId)?.portions.find((item) => item.id === portionId);
+    setPendingDelete({
+      title: "Delete income source?",
+      body: confirmationCount
+        ? `${portion?.label || "This income source"} has ${confirmationCount} historical confirmation${confirmationCount === 1 ? "" : "s"}. Deleting it cannot be undone.`
+        : `${portion?.label || "This income source"} will be removed from the household income plan.`,
+      confirmLabel: "Delete income source",
+      action: () => onUpdateMembers(members.map((member) => member.id === memberId
+        ? { ...member, portions: member.portions.filter((item) => item.id !== portionId) }
+        : member)),
+    });
   };
   const addPortion = (memberId: string, frequency: "monthly" | "one_off" = "monthly") =>
     onUpdateMembers(members.map((member) => member.id === memberId
@@ -175,45 +162,44 @@ export function SettingsModal({
     .sort();
   const removeMember = (member: Member) => {
     if (members.length <= 1) return;
-    if (!window.confirm(`Delete ${member.name}? Spending assigned to them becomes Unassigned and their accounts become Joint.`)) return;
-    onUpdateMembers(members.filter((item) => item.id !== member.id));
+    setPendingDelete({
+      title: `Delete ${member.name || "member"}?`,
+      body: "Spending assigned to this member will become Unassigned and their accounts will become Joint.",
+      confirmLabel: "Delete member",
+      action: () => onUpdateMembers(members.filter((item) => item.id !== member.id)),
+    });
   };
+  const requestDelete = (title: string, body: string, confirmLabel: string, action: () => void) =>
+    setPendingDelete({ title, body, confirmLabel, action });
   const patchFixed = (id: string, patch: Partial<FixedCost>) =>
     onUpdateFixedCosts(fixedCosts.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   const patchAccount = (id: string, patch: Partial<Account>) =>
     onUpdateAccounts(data.accounts.map((item) => (item.id === id ? { ...item, ...patch } : item)));
 
-  return (
-    <Modal title="Settings" onClose={onClose} wide>
-      <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-        {SETTINGS_TABS.map((tab, index) => (
-          <button
-            key={tab.id}
-            id={`settings-tab-${tab.id}`}
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            aria-controls={`settings-panel-${tab.id}`}
-            tabIndex={activeTab === tab.id ? 0 : -1}
-            className={activeTab === tab.id ? "active" : ""}
-            onClick={() => setActiveTab(tab.id)}
-            onKeyDown={(event) => {
-              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
-              event.preventDefault();
-              const nextIndex = event.key === "Home"
-                ? 0
-                : event.key === "End"
-                  ? SETTINGS_TABS.length - 1
-                  : (index + (event.key === "ArrowRight" ? 1 : -1) + SETTINGS_TABS.length) % SETTINGS_TABS.length;
-              const next = SETTINGS_TABS[nextIndex]!;
-              setActiveTab(next.id);
-              requestAnimationFrame(() => document.getElementById(`settings-tab-${next.id}`)?.focus());
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+  return {
+    data, onUpdateMembers, onUpdateTarget, onUpdateCurrency, onUpdateFxRates,
+    onUpdateFixedCosts, onUpdateAccounts, onDeleteRule, onUpdateCounterparties,
+    onUpdateCustomCategories, sync, onSignIn, onSignOut, onCreateHousehold,
+    onJoinHousehold, onSwitchHousehold, onRotateInvite, onExport, onImportBackup,
+    hasLegacyBrowserData, onClearData, canClearTransactions, hasTransactions,
+    onClearTransactions, canResetHousehold, hasResettableData, onResetHousehold, onClose,
+    currenciesId, importRef, activeTab, setActiveTab, pendingDelete, setPendingDelete,
+    members, currency, locale, fxRates, counterparties, customCategories, fixedCosts,
+    categoryChoices, patchCounterparty, patchCustom, patchMember, patchPortion,
+    removePortion, addPortion, foreignCurrencies, removeMember, requestDelete,
+    patchFixed, patchAccount,
+  };
+}
 
+type SettingsModel = ReturnType<typeof useSettingsModel>;
+
+function HouseholdSettings({ model }: { model: SettingsModel }) {
+  const {
+    activeTab, data, onUpdateMembers, members, patchMember, addPortion, removeMember,
+    removePortion, patchPortion, currenciesId, currency,
+  } = model;
+  return (
+    <>
       {activeTab === "household" && (
         <div className="settings-section" id="settings-panel-household" role="tabpanel" aria-labelledby="settings-tab-household">
           <div className="section-title">
@@ -221,12 +207,12 @@ export function SettingsModal({
               <h3>Household members</h3>
               <p className="muted">Each person can have several deposits with their own currency, tax treatment, and arrival window.</p>
             </div>
-            <button
-              className="secondary"
+            <Button
+              variant="secondary"
               onClick={() => onUpdateMembers([...members, { id: uid("mem"), name: "New member", color: nextMemberColor(members), portions: [] }])}
             >
               Add member
-            </button>
+            </Button>
           </div>
           <div className="settings-list">
             {members.map((member, memberIndex) => (
@@ -250,8 +236,8 @@ export function SettingsModal({
                       <span>Colour</span>
                       <input aria-label={`${member.name || "Member"} colour`} type="color" value={member.color} onChange={(event) => patchMember(member.id, { color: event.target.value })} />
                     </label>
-                    <button onClick={() => addPortion(member.id)}>Add monthly deposit</button>
-                    <button className="secondary" onClick={() => addPortion(member.id, "one_off")}>Add one-off income</button>
+                    <Button variant="primary" onClick={() => addPortion(member.id)}>Add monthly deposit</Button>
+                    <Button variant="secondary" onClick={() => addPortion(member.id, "one_off")}>Add one-off income</Button>
                     <IconButton label={`Delete ${member.name || "member"}`} title="Delete member" icon={Trash2} danger disabled={members.length <= 1} onClick={() => removeMember(member)} />
                   </div>
                 </div>
@@ -363,7 +349,7 @@ export function SettingsModal({
                       </div>
                     </section>
                   ))}
-                  {!member.portions.length && <div className="income-deposit-empty"><strong>No deposits yet</strong><p>Add regular salary or planned one-off income.</p><button onClick={() => addPortion(member.id)}>Add first deposit</button></div>}
+                  {!member.portions.length && <div className="income-deposit-empty"><strong>No deposits yet</strong><p>Add regular salary or planned one-off income.</p><Button variant="primary" onClick={() => addPortion(member.id)}>Add first deposit</Button></div>}
                 </div>
               </div>
             ))}
@@ -372,6 +358,18 @@ export function SettingsModal({
         </div>
       )}
 
+    </>
+  );
+}
+
+function BudgetSettings({ model }: { model: SettingsModel }) {
+  const {
+    activeTab, currency, locale, onUpdateCurrency, data, onUpdateTarget, foreignCurrencies,
+    fxRates, onUpdateFxRates, fixedCosts, onUpdateFixedCosts, patchFixed, categoryChoices,
+    members, requestDelete, setActiveTab,
+  } = model;
+  return (
+    <>
       {activeTab === "budget" && (
         <>
           <div className="settings-section" id="settings-panel-budget" role="tabpanel" aria-labelledby="settings-tab-budget">
@@ -431,8 +429,8 @@ export function SettingsModal({
                   says what it paid for. Do not add a commitment already counted by imported transactions.
                 </p>
               </div>
-              <button
-                className="secondary"
+              <Button
+                variant="secondary"
                 onClick={() => onUpdateFixedCosts([...fixedCosts, {
                   id: uid("fixed"),
                   label: "New cost",
@@ -443,7 +441,7 @@ export function SettingsModal({
                 }])}
               >
                 Add commitment
-              </button>
+              </Button>
             </div>
             {fixedCosts.length === 0 && <p className="muted empty-commitments">No recurring commitments yet.</p>}
             <div className="commitment-list">
@@ -454,7 +452,17 @@ export function SettingsModal({
                       <span className="soft-label">{movementInfo(fixed.kind).label}</span>
                       <strong>{fixed.label.trim() || "Untitled commitment"}</strong>
                     </div>
-                    <IconButton label={`Delete ${fixed.label || "commitment"}`} icon={Trash2} danger onClick={() => onUpdateFixedCosts(fixedCosts.filter((item) => item.id !== fixed.id))} />
+                    <IconButton
+                      label={`Delete ${fixed.label || "commitment"}`}
+                      icon={Trash2}
+                      danger
+                      onClick={() => requestDelete(
+                        "Delete commitment?",
+                        `${fixed.label || "This commitment"} will be removed from future monthly planning.`,
+                        "Delete commitment",
+                        () => onUpdateFixedCosts(fixedCosts.filter((item) => item.id !== fixed.id)),
+                      )}
+                    />
                   </header>
                   <div className="fixed-cost-grid">
                     <label className="field">
@@ -525,6 +533,17 @@ export function SettingsModal({
         </>
       )}
 
+    </>
+  );
+}
+
+function CategoryPeopleSettings({ model }: { model: SettingsModel }) {
+  const {
+    activeTab, counterparties, patchCounterparty, onUpdateCounterparties, customCategories,
+    patchCustom, onUpdateCustomCategories, requestDelete,
+  } = model;
+  return (
+    <>
       {activeTab === "categories" && (
         <>
           <div className="settings-section" id="settings-panel-categories" role="tabpanel" aria-labelledby="settings-tab-categories">
@@ -533,19 +552,29 @@ export function SettingsModal({
                 <h3>Custom categories</h3>
                 <p className="muted">Your own spending buckets, on top of the built-in ones. Deleting one makes its transactions Uncategorized.</p>
               </div>
-              <button
-                className="secondary"
+              <Button
+                variant="secondary"
                 onClick={() => onUpdateCustomCategories([...customCategories, { id: uid("cat"), label: "New category", color: "#7b8194" }])}
               >
                 Add category
-              </button>
+              </Button>
             </div>
             <div className="settings-list">
               {customCategories.map((cat) => (
                 <div className="member-row" key={cat.id}>
                   <input aria-label={`${cat.label || "Category"} name`} value={cat.label} onChange={(event) => patchCustom(cat.id, { label: event.target.value })} />
                   <input aria-label={`${cat.label || "Category"} colour`} type="color" value={cat.color} onChange={(event) => patchCustom(cat.id, { color: event.target.value })} />
-                  <IconButton label={`Delete ${cat.label || "category"}`} icon={Trash2} danger onClick={() => onUpdateCustomCategories(customCategories.filter((item) => item.id !== cat.id))} />
+                  <IconButton
+                    label={`Delete ${cat.label || "category"}`}
+                    icon={Trash2}
+                    danger
+                    onClick={() => requestDelete(
+                      "Delete category?",
+                      `Transactions using ${cat.label || "this category"} will become Uncategorized.`,
+                      "Delete category",
+                      () => onUpdateCustomCategories(customCategories.filter((item) => item.id !== cat.id)),
+                    )}
+                  />
                 </div>
               ))}
               {!customCategories.length && <p className="muted">No custom categories yet.</p>}
@@ -558,18 +587,28 @@ export function SettingsModal({
                 <h3>People</h3>
                 <p className="muted">Friends or others you lend to, get repaid by, or give handouts to. Used to tag those movements.</p>
               </div>
-              <button
-                className="secondary"
+              <Button
+                variant="secondary"
                 onClick={() => onUpdateCounterparties([...counterparties, { id: uid("cp"), name: "New person" }])}
               >
                 Add person
-              </button>
+              </Button>
             </div>
             <div className="settings-list">
               {counterparties.map((cp) => (
                 <div className="member-row" key={cp.id}>
                   <input aria-label={`${cp.name || "Person"} name`} value={cp.name} onChange={(event) => patchCounterparty(cp.id, event.target.value)} />
-                  <IconButton label={`Delete ${cp.name || "person"}`} icon={Trash2} danger onClick={() => onUpdateCounterparties(counterparties.filter((item) => item.id !== cp.id))} />
+                  <IconButton
+                    label={`Delete ${cp.name || "person"}`}
+                    icon={Trash2}
+                    danger
+                    onClick={() => requestDelete(
+                      "Delete person?",
+                      `${cp.name || "This person"} will no longer be available for lending, repayment, or gift classifications.`,
+                      "Delete person",
+                      () => onUpdateCounterparties(counterparties.filter((item) => item.id !== cp.id)),
+                    )}
+                  />
                 </div>
               ))}
               {!counterparties.length && <p className="muted">No people yet.</p>}
@@ -578,6 +617,17 @@ export function SettingsModal({
         </>
       )}
 
+    </>
+  );
+}
+
+function AccountRuleSettings({ model }: { model: SettingsModel }) {
+  const {
+    activeTab, data, patchAccount, onUpdateAccounts, members, requestDelete, onDeleteRule,
+    currency, counterparties, customCategories,
+  } = model;
+  return (
+    <>
       {activeTab === "accounts" && (
         <>
           <div className="settings-section" id="settings-panel-accounts" role="tabpanel" aria-labelledby="settings-tab-accounts">
@@ -589,14 +639,14 @@ export function SettingsModal({
                   choose that member under Paid/funded by and Household under Usually for; use Joint only when funding is genuinely joint.
                 </p>
               </div>
-              <button
-                className="secondary"
+              <Button
+                variant="secondary"
                 onClick={() => onUpdateAccounts([...data.accounts, {
                   id: uid("acc"), label: "", currency, owner: "joint", beneficiaryDefault: "review", match: [],
                 }])}
               >
                 Add account
-              </button>
+              </Button>
             </div>
             {data.accounts.length > 0 && (
               <div className="account-row account-row-headings" aria-hidden="true">
@@ -610,7 +660,7 @@ export function SettingsModal({
             )}
             {data.accounts.map((account) => (
               <div className="account-row" key={account.id}>
-                <input value={account.label} placeholder="Account label" onChange={(event) => patchAccount(account.id, { label: event.target.value })} />
+                <input aria-label={`${account.label || "Account"} label`} value={account.label} placeholder="Account label" onChange={(event) => patchAccount(account.id, { label: event.target.value })} />
                 <select
                   aria-label={`${account.label || "Account"} paid or funded by`}
                   value={account.owner}
@@ -636,13 +686,24 @@ export function SettingsModal({
                   onChange={(event) => patchAccount(account.id, { currency: event.target.value.toUpperCase().trim() })}
                 />
                 <input
+                  aria-label={`${account.label || "Account"} statement match text`}
                   value={account.match.join(", ")}
                   placeholder="match: 37xx 1234, amex"
                   onChange={(event) =>
                     patchAccount(account.id, { match: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })
                   }
                 />
-                <IconButton label={`Delete ${account.label}`} icon={Trash2} danger onClick={() => onUpdateAccounts(data.accounts.filter((item) => item.id !== account.id))} />
+                <IconButton
+                  label={`Delete ${account.label}`}
+                  icon={Trash2}
+                  danger
+                  onClick={() => requestDelete(
+                    "Delete account?",
+                    `${account.label || "This account"} will be removed from account matching and future classification. Existing transactions remain in the ledger.`,
+                    "Delete account",
+                    () => onUpdateAccounts(data.accounts.filter((item) => item.id !== account.id)),
+                  )}
+                />
               </div>
             ))}
             <datalist id="account-currencies">{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
@@ -656,13 +717,23 @@ export function SettingsModal({
               {Object.entries(data.merchantRules).map(([merchant, rule]) => {
                 const person = rule.counterpartyId ? counterparties.find((cp) => cp.id === rule.counterpartyId)?.name : "";
                 const label = isSpendKind(rule.kind)
-                  ? `${rule.kind === "expense" ? "" : `${movementInfo(rule.kind).label} · `}${categoryInfo(rule.category, members, customCategories).label} · ${beneficiaryLabel(rule.beneficiary, members)}`
+                  ? `${rule.kind === "expense" ? "" : `${movementInfo(rule.kind).label} · `}${categoryInfo(rule.category, customCategories).label} · ${beneficiaryLabel(rule.beneficiary, members)}`
                   : `${movementInfo(rule.kind).label}${person ? ` · ${person}` : ""}`;
                 return (
                   <div key={merchant}>
                     <span>{merchant}</span>
                     <strong>{label}</strong>
-                    <IconButton label={`Delete merchant rule for ${merchant}`} icon={Trash2} danger onClick={() => onDeleteRule(merchant)} />
+                    <IconButton
+                      label={`Delete merchant rule for ${merchant}`}
+                      icon={Trash2}
+                      danger
+                      onClick={() => requestDelete(
+                        "Delete merchant rule?",
+                        `${merchant} transactions will return to the review queue or the next matching fallback rule.`,
+                        "Delete rule",
+                        () => onDeleteRule(merchant),
+                      )}
+                    />
                   </div>
                 );
               })}
@@ -674,6 +745,19 @@ export function SettingsModal({
         </>
       )}
 
+    </>
+  );
+}
+
+function SyncBackupSettings({ model }: { model: SettingsModel }) {
+  const {
+    activeTab, sync, onSignOut, onSignIn, onCreateHousehold, onJoinHousehold,
+    onRotateInvite, onSwitchHousehold, onExport, importRef, hasLegacyBrowserData,
+    requestDelete, onClearData, canClearTransactions, hasTransactions, onClearTransactions,
+    canResetHousehold, hasResettableData, onResetHousehold, onImportBackup,
+  } = model;
+  return (
+    <>
       {activeTab === "sync" && (
         <>
           <div className="settings-section sync-section" id="settings-panel-sync" role="tabpanel" aria-labelledby="settings-tab-sync">
@@ -696,9 +780,9 @@ export function SettingsModal({
               </div>
               <div className="sync-actions">
                 {sync.auth.status === "signed-in" ? (
-                  <button className="secondary" onClick={onSignOut}>Sign out</button>
+                  <Button variant="secondary" onClick={onSignOut}>Sign out</Button>
                 ) : (
-                  <button disabled={sync.auth.status === "unconfigured"} onClick={onSignIn}>Sign in with Google</button>
+                  <Button variant="primary" disabled={sync.auth.status === "unconfigured"} onClick={onSignIn}>Sign in with Google</Button>
                 )}
               </div>
             </div>
@@ -714,14 +798,14 @@ export function SettingsModal({
             {sync.auth.status === "signed-in" && (
               <>
                 <div className="sync-actions sync-main-actions">
-                  <button onClick={onCreateHousehold}>Create household</button>
-                  <button className="secondary" onClick={onJoinHousehold}>Join with invite</button>
+                  <Button variant="primary" onClick={onCreateHousehold}>Create household</Button>
+                  <Button variant="secondary" onClick={onJoinHousehold}>Join with invite</Button>
                 </div>
                 {sync.household && (
                   <div className="invite-box">
                     <span className="soft-label">Invite code</span>
                     <code>{sync.household.inviteCode}</code>
-                    <button className="secondary" onClick={onRotateInvite}>Rotate invite code</button>
+                    <Button variant="secondary" onClick={onRotateInvite}>Rotate invite code</Button>
                   </div>
                 )}
                 {sync.households.length > 0 && (
@@ -747,21 +831,27 @@ export function SettingsModal({
               <p className="muted">Export before destructive changes. Import replaces the active Firestore household data.</p>
             </div>
             <div className="modal-actions">
-              <button className="secondary" onClick={onExport}>Export JSON</button>
-              <button className="secondary" onClick={() => importRef.current?.click()}>Import JSON</button>
+              <Button variant="secondary" onClick={onExport}>Export JSON</Button>
+              <Button variant="secondary" onClick={() => importRef.current?.click()}>Import JSON</Button>
               {hasLegacyBrowserData && (
-                <button className="secondary danger" onClick={onClearData}>Remove old browser copy</button>
+                <Button
+                  variant="danger"
+                  onClick={() => requestDelete(
+                    "Remove old browser copy?",
+                    "Only legacy financial data stored in this browser will be removed. The active Firestore household will not be changed.",
+                    "Remove browser copy",
+                    onClearData,
+                  )}
+                >
+                  Remove old browser copy
+                </Button>
               )}
-              <HouseholdTransactionClearAction
-                canClearTransactions={canClearTransactions}
-                hasTransactions={hasTransactions}
-                onClearTransactions={onClearTransactions}
-              />
-              <HouseholdResetAction
-                canResetHousehold={canResetHousehold}
-                hasResettableData={hasResettableData}
-                onResetHousehold={onResetHousehold}
-              />
+              {canClearTransactions && hasTransactions && (
+                <Button variant="danger" onClick={onClearTransactions}>Clear transactions</Button>
+              )}
+              {canResetHousehold && hasResettableData && (
+                <Button variant="danger" onClick={onResetHousehold}>Reset household data</Button>
+              )}
               <input
                 ref={importRef}
                 hidden
@@ -776,6 +866,81 @@ export function SettingsModal({
           </div>
         </>
       )}
+    </>
+  );
+}
+
+function SettingsBody({ model }: { model: SettingsModel }) {
+  const {
+    sync, onClose, activeTab, setActiveTab, pendingDelete, setPendingDelete,
+  } = model;
+  return (
+    <Modal
+      title="Settings"
+      onClose={onClose}
+      wide
+      meta={
+        <span className="settings-save-status">
+          <StatusBadge tone={/failed|could not/i.test(sync.status) ? "danger" : /saving|loading/i.test(sync.status) ? "warning" : "success"}>
+            {/failed|could not/i.test(sync.status) ? "Sync issue" : /saving|loading/i.test(sync.status) ? "Saving" : "Saved"}
+          </StatusBadge>
+          <span>Changes save automatically</span>
+        </span>
+      }
+    >
+      <div className="settings-layout">
+      <aside className="settings-navigation">
+      <label className="settings-mobile-select">
+        <span>Settings section</span>
+        <select value={activeTab} onChange={(event) => setActiveTab(event.target.value as SettingsTab)}>
+          {SETTINGS_TABS.map((tab) => <option value={tab.id} key={tab.id}>{tab.label}</option>)}
+        </select>
+      </label>
+      <Tabs
+        idPrefix="settings"
+        label="Settings sections"
+        orientation="vertical"
+        className="settings-tabs"
+        value={activeTab}
+        items={SETTINGS_TABS.map((tab) => ({
+          id: tab.id,
+          label: tab.label,
+          panelId: `settings-panel-${tab.id}`,
+        }))}
+        onChange={setActiveTab}
+      />
+      </aside>
+      <div className="settings-content">
+
+      <HouseholdSettings model={model} />
+
+      <BudgetSettings model={model} />
+
+      <CategoryPeopleSettings model={model} />
+
+      <AccountRuleSettings model={model} />
+
+      <SyncBackupSettings model={model} />
+
+      </div>
+      </div>
+      {pendingDelete && (
+        <ConfirmDialog
+          title={pendingDelete.title}
+          confirmLabel={pendingDelete.confirmLabel}
+          onClose={() => setPendingDelete(null)}
+          onConfirm={() => {
+            pendingDelete.action();
+            setPendingDelete(null);
+          }}
+        >
+          <p>{pendingDelete.body}</p>
+        </ConfirmDialog>
+      )}
     </Modal>
   );
+}
+
+export function SettingsModal(props: SettingsModalProps) {
+  return <SettingsBody model={useSettingsModel(props)} />;
 }

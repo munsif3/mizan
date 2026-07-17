@@ -2,17 +2,19 @@ import { useEffect, useMemo, useState } from "react";
 import { parseCsv } from "../import/csv";
 import { csvPresetSignature, headerSignature, inferMapping, mapCsvRows } from "../import/csvMap";
 import type { CsvMapping } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 export function CsvImportModal({
   file,
   presets,
+  formatAmount = (transaction) => `${transaction.direction === "credit" ? "+" : ""}${transaction.amount}`,
   onImport,
   onSavePreset,
   onClose,
 }: {
   file: File;
   presets: Record<string, CsvMapping>;
+  formatAmount?: (transaction: ReturnType<typeof mapCsvRows>["transactions"][number]) => string;
   onImport: (transactions: ReturnType<typeof mapCsvRows>["transactions"], skipped: number) => void;
   onSavePreset: (signature: string, mapping: CsvMapping) => void;
   onClose: () => void;
@@ -72,7 +74,7 @@ export function CsvImportModal({
 
   return (
     <Modal title="Import CSV" onClose={onClose} wide>
-      {error && <p className="notice">{error}</p>}
+      {error && <p className="notice" role="alert">{error}</p>}
       {mapping && rows.length > 0 && (
         <>
           <p className="muted">Match your file's columns to Mizan's fields. The preview updates as you choose.</p>
@@ -154,7 +156,7 @@ export function CsvImportModal({
                         <td>{txn.date}</td>
                         <td>{txn.description}</td>
                         <td>{txn.account}</td>
-                        <td className="right">{txn.direction === "credit" ? "+" : ""}{txn.amount}</td>
+                        <td className="right">{formatAmount(txn)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -164,10 +166,10 @@ export function CsvImportModal({
           )}
 
           <div className="modal-actions">
-            <button className="secondary" onClick={onClose}>Cancel</button>
-            <button onClick={run} disabled={!preview || preview.transactions.length === 0}>
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button variant="primary" onClick={run} disabled={!preview || preview.transactions.length === 0}>
               Import {preview ? preview.transactions.length : 0} transaction{preview?.transactions.length === 1 ? "" : "s"}
-            </button>
+            </Button>
           </div>
         </>
       )}

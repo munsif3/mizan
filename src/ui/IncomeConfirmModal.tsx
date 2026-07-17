@@ -5,9 +5,9 @@ import { fxRateFor, netOf, receiptId, type PortionResolution } from "../domain/i
 import type { IncomeCandidate } from "../domain/incomeMatch";
 import { formatMoney, normalizeCurrency, resolveIncomeCurrency } from "../domain/money";
 import type { Account, IncomeReceipt, Transaction } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, ConfirmDialog, Modal } from "./bits";
 
-export function IncomeConfirmModal({
+function useIncomeConfirmationModel({
   item,
   allocationItems = [item],
   candidate,
@@ -81,6 +81,12 @@ export function IncomeConfirmModal({
   const [date, setDate] = useState(item.receipt?.date ?? candidate?.transaction.date ?? "");
   const [transactionId, setTransactionId] = useState(item.receipt?.transactionId ?? candidate?.transaction.id ?? "");
   const [splitCredit, setSplitCredit] = useState(initialGroupItems.length > 1);
+  const [pendingConfirmation, setPendingConfirmation] = useState<null | {
+    title: string;
+    body: string;
+    confirmLabel: string;
+    action: () => void;
+  }>(null);
   const [allocations, setAllocations] = useState<Record<string, number>>(() => Object.fromEntries(
     eligibleAllocationItems.map((target) => {
       const receipt = target.receipt;
@@ -172,9 +178,15 @@ export function IncomeConfirmModal({
         .map((allocation) => receiptForAllocation(allocation.target, allocation.amount));
       if (!next.length) return;
       const removedExisting = initialGroupItems.filter((target) => !next.some((receipt) => receipt.portionId === target.portion.id));
-      if (removedExisting.length && typeof window !== "undefined" && !window.confirm(
-        `Remove ${removedExisting.length} income allocation${removedExisting.length === 1 ? "" : "s"} from this statement credit? Their monthly confirmations will be deleted.`,
-      )) return;
+      if (removedExisting.length) {
+        setPendingConfirmation({
+          title: "Remove income allocations?",
+          body: `${removedExisting.length} income allocation${removedExisting.length === 1 ? "" : "s"} will be removed from this statement credit and their monthly confirmations will be deleted.`,
+          confirmLabel: "Remove and save",
+          action: () => onSave(next),
+        });
+        return;
+      }
       onSave(next);
       return;
     }
@@ -183,12 +195,39 @@ export function IncomeConfirmModal({
   };
 
   const removeConfirmation = () => {
-    if (initialGroupItems.length > 1 && typeof window !== "undefined" && !window.confirm(
-      `Remove ${item.portion.label} from this combined statement credit? Other income allocations will remain.`,
-    )) return;
-    onRemove();
+    setPendingConfirmation({
+      title: "Delete income confirmation?",
+      body: initialGroupItems.length > 1
+        ? `${item.portion.label} will be removed from this combined statement credit. Other income allocations will remain.`
+        : `${item.portion.label} will no longer be confirmed for ${monthLabel(item.month)}.`,
+      confirmLabel: "Delete confirmation",
+      action: onRemove,
+    });
   };
 
+  return {
+    item, onClose, receivedCurrency, foreignReceipt, householdCurrency, transactionId,
+    selectedTransaction, statementMoney, onUnlinkEvidence, available, selectTransaction,
+    eligibleAllocationItems, splitCredit, setSplitCredit, moneyIn, allocationTotal,
+    allocationDifference, allocations, setAllocations, allocationBalanced, amount, setAmount,
+    selectedResolution, householdCode, setReceivedCurrency, setRate, fxRates, currencyChoices,
+    rate, date, setDate, money, householdAmount, net, removeConfirmation, save,
+    pendingConfirmation, setPendingConfirmation,
+  };
+}
+
+type IncomeConfirmationModel = ReturnType<typeof useIncomeConfirmationModel>;
+
+function IncomeConfirmationBody({ model }: { model: IncomeConfirmationModel }) {
+  const {
+    item, onClose, receivedCurrency, foreignReceipt, householdCurrency, transactionId,
+    selectedTransaction, statementMoney, onUnlinkEvidence, available, selectTransaction,
+    eligibleAllocationItems, splitCredit, setSplitCredit, moneyIn, allocationTotal,
+    allocationDifference, allocations, setAllocations, allocationBalanced, amount, setAmount,
+    selectedResolution, householdCode, setReceivedCurrency, setRate, fxRates, currencyChoices,
+    rate, date, setDate, money, householdAmount, net, removeConfirmation, save,
+    pendingConfirmation, setPendingConfirmation,
+  } = model;
   return (
     <Modal title={`Confirm ${item.portion.label}`} onClose={onClose}>
       <div className="modal-form income-confirm-form">
@@ -243,7 +282,7 @@ export function IncomeConfirmModal({
                 />
               </label>
             ))}
-            {!allocationBalanced && <p className="field-error">Allocations must equal the statement credit before saving.</p>}
+            {!allocationBalanced && <p className="field-error" role="alert">Allocations must equal the statement credit before saving.</p>}
           </div>
         ) : (
           <label className="field">
@@ -288,16 +327,33 @@ export function IncomeConfirmModal({
           <p className="income-net-caption">{moneyIn(amount, receivedCurrency)} × {rate || 0} = {money(householdAmount)} for household totals.</p>
         )}
         <div className="modal-actions">
-          {item.receipt && <button className="secondary danger" onClick={removeConfirmation}>Delete income confirmation</button>}
-          <button className="secondary" onClick={onClose}>Cancel</button>
-          <button
+          {item.receipt && <Button variant="danger" onClick={removeConfirmation}>Delete income confirmation</Button>}
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary"
             disabled={splitCredit ? !allocationBalanced || (foreignReceipt && rate <= 0) : amount <= 0 || (foreignReceipt && rate <= 0)}
             onClick={save}
           >
             {item.receipt ? "Save changes" : "Confirm income"}
-          </button>
+          </Button>
         </div>
       </div>
+      {pendingConfirmation && (
+        <ConfirmDialog
+          title={pendingConfirmation.title}
+          confirmLabel={pendingConfirmation.confirmLabel}
+          onClose={() => setPendingConfirmation(null)}
+          onConfirm={() => {
+            pendingConfirmation.action();
+            setPendingConfirmation(null);
+          }}
+        >
+          <p>{pendingConfirmation.body}</p>
+        </ConfirmDialog>
+      )}
     </Modal>
   );
+}
+
+export function IncomeConfirmModal(props: Parameters<typeof useIncomeConfirmationModel>[0]) {
+  return <IncomeConfirmationBody model={useIncomeConfirmationModel(props)} />;
 }

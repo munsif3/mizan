@@ -1,13 +1,15 @@
-import { personalCategory, type Member, type MemberId } from "../domain/types";
+import type { Member, MemberId } from "../domain/types";
+
+type LegacyPersonalCategoryKey = `personal:${string}`;
 
 function legacyPersonalId(value: unknown): MemberId | null {
   const match = typeof value === "string" ? value.match(/^(.+)_personal$/) : null;
   return match?.[1] ?? null;
 }
 
-export function legacyCategory(value: string): ReturnType<typeof personalCategory> | null {
+export function legacyCategory(value: string): LegacyPersonalCategoryKey | null {
   const id = legacyPersonalId(value);
-  return id ? personalCategory(id) : null;
+  return id ? `personal:${id}` : null;
 }
 
 export function legacyMemberIds(

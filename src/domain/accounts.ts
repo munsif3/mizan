@@ -21,7 +21,7 @@ export function resolveAccountLabel(raw: string, accounts: Account[]): string {
 }
 
 /** Resolve raw statement text to the full registered-account record. */
-export function resolveAccount(raw: string, accounts: Account[]): Account | undefined {
+function resolveAccount(raw: string, accounts: Account[]): Account | undefined {
   const text = normalize(raw);
   if (!text) return undefined;
   const candidates: { account: Account; length: number }[] = [];

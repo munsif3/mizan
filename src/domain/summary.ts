@@ -339,7 +339,7 @@ function purposeRows(
     SpendingAttributionPurposeRow & { merchantMap: Map<string, SpendingAttributionMerchantRow> }
   >();
   for (const entry of entries) {
-    const info = categoryInfo(entry.category, members, customCategories);
+    const info = categoryInfo(entry.category, customCategories);
     const row = rows.get(entry.category) ?? {
       key: entry.category,
       name: info.label,
@@ -597,13 +597,13 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
   }
   const categoryRows: CategoryRow[] = [...categoryTotals.entries()]
     .map(([key, value]) => {
-      const info = categoryInfo(key, members, customCategories);
+      const info = categoryInfo(key, customCategories);
       return { key, name: info.label, value, color: info.color };
     })
     .filter((row) => row.value > 0)
     .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
   const maxCategoryValue = Math.max(...categoryRows.map((row) => row.value), 1);
-  const fullCategoryRows: CategoryRow[] = spendingCategoryOptions(members, customCategories).map(
+  const fullCategoryRows: CategoryRow[] = spendingCategoryOptions(customCategories).map(
     (option) =>
       categoryRows.find((row) => row.key === option.key) ?? {
         key: option.key,
@@ -725,7 +725,7 @@ export interface ReviewItem {
   suggestedCounterpartyId?: string;
 }
 
-export interface ReviewAccountContext {
+interface ReviewAccountContext {
   account: string;
   accountId?: string;
   count: number;

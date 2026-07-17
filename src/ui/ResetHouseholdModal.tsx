@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { AppData } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 export const RESET_CONFIRMATION = "RESET";
 
@@ -62,9 +62,9 @@ export function ResetHouseholdModal({
           <div><span>Budget members</span><strong>{data.settings.members.length}</strong></div>
         </div>
 
-        <button type="button" className="secondary" disabled={busy} onClick={onExport}>
+        <Button type="button" variant="secondary" disabled={busy} onClick={onExport}>
           Export JSON
-        </button>
+        </Button>
 
         <label className="field">
           <span>Type {RESET_CONFIRMATION} to confirm</span>
@@ -82,10 +82,10 @@ export function ResetHouseholdModal({
         {error && <p className="form-error" role="alert">{error}</p>}
 
         <div className="modal-actions">
-          <button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button>
-          <button type="submit" className="danger" disabled={!isResetConfirmation(confirmation) || busy}>
+          <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger" disabled={!isResetConfirmation(confirmation) || busy}>
             {busy ? "Resetting household..." : "Reset household data"}
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>

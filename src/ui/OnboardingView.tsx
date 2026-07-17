@@ -4,7 +4,7 @@ import { MEMBER_PALETTE, nextMemberColor } from "../domain/categories";
 import { defaultIncomePortion } from "../domain/income";
 import { uid, type Member } from "../domain/types";
 import type { SyncSettingsState } from "./SettingsModal";
-import { IconButton } from "./bits";
+import { Button, IconButton } from "./bits";
 import { COMMON_CURRENCIES } from "./currencies";
 
 export interface OnboardingResult {
@@ -62,7 +62,7 @@ export function OnboardingView({
         <div className="onboard-intro">
           <div className="wordmark"><span className="wordmark-mark">M</span><span>Mizan</span></div>
           <span className="soft-label">Household setup</span>
-          <h2>Set up your household</h2>
+          <h1>Set up your household</h1>
           <p>
             Add the people who share the budget, their monthly income, your currency, and the save-rate target.
             Mizan uses this to judge every month.
@@ -71,9 +71,9 @@ export function OnboardingView({
             <strong>{sync.auth.status === "signed-in" ? "Google connected" : "Google sign-in required"}</strong>
             <span>{sync.status}</span>
             {sync.auth.status === "signed-in" ? (
-              <button className="secondary" onClick={onOpenSettings}>Open sync settings</button>
+              <Button variant="secondary" onClick={onOpenSettings}>Open sync settings</Button>
             ) : sync.auth.status !== "unconfigured" ? (
-              <button className="secondary" onClick={onSignIn}>Sign in</button>
+              <Button variant="secondary" onClick={onSignIn}>Sign in</Button>
             ) : null}
           </div>
         </div>
@@ -85,7 +85,7 @@ export function OnboardingView({
                 <h3>Members and income</h3>
                 <p className="muted">Start with one person. Add more if spending is shared.</p>
               </div>
-              <button className="secondary" onClick={addMember}>Add member</button>
+              <Button variant="secondary" onClick={addMember}>Add member</Button>
             </div>
             <div className="member-stack">
               {members.map((member, index) => (
@@ -147,7 +147,7 @@ export function OnboardingView({
 
           <div className="onboard-submit">
             <p className={canFinish ? "good-text" : "muted"}>{requirement}</p>
-            <button disabled={!canFinish} onClick={finish}>Get started</button>
+            <Button variant="primary" disabled={!canFinish} onClick={finish}>Get started</Button>
           </div>
         </div>
       </section>

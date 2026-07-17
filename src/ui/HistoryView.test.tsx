@@ -1,6 +1,6 @@
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HistoryRow } from "../domain/summary";
 import type { EfficiencyPlan } from "../domain/types";
 import { HistoryView } from "./HistoryView";
@@ -25,7 +25,11 @@ describe("HistoryView selected month", () => {
     container = null;
   });
 
-  async function render(currentMonth: string, efficiencyPlans: EfficiencyPlan[] = []) {
+  async function render(
+    currentMonth: string,
+    efficiencyPlans: EfficiencyPlan[] = [],
+    overrides: Partial<ComponentProps<typeof HistoryView>> = {},
+  ) {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -37,6 +41,7 @@ describe("HistoryView selected month", () => {
           targetSaveRate={15}
           money={(value) => `LKR ${value}`}
           efficiencyPlans={efficiencyPlans}
+          {...overrides}
         />,
       );
     });
@@ -83,6 +88,49 @@ describe("HistoryView selected month", () => {
     await render("2026-06", [plan]);
     expect(container?.textContent).toContain("Dining · Household: LKR 4000 observed reduction · partial");
     expect(container?.textContent).toContain("not added to saved or save-rate figures");
-    expect(container?.textContent).toContain("Saved LKR 20000");
+    expect(container?.textContent).toContain("SavedLKR 20000");
+  });
+
+  it("selects a month from the accessible chart", async () => {
+    const onSelectMonth = vi.fn();
+    await render("2026-07", [], { onSelectMonth });
+
+    const june = container?.querySelector<HTMLButtonElement>('button[aria-label^="Jun 2026 save rate"]');
+    expect(june?.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => june?.click());
+    expect(onSelectMonth).toHaveBeenCalledWith("2026-06");
+  });
+
+  it("does not expose percentages or chart magnitudes while privacy mode is active", async () => {
+    await render("2026-06", [], {
+      money: () => "••••",
+      percent: () => "••••",
+      financialValuesHidden: true,
+    });
+
+    expect(container?.textContent).not.toContain("20.0%");
+    expect(container?.textContent).not.toContain("15.0%");
+    expect(container?.querySelector(".history-target-line")?.getAttribute("style")).toBe("bottom: 0%;");
+    expect(container?.querySelector(".history-bar-value")?.getAttribute("style")).toBe("height: 3%;");
+    expect(container?.querySelector('button[aria-label*="20.0%"]')).toBeNull();
+  });
+
+  it("uses neutral record controls and marks the selected month", async () => {
+    const onSelectMonth = vi.fn();
+    await render("2026-07", [], { onSelectMonth });
+
+    const disclosure = Array.from(container?.querySelectorAll("button") ?? [])
+      .find((button) => button.textContent?.includes("Monthly records"));
+    await act(async () => disclosure?.click());
+
+    const july = Array.from(container?.querySelectorAll<HTMLButtonElement>(".history-record-button") ?? [])
+      .find((button) => button.textContent?.includes("Jul 2026"));
+    expect(july?.classList.contains("button-ghost")).toBe(true);
+    expect(july?.classList.contains("button-primary")).toBe(false);
+    expect(july?.classList.contains("selected")).toBe(true);
+    expect(july?.getAttribute("aria-current")).toBe("date");
+
+    await act(async () => july?.click());
+    expect(onSelectMonth).toHaveBeenCalledWith("2026-07");
   });
 });

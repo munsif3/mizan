@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addMonths, daysInMonth, dominantMonth, monthLabel, monthOf, toISODate, toISODateOrdered } from "./dates";
+import { addMonths, daysInMonth, latestMonth, monthLabel, monthOf, toISODate, toISODateOrdered } from "./dates";
 import { filterNew, transactionSignature } from "./dedupe";
 import { formatMoney, parseAmount } from "./money";
 import { applyRules, cleanMerchant, matchRule, withRule } from "./rules";
@@ -77,22 +77,20 @@ describe("dates", () => {
     expect(daysInMonth("2026-02")).toBe(28);
   });
 
-  it("picks the month holding most of a statement's rows", () => {
-    // A 07 Jun - 06 Jul statement: the bulk is June, so June is where to land.
-    // The last row printed is a July one — row order must not sway this.
+  it("picks the newest month represented by an import", () => {
     const statement = [
       { date: "2026-06-15" },
       { date: "2026-06-22" },
       { date: "2026-06-27" },
       { date: "2026-07-02" },
     ];
-    expect(dominantMonth(statement)).toBe("2026-06");
+    expect(latestMonth(statement)).toBe("2026-07");
   });
 
-  it("breaks a dominant-month tie toward the later month", () => {
-    expect(dominantMonth([{ date: "2026-06-30" }, { date: "2026-07-01" }])).toBe("2026-07");
-    expect(dominantMonth([])).toBe("");
-    expect(dominantMonth([{ date: "" }])).toBe("");
+  it("ignores empty and invalid transaction months", () => {
+    expect(latestMonth([{ date: "2026-06-30" }, { date: "2026-07-01" }])).toBe("2026-07");
+    expect(latestMonth([])).toBe("");
+    expect(latestMonth([{ date: "" }, { date: "not-a-date" }])).toBe("");
   });
 });
 

@@ -4,8 +4,8 @@ import {
   type CategoryKey,
   type CustomCategory,
   type FixedCategoryKey,
-  type Member,
 } from "./types";
+import type { Member } from "./types";
 
 export interface CategoryInfo {
   label: string;
@@ -47,10 +47,9 @@ export function isCategoryKey(value: unknown): value is CategoryKey {
 
 /**
  * Label + colour for a purpose, resolving `custom:` keys against the household's
- * custom categories. The member parameter remains for call-site compatibility;
- * beneficiaries are rendered separately.
+ * custom categories. Beneficiaries are rendered separately.
  */
-export function categoryInfo(key: CategoryKey, _members: Member[], customCategories: CustomCategory[] = []): CategoryInfo {
+export function categoryInfo(key: CategoryKey, customCategories: CustomCategory[] = []): CategoryInfo {
   const customId = customCategoryId(key);
   if (customId) {
     const custom = customCategories.find((c) => c.id === customId);
@@ -67,7 +66,7 @@ export interface CategoryOption extends CategoryInfo {
  * All selectable purpose categories in display order, with custom purposes
  * between the common fixed groups.
  */
-export function categoryOptions(_members: Member[], customCategories: CustomCategory[] = []): CategoryOption[] {
+export function categoryOptions(customCategories: CustomCategory[] = []): CategoryOption[] {
   return [
     ...FIXED_BEFORE_CUSTOM.map((key) => ({ key, ...FIXED_CATEGORIES[key] })),
     ...customCategories.map((c) => ({ key: customCategory(c.id), label: c.label, color: c.color })),
@@ -76,6 +75,6 @@ export function categoryOptions(_members: Member[], customCategories: CustomCate
 }
 
 /** Selectable spending categories (everything except "uncategorized"). */
-export function spendingCategoryOptions(members: Member[], customCategories: CustomCategory[] = []): CategoryOption[] {
-  return categoryOptions(members, customCategories).filter((option) => option.key !== "uncategorized");
+export function spendingCategoryOptions(customCategories: CustomCategory[] = []): CategoryOption[] {
+  return categoryOptions(customCategories).filter((option) => option.key !== "uncategorized");
 }

@@ -559,6 +559,32 @@ function asCsvPresets(value: unknown): Record<string, CsvMapping> {
   return presets;
 }
 
+function repairVersionedIncomeReceipts(
+  receipts: IncomeReceipt[],
+  sourceVersion: number,
+  members: Member[],
+  transactions: Transaction[],
+  accounts: Account[],
+  currency: string,
+  fxRates: Record<string, number>,
+): IncomeReceipt[] {
+  // These stages are intentionally version-gated. Current-shape decoding above
+  // must not quietly absorb historical fixes or their idempotency guarantees.
+  const currencyRepaired = sourceVersion < 11
+    ? receipts.map((receipt) => repairLegacyReceiptCurrency(
+        receipt,
+        members,
+        transactions,
+        accounts,
+        currency,
+        fxRates,
+      ))
+    : receipts;
+  return sourceVersion < 14
+    ? currencyRepaired.map((receipt) => withReceiptSnapshot(receipt, members))
+    : currencyRepaired;
+}
+
 /**
  * True when the source is legacy member data that predates
  * the member list — v4 or a trackr v1 backup. Such data seeds two members whose
@@ -648,12 +674,15 @@ export function migrate(raw: unknown): AppData {
     const { transactionId: _removed, ...unlinked } = receipt;
     return unlinked;
   });
-  const currencyRepairedReceipts = sourceVersion < 11
-    ? normalizedReceipts.map((receipt) => repairLegacyReceiptCurrency(receipt, members, normalizedTransactions, accounts, currency, fxRates))
-    : normalizedReceipts;
-  const incomeReceipts = sourceVersion < 14
-    ? currencyRepairedReceipts.map((receipt) => withReceiptSnapshot(receipt, members))
-    : currencyRepairedReceipts;
+  const incomeReceipts = repairVersionedIncomeReceipts(
+    normalizedReceipts,
+    sourceVersion,
+    members,
+    normalizedTransactions,
+    accounts,
+    currency,
+    fxRates,
+  );
   const sharedContributions = pruneSharedContributions(
     asList(source.sharedContributions, asSharedContribution),
     normalizedTransactions,

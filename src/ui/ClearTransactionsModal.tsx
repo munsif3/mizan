@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { AppData } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 export const CLEAR_TRANSACTIONS_CONFIRMATION = "CLEAR";
 
@@ -65,9 +65,9 @@ export function ClearTransactionsModal({
           Income confirmations remain authoritative; only links to deleted statement credits are detached.
         </p>
 
-        <button type="button" className="secondary" disabled={busy} onClick={onExport}>
+        <Button type="button" variant="secondary" disabled={busy} onClick={onExport}>
           Export JSON
-        </button>
+        </Button>
 
         <label className="field">
           <span>Type {CLEAR_TRANSACTIONS_CONFIRMATION} to confirm</span>
@@ -85,10 +85,10 @@ export function ClearTransactionsModal({
         {error && <p className="form-error" role="alert">{error}</p>}
 
         <div className="modal-actions">
-          <button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button>
-          <button type="submit" className="danger" disabled={!isClearTransactionsConfirmation(confirmation) || busy}>
+          <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger" disabled={!isClearTransactionsConfirmation(confirmation) || busy}>
             {busy ? "Clearing transactions..." : "Clear transactions"}
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>

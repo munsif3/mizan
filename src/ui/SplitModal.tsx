@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Split, Transaction } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 export function SplitModal({
   txn,
@@ -32,18 +32,18 @@ export function SplitModal({
       </div>
       <div className="modal-actions">
         {txn.split && (
-          <button
-            className="secondary danger"
+          <Button
+            variant="danger"
             onClick={() => {
               onClear(txn.id);
               onClose();
             }}
           >
             Remove split
-          </button>
+          </Button>
         )}
-        <button className="secondary" onClick={onClose}>Cancel</button>
-        <button onClick={save}>Save split</button>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button variant="primary" onClick={save}>Save split</Button>
       </div>
     </Modal>
   );

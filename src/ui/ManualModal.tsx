@@ -4,7 +4,7 @@ import { spendingCategoryOptions } from "../domain/categories";
 import { isoDateOf } from "../domain/dates";
 import { isSpendKind, kindNeedsCategory, kindNeedsCounterparty, MOVEMENT_OPTIONS } from "../domain/movements";
 import type { Account, CategoryKey, Counterparty, CustomCategory, Member, MovementKind, SpendBeneficiary } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 export interface ManualEntry {
   date: string;
@@ -37,7 +37,7 @@ export function ManualModal({
   onAdd: (entry: ManualEntry) => void;
   onClose: () => void;
 }) {
-  const categoryChoices = spendingCategoryOptions(members, customCategories);
+  const categoryChoices = spendingCategoryOptions(customCategories);
   const [date, setDate] = useState(() => isoDateOf(new Date()));
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
@@ -195,8 +195,8 @@ export function ManualModal({
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="modal-actions">
-        <button type="button" className="secondary" onClick={onClose}>Cancel</button>
-        <button type="submit">Add transaction</button>
+        <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button variant="primary" type="submit">Add transaction</Button>
       </div>
       </form>
     </Modal>

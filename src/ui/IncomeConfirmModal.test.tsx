@@ -127,6 +127,7 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
       amount: 1000,
     };
     const item = resolveMonthIncome(members, [receipt], "LKR", {}, "2026-07", new Date(2026, 6, 15)).items[0]!;
+    const onRemove = vi.fn();
     container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -138,7 +139,7 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
           householdCurrency="LKR"
           money={(value) => `LKR ${value}`}
           onSave={() => {}}
-          onRemove={() => {}}
+          onRemove={onRemove}
           onClose={() => {}}
         />,
       );
@@ -147,6 +148,15 @@ const accounts: Account[] = [{ id: "rfc", label: "NTB RFC - Sara", currency: "LK
     expect(container.textContent).toContain("Save changes");
     expect(container.textContent).toContain("Delete income confirmation");
     expect(container.textContent).not.toContain("Confirm income");
+    const deleteButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Delete income confirmation")!;
+    await act(async () => deleteButton.click());
+    expect(onRemove).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("no longer be confirmed for Jul 2026");
+    const confirmDelete = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Delete confirmation")!;
+    await act(async () => confirmDelete.click());
+    expect(onRemove).toHaveBeenCalledOnce();
     await act(async () => root.unmount());
   });
 

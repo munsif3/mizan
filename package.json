@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "check:styles": "vitest run scripts/style-system.test.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -19,7 +20,7 @@
     "test:rules": "npx --yes firebase-tools@15.22.4 emulators:exec --only firestore --project demo-mizan \"npm run test:rules:emulator\"",
     "typecheck": "tsc --noEmit",
     "check:deadcode": "npx --yes knip@6.26.0",
-    "check": "npm run typecheck && npm test && vite build"
+    "check": "npm run typecheck && npm run check:styles && npm test && vite build"
   },
   "dependencies": {
     "firebase": "^12.16.0",
@@ -37,6 +38,7 @@
     "crypto-js": "^4.2.0",
     "jsdom": "^29.1.1",
     "pdf-lib": "^1.17.1",
+    "postcss": "^8.5.16",
     "typescript": "^5.9.3",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"

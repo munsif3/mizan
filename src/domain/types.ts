@@ -11,19 +11,11 @@ export type FixedCategoryKey =
   | "investments"
   | "uncategorized";
 
-/** Legacy schema key accepted only while migrating pre-v12 data. */
-export type PersonalCategoryKey = `personal:${string}`;
-
 /** A user-defined category, keyed `custom:<id>` (see `settings.customCategories`). */
 export type CustomCategoryKey = `custom:${string}`;
 
 /** What money was spent on. Beneficiary is stored independently from purpose. */
 export type CategoryKey = FixedCategoryKey | CustomCategoryKey;
-
-/** Build a legacy personal-category key. New app data must use `beneficiary`. */
-export function personalCategory(id: MemberId): PersonalCategoryKey {
-  return `personal:${id}`;
-}
 
 /** Build the custom-category key for a custom-category id. */
 export function customCategory(id: string): CustomCategoryKey {
@@ -85,7 +77,7 @@ export type SpendBeneficiary =
 /** Reserved owner/filter sentinels that a member id may never take. */
 export const RESERVED_IDS = ["all", "joint"] as const;
 
-export type IncomeSchedule =
+type IncomeSchedule =
   | { frequency: "monthly" }
   | { frequency: "one_off"; month: string };
 
@@ -279,14 +271,14 @@ export type EfficiencyPlanState = "watching" | "planned" | "verified" | "closed"
 export type EfficiencyOutcomeResult = "achieved" | "partial" | "not_achieved";
 
 /** The evidence snapshot retained when a household makes a decision. */
-export interface EfficiencyBaseline {
+interface EfficiencyBaseline {
   months: string[];
   monthlyAmount: number;
   measurementScope: "merchant" | "category" | "fixed_cost";
 }
 
 /** A confirmed counterfactual outcome. It never changes ledger savings. */
-export interface EfficiencyOutcome {
+interface EfficiencyOutcome {
   month: string;
   observedMonthlyReduction: number;
   result: EfficiencyOutcomeResult;
@@ -315,7 +307,7 @@ export interface EfficiencyPlan {
   closedReason?: "subject_removed";
 }
 
-export type EfficiencyOpportunityKind =
+type EfficiencyOpportunityKind =
   | "recurring_value_check"
   | "questionable_recurring"
   | "recurring_price_increase"
@@ -323,7 +315,7 @@ export type EfficiencyOpportunityKind =
   | "commitment_ending"
   | "verification_due";
 
-export type EfficiencyConfidence = "high" | "medium";
+type EfficiencyConfidence = "high" | "medium";
 
 /** A deterministic, display-ready opportunity derived from current AppData. */
 export interface EfficiencyOpportunity {

@@ -81,6 +81,11 @@ describe("SettingsModal recurring commitments", () => {
     await act(async () => root.render(<Harness />));
     await act(async () => button(container, "Budget").click());
 
+    const budgetTab = button(container, "Budget");
+    expect(budgetTab.getAttribute("aria-selected")).toBe("true");
+    expect(budgetTab.getAttribute("aria-controls")).toBe("settings-panel-budget");
+    expect(container.querySelector("#settings-panel-budget")?.getAttribute("aria-labelledby")).toBe("settings-tab-budget");
+
     expect(container.textContent).toContain("Payment type says how money moves; purpose says what it paid for.");
     expect(container.textContent).toContain("This name looks like a loan.");
 
@@ -143,6 +148,13 @@ describe("SettingsModal recurring commitments", () => {
     };
 
     await act(async () => root.render(<SettingsModal {...props} />));
+    expect(container.textContent).toContain("Saved");
+    expect(container.textContent).toContain("Changes save automatically");
+    await act(async () => root.render(<SettingsModal {...props} sync={{ ...props.sync, status: "Saving to Firestore" }} />));
+    expect(container.textContent).toContain("Saving");
+    await act(async () => root.render(<SettingsModal {...props} sync={{ ...props.sync, status: "Save failed: offline" }} />));
+    expect(container.textContent).toContain("Sync issue");
+    await act(async () => root.render(<SettingsModal {...props} />));
     await act(async () => button(container, "Sync & backup").click());
     expect(container.textContent).not.toContain("Remove old browser copy");
     expect(container.textContent).not.toContain("Clear legacy browser data");
@@ -150,7 +162,36 @@ describe("SettingsModal recurring commitments", () => {
     await act(async () => root.render(<SettingsModal {...props} hasLegacyBrowserData />));
     await act(async () => button(container, "Remove old browser copy").click());
 
+    expect(onClearData).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("active Firestore household will not be changed");
+    await act(async () => button(container, "Remove browser copy").click());
     expect(onClearData).toHaveBeenCalledOnce();
+
+    expect(container.textContent).not.toContain("Clear transactions");
+    expect(container.textContent).not.toContain("Reset household data");
+    await act(async () => root.render(
+      <SettingsModal
+        {...props}
+        canClearTransactions
+        hasTransactions
+        canResetHousehold
+        hasResettableData
+      />,
+    ));
+    expect(container.textContent).toContain("Clear transactions");
+    expect(container.textContent).toContain("Reset household data");
+
+    await act(async () => root.render(
+      <SettingsModal
+        {...props}
+        canClearTransactions={false}
+        hasTransactions
+        canResetHousehold={false}
+        hasResettableData
+      />,
+    ));
+    expect(container.textContent).not.toContain("Clear transactions");
+    expect(container.textContent).not.toContain("Reset household data");
   });
 
   it("warns before deleting an income source with historical confirmations", async () => {
@@ -164,7 +205,6 @@ describe("SettingsModal recurring commitments", () => {
     }];
     data.incomeReceipts = [{ id: "receipt", month: "2026-07", memberId: "owner", portionId: "bonus", amount: 1000 }];
     const onUpdateMembers = vi.fn();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     await act(async () => root.render(
       <SettingsModal
@@ -205,12 +245,10 @@ describe("SettingsModal recurring commitments", () => {
     expect(container.querySelector<HTMLInputElement>('input[type="month"]')?.disabled).toBe(true);
     expect(container.textContent).toContain("Schedule locked after confirmation");
     await act(async () => deleteButton.click());
-    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/1 historical confirmation/i));
+    expect(container.querySelector('[role="dialog"]')?.parentElement?.textContent).toContain("1 historical confirmation");
     expect(onUpdateMembers).not.toHaveBeenCalled();
 
-    confirm.mockReturnValue(true);
-    await act(async () => deleteButton.click());
+    await act(async () => button(container, "Delete income source").click());
     expect(onUpdateMembers.mock.calls[0]?.[0][0]?.portions).toEqual([]);
-    confirm.mockRestore();
   });
 });

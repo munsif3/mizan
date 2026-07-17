@@ -9,7 +9,7 @@ import {
   type SharedContributionCandidate,
 } from "../domain/contributions";
 import type { Account, Member, SharedContribution, Transaction } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 export function SharedContributionModal({
   transactions,
@@ -155,13 +155,13 @@ export function SharedContributionModal({
             <small>Each allocation remains in its recovery row's bank-posting month.</small>
           </div>
         )}
-        {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
         <div className="modal-actions">
-          {contribution && <button className="danger secondary" onClick={() => onRemove(contribution.id)}>Unlink contribution</button>}
-          <button className="secondary" onClick={onClose}>Cancel</button>
-          <button disabled={!draft || Boolean(error)} onClick={() => draft && !error && onSave(draft)}>
+          {contribution && <Button variant="danger" onClick={() => onRemove(contribution.id)}>Unlink contribution</Button>}
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={!draft || Boolean(error)} onClick={() => draft && !error && onSave(draft)}>
             {contribution ? "Save changes" : "Confirm contribution"}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

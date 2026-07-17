@@ -9,7 +9,7 @@ import type {
   EfficiencyPlan,
   LifeValue,
 } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 const VALUE_OPTIONS: Array<{ value: LifeValue; label: string; detail: string }> = [
   { value: "essential", label: "Essential", detail: "Protect this cost unless its price or use changes materially." },
@@ -137,8 +137,8 @@ export function EfficiencyReviewModal({
           Estimates are planning aids. They never alter ledger spending, savings, settlement, or save-rate figures.
         </p>
         <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={!canSave}>{activeChange ? "Save improvement plan" : `Keep until ${monthLabel(addMonths(contextMonth, 6))}`}</button>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" type="submit" disabled={!canSave}>{activeChange ? "Save improvement plan" : `Keep until ${monthLabel(addMonths(contextMonth, 6))}`}</Button>
         </div>
       </form>
     </Modal>
@@ -189,8 +189,8 @@ export function EfficiencyOutcomeModal({
 
         <p className="muted efficiency-disclaimer">The observed reduction remains an informational comparison, not extra ledger income or savings.</p>
         <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>Cancel</button>
-          <button type="button" disabled={!dataComplete} onClick={() => onConfirm(result)}>Confirm outcome</button>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" type="button" disabled={!dataComplete} onClick={() => onConfirm(result)}>Confirm outcome</Button>
         </div>
       </div>
     </Modal>

@@ -16,7 +16,6 @@ import {
 } from "firebase/firestore";
 import type { AuthUser } from "../auth/authStore";
 import type { Account, AppData, Counterparty, CustomCategory, EfficiencyPlan, FixedCost, IncomeReceipt, Member, SharedContribution, Transaction } from "../domain/types";
-import { migrate } from "../storage/schema";
 import type { DataRepository, RepositorySubscriptionOptions } from "../storage/repository";
 import {
   appDataToCloudCollections,
@@ -36,6 +35,7 @@ import type {
   UserHouseholdLink,
   UserProfile,
 } from "./types";
+import { loadLegacyManifestlessHousehold } from "./legacyManifestlessFirestoreAdapter";
 
 const META_DOC = "current";
 const SETTINGS_DOC = "current";
@@ -413,19 +413,17 @@ export class FirestoreHouseholdRepository implements DataRepository {
       );
     }
 
-    const settings = await getDoc(settingsRef(this.db, this.householdId));
-    if (!settings.exists()) {
-      this.activeRevision = "";
-      this.loadedManifestVersion = "";
-      return migrate(null);
-    }
-
-    const cloudSettings = settings.data() as CloudSettings;
     this.activeRevision = "";
     this.loadedManifestVersion = "";
-    return this.loadCollections(
-      cloudSettings,
-      (name) => householdCollection(this.db, this.householdId, name),
+    return loadLegacyManifestlessHousehold(
+      async () => {
+        const settings = await getDoc(settingsRef(this.db, this.householdId));
+        return settings.exists() ? settings.data() as CloudSettings : null;
+      },
+      (cloudSettings) => this.loadCollections(
+        cloudSettings,
+        (name) => householdCollection(this.db, this.householdId, name),
+      ),
     );
   }
 

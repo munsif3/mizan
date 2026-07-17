@@ -3,13 +3,13 @@ import { categoryInfo, isCategoryKey, spendingCategoryOptions } from "./categori
 
 describe("fixed categories", () => {
   it("keeps the food key while exposing the groceries, utilities, and dining labels", () => {
-    expect(categoryInfo("food", [])).toMatchObject({ label: "Groceries" });
-    expect(categoryInfo("utilities", [])).toMatchObject({ label: "Bills & Utilities" });
-    expect(categoryInfo("dining", [])).toMatchObject({ label: "Dining" });
+    expect(categoryInfo("food")).toMatchObject({ label: "Groceries" });
+    expect(categoryInfo("utilities")).toMatchObject({ label: "Bills & Utilities" });
+    expect(categoryInfo("dining")).toMatchObject({ label: "Dining" });
   });
 
   it("orders essentials before dining and lifestyle", () => {
-    expect(spendingCategoryOptions([], []).map(({ key }) => key)).toEqual([
+    expect(spendingCategoryOptions().map(({ key }) => key)).toEqual([
       "housing",
       "food",
       "utilities",
@@ -23,8 +23,7 @@ describe("fixed categories", () => {
   });
 
   it("keeps purpose independent from the beneficiary", () => {
-    const members = [{ id: "sam", name: "Sam", color: "#5b8cff", portions: [] }];
-    expect(spendingCategoryOptions(members, []).map(({ key }) => key)).not.toContain("personal:sam");
+    expect(spendingCategoryOptions().map(({ key }) => key)).not.toContain("personal:sam");
     expect(isCategoryKey("personal:sam")).toBe(false);
     expect(isCategoryKey("custom:education")).toBe(true);
   });

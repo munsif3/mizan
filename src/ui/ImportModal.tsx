@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FileSpreadsheet, Landmark } from "lucide-react";
 import { parsersFor } from "../import/registry";
 import type { StatementParser } from "../import/types";
-import { Modal } from "./bits";
+import { Button, Modal, Tabs } from "./bits";
 
 export interface ImportResult {
   imported: number;
@@ -67,52 +67,29 @@ export function ImportModal({
   return (
     <Modal title="Import" onClose={() => !busy && onClose()}>
       <div className="import-flow">
-        <div className="import-choice" role="tablist" aria-label="Import type">
-          <button
-            id="import-tab-statement"
-            className={mode === "statement" ? "active" : ""}
-            role="tab"
-            aria-selected={mode === "statement"}
-            aria-controls="import-panel-statement"
-            tabIndex={mode === "statement" ? 0 : -1}
-            onKeyDown={(event) => {
-              if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-              event.preventDefault();
-              setMode("csv");
-              requestAnimationFrame(() => document.getElementById("import-tab-csv")?.focus());
-            }}
-            onClick={() => {
-              setMode("statement");
-              setFiles([]);
-              setResult(null);
-            }}
-          >
-            <Landmark size={18} aria-hidden="true" />
-            Bank statement
-          </button>
-          <button
-            id="import-tab-csv"
-            className={mode === "csv" ? "active" : ""}
-            role="tab"
-            aria-selected={mode === "csv"}
-            aria-controls="import-panel-csv"
-            tabIndex={mode === "csv" ? 0 : -1}
-            onKeyDown={(event) => {
-              if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-              event.preventDefault();
-              setMode("statement");
-              requestAnimationFrame(() => document.getElementById("import-tab-statement")?.focus());
-            }}
-            onClick={() => {
-              setMode("csv");
-              setFiles([]);
-              setResult(null);
-            }}
-          >
-            <FileSpreadsheet size={18} aria-hidden="true" />
-            CSV export
-          </button>
-        </div>
+        <Tabs
+          idPrefix="import"
+          label="Import type"
+          className="import-choice"
+          value={mode}
+          items={[
+            {
+              id: "statement",
+              panelId: "import-panel-statement",
+              label: <><Landmark size={18} aria-hidden="true" />Bank statement</>,
+            },
+            {
+              id: "csv",
+              panelId: "import-panel-csv",
+              label: <><FileSpreadsheet size={18} aria-hidden="true" />CSV export</>,
+            },
+          ]}
+          onChange={(nextMode) => {
+            setMode(nextMode);
+            setFiles([]);
+            setResult(null);
+          }}
+        />
 
         <label
           className="dropzone"
@@ -165,14 +142,14 @@ export function ImportModal({
         )}
 
         <div className="modal-actions">
-          <button className="secondary" onClick={onClose} disabled={!!busy}>{result ? "Close" : "Cancel"}</button>
-          {result?.needsReview ? <button onClick={onReview}>Review queue</button> : null}
+          <Button variant="secondary" onClick={onClose} disabled={!!busy}>{result ? "Close" : "Cancel"}</Button>
+          {result?.needsReview ? <Button variant="primary" onClick={onReview}>Review queue</Button> : null}
           {mode === "statement" && (!result || result.failures.length) ? (
-            <button onClick={run} disabled={!files.length || !!busy}>
+            <Button variant="primary" onClick={run} disabled={!files.length || !!busy}>
               {busy || (result?.failures.length
                 ? "Retry import"
                 : `Import ${files.length} statement${files.length === 1 ? "" : "s"}`)}
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>

@@ -3,10 +3,9 @@ import {
   clearLegacyLocalData,
   hasLegacyLocalData,
   loadLegacyLocalData,
-  parseBackup,
-  serializeBackup,
   STORAGE_KEY,
-} from "./localStore";
+} from "./legacyBrowserData";
+import { parseBackup, serializeBackup } from "./backup";
 import { emptyData } from "./schema";
 import { saveAuthoritativeData, type DataRepository } from "./repository";
 

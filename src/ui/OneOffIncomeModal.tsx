@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { uid, type IncomeBudgetTreatment, type IncomePortion, type Member } from "../domain/types";
-import { Modal } from "./bits";
+import { Button, Modal } from "./bits";
 
 export function OneOffIncomeModal({
   members,
@@ -109,8 +109,8 @@ export function OneOffIncomeModal({
           <span><strong>Protect from the spending plan</strong><small>Count it as income and savings without increasing the normal monthly allowance.</small></span>
         </label>
         <div className="modal-actions">
-          <button className="secondary" onClick={onClose}>Cancel</button>
-          <button disabled={!canSave} onClick={save}>Add planned income</button>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={!canSave} onClick={save}>Add planned income</Button>
         </div>
       </div>
     </Modal>

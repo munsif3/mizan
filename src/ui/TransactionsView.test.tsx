@@ -103,6 +103,8 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     onCategorizeMerchant = vi.fn(),
     onRememberMerchant = vi.fn(),
     mutateData?: (data: AppData) => void,
+    financialValuesHidden = false,
+    actions: { onOpenImport?: () => void; onAddTransaction?: () => void } = {},
   ) {
     const data = fixture();
     mutateData?.(data);
@@ -122,6 +124,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
         onFiltersChange={setFilters}
         money={(value) => `LKR ${value}`}
         transactionMoney={(_txn, value) => `LKR ${value}`}
+        financialValuesHidden={financialValuesHidden}
         onSetCategory={noop}
         onSetBeneficiary={(_id: string, _beneficiary: SpendBeneficiary) => {}}
         onSetKind={noop}
@@ -135,6 +138,8 @@ describe("TransactionsView beneficiary and payer workflow", () => {
         onDismissTransfer={noop}
         onSplit={noop}
         onRemove={noop}
+        onOpenImport={actions.onOpenImport}
+        onAddTransaction={actions.onAddTransaction}
       />;
     }
     container = document.createElement("div");
@@ -152,10 +157,43 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     expect(container?.textContent).toContain("Merchant: KEELLS");
 
     const clear = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
-      .find((button) => button.textContent === "Clear filters");
+      .find((button) => button.textContent === "Clear all");
     await act(async () => clear?.click());
     expect(container?.textContent).toContain("UBER");
     expect(container?.textContent).toContain("UNKNOWN SHOP");
+  });
+
+  it("shows a filtered empty state without rendering an orphan ledger table", async () => {
+    await mount({ category: "housing", beneficiary: "all", payer: "all" });
+    expect(container?.textContent).toContain("No transactions match these filters");
+    expect(container?.querySelector(".ledger-table")).toBeNull();
+    expect(container?.querySelector(".transaction-cards")).toBeNull();
+
+    const clear = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((item) => item.textContent?.trim() === "Clear filters");
+    await act(async () => clear?.click());
+    expect(container?.querySelector('button[aria-label="Open details for KEELLS"]')).not.toBeNull();
+  });
+
+  it("offers import and add actions for a genuinely empty month", async () => {
+    const onOpenImport = vi.fn();
+    const onAddTransaction = vi.fn();
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      vi.fn(),
+      vi.fn(),
+      (data) => { data.transactions = []; },
+      false,
+      { onOpenImport, onAddTransaction },
+    );
+    expect(container?.textContent).toContain("No activity in Jul 2026");
+    expect(container?.querySelector(".ledger-table")).toBeNull();
+
+    const buttons = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+    await act(async () => buttons.find((item) => item.textContent?.trim() === "Import activity")?.click());
+    await act(async () => buttons.find((item) => item.textContent?.trim() === "Add transaction")?.click());
+    expect(onOpenImport).toHaveBeenCalledOnce();
+    expect(onAddTransaction).toHaveBeenCalledOnce();
   });
 
   it("requires both purpose and beneficiary before teaching a merchant-wide rule", async () => {
@@ -193,6 +231,8 @@ describe("TransactionsView beneficiary and payer workflow", () => {
       kind: "expense",
     });
 
+    const openUber = container?.querySelector<HTMLButtonElement>('button[aria-label="Open details for UBER"]');
+    await act(async () => openUber?.click());
     const remember = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .find((button) => button.textContent?.trim() === "Save merchant default" && !button.disabled);
     await act(async () => remember?.click());
@@ -267,5 +307,38 @@ describe("TransactionsView beneficiary and payer workflow", () => {
       beneficiary: { type: "account_default" },
       kind: "expense",
     });
+  });
+
+  it("searches across ledger context and opens editing in a focused drawer", async () => {
+    await mount({ category: "all", beneficiary: "all", payer: "all" });
+    const search = container?.querySelector<HTMLInputElement>('input[aria-label="Search transactions"]');
+    await act(async () => {
+      if (!search) return;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "transport");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container?.textContent).toContain("UBER");
+    expect(container?.querySelector('button[aria-label="Open details for KEELLS"]')).toBeNull();
+
+    const open = container?.querySelector<HTMLButtonElement>('button[aria-label="Open details for UBER"]');
+    await act(async () => open?.click());
+    expect(container?.querySelector('[role="dialog"]')?.textContent).toContain("Classification");
+    expect(container?.querySelector('select[aria-label="Account for UBER"]')).not.toBeNull();
+  });
+
+  it("limits results to a date range within the selected month", async () => {
+    await mount({ category: "all", beneficiary: "all", payer: "all", dateFrom: "2026-07-12", dateTo: "2026-07-13" });
+    expect(container?.querySelector('button[aria-label="Open details for UNKNOWN SHOP"]')).not.toBeNull();
+    expect(container?.querySelector('button[aria-label="Open details for COOL PLANET"]')).not.toBeNull();
+    expect(container?.querySelector('button[aria-label="Open details for KEELLS"]')).toBeNull();
+  });
+
+  it("masks transaction magnitudes and accessible values in privacy mode", async () => {
+    await mount({ category: "all", beneficiary: "all", payer: "all" }, vi.fn(), vi.fn(), undefined, true);
+
+    expect(container?.innerHTML).not.toContain("LKR 28090");
+    expect(container?.innerHTML).not.toContain("LKR 20000");
+    expect(container?.textContent).toContain("••••");
+    expect(container?.querySelector('[aria-label="Financial value hidden"]')).not.toBeNull();
   });
 });

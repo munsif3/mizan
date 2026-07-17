@@ -115,6 +115,10 @@ describe("HomeView spending attribution", () => {
       );
     });
 
+    const spendingDetails = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("Spending and settlement"));
+    await act(async () => spendingDetails?.click());
+
     expect(container.textContent).toContain("Who spent what");
     expect(container.textContent).toContain("Purpose, responsibility, and who paid");
     expect(container.textContent).toContain("Recorded responsibility");
@@ -133,13 +137,20 @@ describe("HomeView spending attribution", () => {
 
     const groceriesToggle = [...container.querySelectorAll<HTMLButtonElement>(".purpose-toggle")]
       .find((button) => button.textContent?.includes("Groceries"));
+    expect(groceriesToggle?.getAttribute("aria-expanded")).toBe("false");
     await act(async () => groceriesToggle?.click());
+    expect(groceriesToggle?.getAttribute("aria-expanded")).toBe("true");
     expect(container.textContent).toContain("KEELLS");
     const merchantTotal = container.querySelector<HTMLButtonElement>(
       'button[aria-label="KEELLS, Groceries, Total: Hidden. Open matching transactions"]',
     );
     await act(async () => merchantTotal?.click());
     expect(onOpenTransactions).toHaveBeenLastCalledWith({ category: "food", merchant: "KEELLS" });
+
+    const alexSpending = container.querySelector<HTMLButtonElement>('button[aria-label="View Alex\'s spending"]');
+    const alexPayments = container.querySelector<HTMLButtonElement>('button[aria-label="View payments made by Alex"]');
+    expect(alexSpending?.textContent).toBe("View spending");
+    expect(alexPayments?.textContent).toBe("View payments");
 
     // Privacy formatting is reused by visible and accessible amount labels.
     expect(householdGroceries?.getAttribute("aria-label")).not.toContain("20000");
@@ -196,6 +207,9 @@ describe("HomeView spending attribution", () => {
     ));
 
     expect(container.textContent).toContain("Efficiency opportunities");
+    const efficiencyDetails = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("Efficiency opportunities"));
+    await act(async () => efficiencyDetails?.click());
     expect(container.textContent).toContain("Opportunity 3");
     expect(container.textContent).not.toContain("Opportunity 4");
     const expand = [...container.querySelectorAll("button")].find((item) => item.textContent?.includes("See all 4"));
@@ -208,5 +222,31 @@ describe("HomeView spending attribution", () => {
     const evidence = [...container.querySelectorAll("button")].find((item) => item.textContent === "Open evidence");
     await act(async () => evidence?.click());
     expect(onOpenTransactions).toHaveBeenCalledWith({ category: "dining", beneficiary: "household", merchant: "MERCHANT 1" });
+  });
+
+  it("masks amounts, percentages, chart magnitudes, and accessible values in privacy mode", async () => {
+    const summary = computeMonthSummary(fixture(), "2026-07", new Date(2026, 6, 15));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <HomeView
+        summary={summary}
+        money={() => "••••"}
+        percent={() => "••••"}
+        financialValuesHidden
+        lastCheckInAt=""
+        onOpenSettings={() => {}}
+        onOpenImport={() => {}}
+        onReviewQueue={() => {}}
+        onCompleteCheckIn={() => {}}
+        onConfirmIncome={() => {}}
+      />,
+    ));
+
+    expect(container.innerHTML).not.toContain("25%");
+    expect(container.querySelector(".comfort-track span")?.getAttribute("style")).toBe("width: 0%;");
+    expect(container.querySelector(".comfort-track i")?.getAttribute("style")).toBe("left: 0%;");
+    expect(container.querySelector('[aria-label="Financial value hidden"]')).not.toBeNull();
   });
 });

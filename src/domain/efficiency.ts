@@ -19,7 +19,7 @@ import type {
   Transaction,
 } from "./types";
 
-export type EfficiencyReadiness = "ready" | "needs_current_data" | "needs_classification" | "building_baseline";
+type EfficiencyReadiness = "ready" | "needs_current_data" | "needs_classification" | "building_baseline";
 
 export interface EfficiencySnapshot {
   readiness: EfficiencyReadiness;
@@ -391,7 +391,7 @@ export function computeEfficiencySnapshot(data: AppData, month: string, today: D
       if (excess < materiality) continue;
       const plan = latestPlan(data.efficiencyPlans, subject);
       if (shouldSuppress(plan, month, projected)) continue;
-      const category = categoryInfo(subject.category, data.settings.members, data.settings.customCategories);
+      const category = categoryInfo(subject.category, data.settings.customCategories);
       opportunities.push(makeOpportunity({
         kind: "category_above_baseline",
         subject,

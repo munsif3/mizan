@@ -1,6 +1,6 @@
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import App from "./App";
+import App, { importedMonthContext } from "./App";
 import { computeMonthSummary, reviewQueue } from "./domain/summary";
 import type { AppData } from "./domain/types";
 import { emptyData } from "./storage/schema";
@@ -13,7 +13,7 @@ import { IncomeConfirmModal } from "./ui/IncomeConfirmModal";
 import { ManualModal } from "./ui/ManualModal";
 import { OnboardingView } from "./ui/OnboardingView";
 import { isResetConfirmation, ResetHouseholdModal } from "./ui/ResetHouseholdModal";
-import { HouseholdResetAction, HouseholdTransactionClearAction, SettingsModal } from "./ui/SettingsModal";
+import { SettingsModal } from "./ui/SettingsModal";
 import { SplitModal } from "./ui/SplitModal";
 import { SharedContributionModal } from "./ui/SharedContributionModal";
 import { TransactionsView } from "./ui/TransactionsView";
@@ -38,6 +38,21 @@ function threeMemberData(): AppData {
   ];
   return data;
 }
+
+describe("import month presentation", () => {
+  it("lands on the newest imported month while listing every affected month", () => {
+    const context = importedMonthContext([
+      ...Array.from({ length: 19 }, (_, index) => ({ date: `2025-12-${String(index + 1).padStart(2, "0")}` })),
+      ...Array.from({ length: 5 }, (_, index) => ({ date: `2026-01-${String(index + 1).padStart(2, "0")}` })),
+    ]);
+    expect(context.latest).toBe("2026-01");
+    expect(context.spreadNotice).toBe("They span 2 months: Dec 2025 (19), Jan 2026 (5).");
+  });
+
+  it("leaves duplicate-only imports without a replacement month", () => {
+    expect(importedMonthContext([])).toEqual({ latest: "", spreadNotice: "" });
+  });
+});
 
 describe("UI render smoke", () => {
   it("renders onboarding without throwing", () => {
@@ -90,15 +105,13 @@ describe("UI render smoke", () => {
         onConfirmIncome={() => {}}
       />,
     );
-    expect(html).toContain("Ana");
-    expect(html).toContain("Ben");
+    expect(html).toContain("Monthly financial summary");
+    expect(html).toContain("Spending and settlement");
     expect(html).toContain("Needs attention");
-    expect(html).toContain("Expected and received");
-    expect(html).toContain("Monthly income");
+    expect(html).toContain("Income");
+    expect(html).toContain("0 of 3 expected deposits confirmed");
     expect(html).toContain("Bring transactions up to date");
     expect(html).toContain("Review queue");
-    // Someone must be settling up given uneven shared spend.
-    expect(html).toMatch(/pays/);
   });
 
   it("renders the income confirmation modal with self-paid tax guidance", () => {
@@ -177,8 +190,8 @@ describe("UI render smoke", () => {
         onConfirmIncome={() => {}}
       />,
     );
-    expect(home).toContain("USD 1,793");
-    expect(home).toContain("LKR 595,386<!-- --> available after tax");
+    expect(home).toContain("1 of 1 expected deposits confirmed");
+    expect(home).toContain("LKR 595,386");
   });
 
   it("pauses the forecast when the current month has no activity", () => {
@@ -273,8 +286,8 @@ describe("UI render smoke", () => {
     expect(html).toContain("need a default");
     expect(html).toContain('aria-label="Save merchant default for UNKNOWN SHOP"');
     expect(html).toContain("aria-label=\"Category for UNKNOWN SHOP\"");
-    expect(html).toContain("aria-label=\"Account for UNKNOWN SHOP\"");
-    expect(html).toContain("aria-label=\"Split UNKNOWN SHOP\"");
+    expect(html).toContain("aria-label=\"Open details for UNKNOWN SHOP\"");
+    expect(html).toContain("Search transactions");
     expect(html).toContain("transaction-cards");
   });
 
@@ -342,36 +355,6 @@ describe("UI render smoke", () => {
     expect(html).toContain("Accounts &amp; rules");
     expect(html).toContain("Sync &amp; backup");
     expect(html).toContain("aria-label=\"Close Settings\"");
-  });
-
-  it("shows the household reset action only to an owner with data", () => {
-    const owner = renderToString(
-      <HouseholdResetAction canResetHousehold={true} hasResettableData={true} onResetHousehold={() => {}} />,
-    );
-    const member = renderToString(
-      <HouseholdResetAction canResetHousehold={false} hasResettableData={true} onResetHousehold={() => {}} />,
-    );
-    const empty = renderToString(
-      <HouseholdResetAction canResetHousehold={true} hasResettableData={false} onResetHousehold={() => {}} />,
-    );
-    expect(owner).toContain("Reset household data");
-    expect(member).toBe("");
-    expect(empty).toBe("");
-  });
-
-  it("shows transaction clearing only to an owner when ledger rows exist", () => {
-    const owner = renderToString(
-      <HouseholdTransactionClearAction canClearTransactions={true} hasTransactions={true} onClearTransactions={() => {}} />,
-    );
-    const member = renderToString(
-      <HouseholdTransactionClearAction canClearTransactions={false} hasTransactions={true} onClearTransactions={() => {}} />,
-    );
-    const empty = renderToString(
-      <HouseholdTransactionClearAction canClearTransactions={true} hasTransactions={false} onClearTransactions={() => {}} />,
-    );
-    expect(owner).toContain("Clear transactions");
-    expect(member).toBe("");
-    expect(empty).toBe("");
   });
 
   it("renders a guarded reset summary with optional export", () => {

@@ -251,7 +251,8 @@ describe("signed-in startup bootstrap", () => {
 
     await act(async () => button(container, "Transactions").click());
     expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
-    expect(container.textContent).toContain("The ledger is clear for this view");
+    expect(container.textContent).toContain("No activity in Jun 2026");
+    expect(container.querySelector(".ledger-table")).toBeNull();
 
     await act(async () => button(container, "History").click());
     expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
