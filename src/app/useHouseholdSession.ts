@@ -15,6 +15,7 @@ import {
   saveUserProfile,
 } from "../household/firestoreRepository";
 import { hasLocalFinancialData } from "../household/households";
+import { sync, type SyncState } from "./syncState";
 import type { HouseholdMeta, ThemePreference, UserHouseholdLink } from "../household/types";
 import { clearLegacyLocalData, hasLegacyLocalData, loadLegacyLocalData } from "../storage/legacyBrowserData";
 import { saveAuthoritativeData, type DataRepository } from "../storage/repository";
@@ -144,7 +145,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   const [notice, setNotice] = useState("");
   const [householdMeta, setHouseholdMeta] = useState<HouseholdMeta | null>(null);
   const [availableHouseholds, setAvailableHouseholds] = useState<UserHouseholdLink[]>([]);
-  const [syncStatus, setSyncStatus] = useState("Sign in to use Firestore");
+  const [syncStatus, setSyncStatus] = useState<SyncState>(sync.idle("Sign in to use Firestore"));
   const [bootstrapPhase, setBootstrapPhase] = useState<BootstrapPhase>("idle");
   const [bootstrapError, setBootstrapError] = useState("");
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
@@ -182,13 +183,13 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     const version = ++saveVersion.current;
     const timer = window.setTimeout(() => {
       saveTimer.current = null;
-      setSyncStatus("Saving to Firestore");
+      setSyncStatus(sync.syncing("Saving to Firestore"));
       const queued = saveQueue.current.catch(() => undefined).then(() => repository.save(data));
       saveQueue.current = queued;
       queued
         .then(() => {
           completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
-          if (version === saveVersion.current) setSyncStatus("Synced to Firestore");
+          if (version === saveVersion.current) setSyncStatus(sync.synced("Synced to Firestore"));
         })
         .catch(async (error) => {
           completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
@@ -202,13 +203,13 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
               const next = { local: data, remote };
               conflictRef.current = next;
               setConflict(next);
-              setSyncStatus("Your edit conflicts with a newer change");
+              setSyncStatus(sync.conflict("Your edit conflicts with a newer change"));
               return;
             } catch {
               // Keep the original conflict message if recovery also fails.
             }
           }
-          if (version === saveVersion.current) setSyncStatus(`Save failed: ${message}`);
+          if (version === saveVersion.current) setSyncStatus(sync.error(`Save failed: ${message}`));
         });
     }, 250);
     saveTimer.current = timer;
@@ -220,7 +221,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
 
   useEffect(() => {
     if (!repository?.subscribe) return undefined;
-    setSyncStatus("Listening for household changes");
+    setSyncStatus(sync.synced("Listening for household changes"));
     return repository.subscribe(
       (nextData) => {
         if (completedSaveVersion.current < saveVersion.current) return;
@@ -230,9 +231,9 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
         skipNextSave.current = true;
         setData(nextData);
         clearUndo();
-        setSyncStatus("Synced to Firestore");
+        setSyncStatus(sync.synced("Synced to Firestore"));
       },
-      (message) => setSyncStatus(`Sync failed: ${message}`),
+      (message) => setSyncStatus(sync.error(`Sync failed: ${message}`)),
       { skipInitial: true },
     );
   }, [clearUndo, repository]);
@@ -247,7 +248,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       skipNextSave.current = true;
       clearUndo();
       setData(current.remote);
-      setSyncStatus("Synced to Firestore");
+      setSyncStatus(sync.synced("Synced to Firestore"));
       return;
     }
     // Keep the local edit: overwrite the newer cloud state. The failed save
@@ -256,12 +257,12 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     // unchanged, so saving explicitly here avoids relying on the autosave effect.
     const repo = repositoryRef.current;
     if (!repo) return;
-    setSyncStatus("Saving to Firestore");
+    setSyncStatus(sync.syncing("Saving to Firestore"));
     const queued = saveQueue.current.catch(() => undefined).then(() => repo.save(current.local));
     saveQueue.current = queued;
     queued
       .then(() => {
-        if (repositoryRef.current === repo) setSyncStatus("Synced to Firestore");
+        if (repositoryRef.current === repo) setSyncStatus(sync.synced("Synced to Firestore"));
       })
       .catch(async (error) => {
         if (repositoryRef.current !== repo) return;
@@ -275,13 +276,13 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
             const next = { local: current.local, remote };
             conflictRef.current = next;
             setConflict(next);
-            setSyncStatus("Your edit conflicts with a newer change");
+            setSyncStatus(sync.conflict("Your edit conflicts with a newer change"));
             return;
           } catch {
             // Fall through to the generic failure message.
           }
         }
-        setSyncStatus(`Save failed: ${message}`);
+        setSyncStatus(sync.error(`Save failed: ${message}`));
       });
   }, [clearUndo]);
 
@@ -306,7 +307,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     }
     loadUserHouseholds(services.db, authUid)
       .then(setAvailableHouseholds)
-      .catch((error) => setSyncStatus(`Could not load households: ${(error as Error).message}`));
+      .catch((error) => setSyncStatus(sync.error(`Could not load households: ${(error as Error).message}`)));
   }, [authUid, services, bootstrapAttempt]);
 
   useEffect(() => {
@@ -325,7 +326,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     setData(emptyData());
     setBootstrapPhase("loading-profile");
     setBootstrapError("");
-    setSyncStatus("Loading cloud profile");
+    setSyncStatus(sync.syncing("Loading cloud profile"));
     startupMark("profile-start");
 
     const activation = ++activationVersion.current;
@@ -350,12 +351,12 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
         if (!householdId) {
           profileLoaded.current = true;
           setBootstrapPhase("needs-household");
-          setSyncStatus("Create or join a Firestore household");
+          setSyncStatus(sync.idle("Create or join a Firestore household"));
           return;
         }
 
         setBootstrapPhase("loading-household");
-        setSyncStatus("Loading household data");
+        setSyncStatus(sync.syncing("Loading household data"));
         startupMark("household-start");
         const repo = new FirestoreHouseholdRepository(services.db, householdId, authUid);
         const metaRequest = loadHouseholdMeta(services.db, householdId).then((meta) => {
@@ -387,7 +388,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
         const message = (error as Error).message;
         setBootstrapError(message);
         setBootstrapPhase("error");
-        setSyncStatus(`Could not load household: ${message}`);
+        setSyncStatus(sync.error(`Could not load household: ${message}`));
       }
     })();
     return () => {
@@ -408,7 +409,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
         beneficiaryFilter: ledgerFilters.beneficiary,
         payerFilter: ledgerFilters.payer,
         lastCheckInByHousehold,
-      }).catch((error) => setSyncStatus(`Could not save cloud profile: ${(error as Error).message}`));
+      }).catch((error) => setSyncStatus(sync.error(`Could not save cloud profile: ${(error as Error).message}`)));
     }, 300);
     return () => window.clearTimeout(timer);
   }, [auth, services, householdMeta?.id, privacy, theme, view, month, ledgerFilters, lastCheckInByHousehold]);
@@ -507,17 +508,17 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       return;
     }
     const transactionCount = data.transactions.length;
-    setSyncStatus("Clearing household transactions");
+    setSyncStatus(sync.syncing("Clearing household transactions"));
     try {
       await saveAuthoritativeSnapshot(repository, clearTransactionHistory(data));
       clearUndo();
       resetTransientState();
       setLedgerFilters(EMPTY_LEDGER_FILTERS);
-      setSyncStatus(`Transactions cleared from ${householdMeta.name}`);
+      setSyncStatus(sync.synced(`Transactions cleared from ${householdMeta.name}`));
       setNotice(`${transactionCount} transaction${transactionCount === 1 ? "" : "s"} cleared. Accounts and household members were kept.`);
     } catch (error) {
       const message = (error as Error).message;
-      setSyncStatus(`Transaction clear failed: ${message}`);
+      setSyncStatus(sync.error(`Transaction clear failed: ${message}`));
       throw new Error(`Could not clear transactions from ${householdMeta.name}: ${message}`);
     }
   }
@@ -528,7 +529,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       throw new Error("An active Firestore household is required.");
     }
     if (householdMeta.ownerUid !== auth.user.uid) throw new Error("Only the household owner can reset its data.");
-    setSyncStatus("Resetting household data");
+    setSyncStatus(sync.syncing("Resetting household data"));
     try {
       await saveAuthoritativeSnapshot(repository, emptyData());
       clearUndo();
@@ -542,11 +543,11 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
         return next;
       });
       if (legacyPresent || hasLegacyLocalData()) finishLegacyMigration();
-      setSyncStatus(`Household reset. Ready to set up ${householdMeta.name}`);
+      setSyncStatus(sync.synced(`Household reset. Ready to set up ${householdMeta.name}`));
       setNotice(`${householdMeta.name} was reset. The household and invite are still active.`);
     } catch (error) {
       const message = (error as Error).message;
-      setSyncStatus(`Reset failed: ${message}`);
+      setSyncStatus(sync.error(`Reset failed: ${message}`));
       throw new Error(`Could not reset ${householdMeta.name}: ${message}`);
     }
   }
@@ -584,11 +585,11 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, meta.id);
       setBootstrapError("");
       setBootstrapPhase("ready");
-      setSyncStatus(`Synced with ${meta.name}`);
+      setSyncStatus(sync.synced(`Synced with ${meta.name}`));
       setNotice(`Using household: ${meta.name}.`);
       if (options.persistSelection === true) {
         void saveUserProfile(services.db, auth.user.uid, { activeHouseholdId: meta.id })
-          .catch((error) => setSyncStatus(`Could not save cloud profile: ${(error as Error).message}`));
+          .catch((error) => setSyncStatus(sync.error(`Could not save cloud profile: ${(error as Error).message}`)));
       }
       return true;
     } catch (error) {
@@ -703,7 +704,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     profileLoaded.current = false;
     setBootstrapPhase("idle");
     setBootstrapError("");
-    setSyncStatus("Signed out");
+    setSyncStatus(sync.idle("Signed out"));
   }
 
   return {

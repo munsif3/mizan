@@ -4,6 +4,7 @@ import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppData } from "../domain/types";
+import { sync } from "../app/syncState";
 import { emptyData } from "../storage/schema";
 import { SettingsModal } from "./SettingsModal";
 
@@ -56,7 +57,7 @@ describe("SettingsModal recurring commitments", () => {
           onDeleteRule={() => {}}
           onUpdateCounterparties={() => {}}
           onUpdateCustomCategories={() => {}}
-          sync={{ auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: "", household: null, households: [] }}
+          sync={{ auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: sync.idle(""), household: null, households: [] }}
           onSignIn={() => {}}
           onSignOut={() => {}}
           onCreateHousehold={() => {}}
@@ -127,7 +128,7 @@ describe("SettingsModal recurring commitments", () => {
       onDeleteRule: () => {},
       onUpdateCounterparties: () => {},
       onUpdateCustomCategories: () => {},
-      sync: { auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: "", household: null, households: [] },
+      sync: { auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: sync.idle(""), household: null, households: [] },
       onSignIn: () => {},
       onSignOut: () => {},
       onCreateHousehold: () => {},
@@ -150,9 +151,9 @@ describe("SettingsModal recurring commitments", () => {
     await act(async () => root.render(<SettingsModal {...props} />));
     expect(container.textContent).toContain("Saved");
     expect(container.textContent).toContain("Changes save automatically");
-    await act(async () => root.render(<SettingsModal {...props} sync={{ ...props.sync, status: "Saving to Firestore" }} />));
+    await act(async () => root.render(<SettingsModal {...props} sync={{ ...props.sync, status: sync.syncing("Saving to Firestore") }} />));
     expect(container.textContent).toContain("Saving");
-    await act(async () => root.render(<SettingsModal {...props} sync={{ ...props.sync, status: "Save failed: offline" }} />));
+    await act(async () => root.render(<SettingsModal {...props} sync={{ ...props.sync, status: sync.error("Save failed: offline") }} />));
     expect(container.textContent).toContain("Sync issue");
     await act(async () => root.render(<SettingsModal {...props} />));
     await act(async () => button(container, "Sync & backup").click());
@@ -218,7 +219,7 @@ describe("SettingsModal recurring commitments", () => {
         onDeleteRule={() => {}}
         onUpdateCounterparties={() => {}}
         onUpdateCustomCategories={() => {}}
-        sync={{ auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: "", household: null, households: [] }}
+        sync={{ auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: sync.idle(""), household: null, households: [] }}
         onSignIn={() => {}}
         onSignOut={() => {}}
         onCreateHousehold={() => {}}

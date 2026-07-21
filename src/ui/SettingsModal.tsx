@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type CSSProperties } from "react";
 import { Trash2 } from "lucide-react";
+import { syncBadgeLabel, syncBadgeTone, type SyncState } from "../app/syncState";
 import type { AuthState } from "../auth/authStore";
 import { categoryInfo, categoryOptions, nextMemberColor } from "../domain/categories";
 import { isoDateOf } from "../domain/dates";
@@ -14,7 +15,7 @@ import { COMMON_CURRENCIES } from "./currencies";
 export interface SyncSettingsState {
   auth: AuthState;
   mode: RepositoryMode;
-  status: string;
+  status: SyncState;
   household: HouseholdMeta | null;
   households: UserHouseholdLink[];
 }
@@ -776,7 +777,7 @@ function SyncBackupSettings({ model }: { model: SettingsModel }) {
                       ? "Firebase not configured"
                       : "Signed out"}
                 </strong>
-                <small>{sync.auth.status === "signed-in" ? sync.auth.user.email : sync.auth.error || sync.status}</small>
+                <small>{sync.auth.status === "signed-in" ? sync.auth.user.email : sync.auth.error || sync.status.message}</small>
               </div>
               <div className="sync-actions">
                 {sync.auth.status === "signed-in" ? (
@@ -791,7 +792,7 @@ function SyncBackupSettings({ model }: { model: SettingsModel }) {
               <div>
                 <span className="soft-label">Storage</span>
                 <strong>{sync.mode === "cloud" ? sync.household?.name ?? "Household" : "No household selected"}</strong>
-                <small>{sync.status}</small>
+                <small>{sync.status.message}</small>
               </div>
             </div>
 
@@ -881,8 +882,8 @@ function SettingsBody({ model }: { model: SettingsModel }) {
       wide
       meta={
         <span className="settings-save-status">
-          <StatusBadge tone={/failed|could not/i.test(sync.status) ? "danger" : /saving|loading/i.test(sync.status) ? "warning" : "success"}>
-            {/failed|could not/i.test(sync.status) ? "Sync issue" : /saving|loading/i.test(sync.status) ? "Saving" : "Saved"}
+          <StatusBadge tone={syncBadgeTone(sync.status)}>
+            {syncBadgeLabel(sync.status)}
           </StatusBadge>
           <span>Changes save automatically</span>
         </span>

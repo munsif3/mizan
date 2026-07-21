@@ -28,6 +28,7 @@ import { AuthGate } from "../ui/AuthGate";
 import { Alert, Button, ConfirmDialog, IconButton, PageHeader, Skeleton } from "../ui/bits";
 import { ClearTransactionsModal } from "../ui/ClearTransactionsModal";
 import { ConflictRecoveryDialog } from "../ui/ConflictRecoveryDialog";
+import { isSyncProblem, syncChipLabel } from "./syncState";
 import { CsvImportModal } from "../ui/CsvImportModal";
 import { EfficiencyOutcomeModal, EfficiencyReviewModal } from "../ui/EfficiencyModal";
 import { HistoryView } from "../ui/HistoryView";
@@ -279,7 +280,7 @@ function HouseholdGate({ model }: { model: AppPresentationModel }) {
               ? "Loading cloud profile"
               : loadingHousehold
                 ? "Loading household data"
-                : failedBootstrap ? "Household load interrupted" : syncStatus}
+                : failedBootstrap ? "Household load interrupted" : syncStatus.message}
           </strong>
           <p className="muted">Raw statement files and passwords stay on this device while imports are processed.</p>
           {(loadingProfile || loadingHousehold) && (
@@ -351,12 +352,8 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
     setTransactionAccount, categorizeMerchant, rememberTransactionMerchant, undoLastLedgerChange,
     resetTransactionClassification, confirmTransfer, removeTransaction, completeWeeklyCheckIn,
   } = model.actions;
-  const syncHasError = /failed|could not/i.test(syncStatus);
-  const syncLabel = syncHasError
-    ? "Sync issue"
-    : syncStatus.startsWith("Synced") || syncStatus.startsWith("Listening")
-      ? "Synced"
-      : /saving|loading/i.test(syncStatus) ? "Syncing" : "Firestore";
+  const syncHasError = isSyncProblem(syncStatus);
+  const syncLabel = syncChipLabel(syncStatus);
 
   return (
     <>
@@ -384,7 +381,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
           <div className="utility-actions">
             <button
               className={`sync-chip ${syncHasError ? "sync-error" : ""}`}
-              title={syncStatus}
+              title={syncStatus.message}
               onClick={() => setModal("settings")}
             >
               {syncLabel}

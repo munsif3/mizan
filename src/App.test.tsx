@@ -1,6 +1,7 @@
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import App, { importedMonthContext } from "./App";
+import { sync } from "./app/syncState";
 import { computeMonthSummary, reviewQueue } from "./domain/summary";
 import type { AppData } from "./domain/types";
 import { emptyData } from "./storage/schema";
@@ -59,7 +60,7 @@ describe("UI render smoke", () => {
     expect(() =>
       renderToString(
         <OnboardingView
-          sync={{ auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: "Sign in to use Firestore", household: null, households: [] }}
+          sync={{ auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: sync.idle("Sign in to use Firestore"), household: null, households: [] }}
           onSignIn={() => {}}
           onOpenSettings={() => {}}
           onComplete={() => {}}
@@ -68,7 +69,7 @@ describe("UI render smoke", () => {
     ).not.toThrow();
     const html = renderToString(
       <OnboardingView
-        sync={{ auth: { status: "unconfigured", user: null, error: "Firebase is not configured." }, mode: "none", status: "Configure Firebase", household: null, households: [] }}
+        sync={{ auth: { status: "unconfigured", user: null, error: "Firebase is not configured." }, mode: "none", status: sync.idle("Configure Firebase"), household: null, households: [] }}
         onSignIn={() => {}}
         onOpenSettings={() => {}}
         onComplete={() => {}}
@@ -308,7 +309,7 @@ describe("UI render smoke", () => {
         sync={{
           auth: { status: "signed-in", user: { uid: "user_1", displayName: "Owner", email: "owner@example.com", photoURL: "" }, error: "" },
           mode: "cloud",
-          status: "Synced to Firestore",
+          status: sync.synced("Synced to Firestore"),
           household: {
             id: "hh_1",
             name: "Shared budget",

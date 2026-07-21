@@ -69,7 +69,7 @@ export function OnboardingView({
           </p>
           <div className="sync-note">
             <strong>{sync.auth.status === "signed-in" ? "Google connected" : "Google sign-in required"}</strong>
-            <span>{sync.status}</span>
+            <span>{sync.status.message}</span>
             {sync.auth.status === "signed-in" ? (
               <Button variant="secondary" onClick={onOpenSettings}>Open sync settings</Button>
             ) : sync.auth.status !== "unconfigured" ? (
