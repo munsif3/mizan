@@ -255,8 +255,9 @@ describe("signed-in startup bootstrap", () => {
     expect(container.querySelector(".ledger-table")).toBeNull();
 
     await act(async () => button(container, "History").click());
+    // History is lazy-loaded, so wait for its chunk to resolve and render.
+    await vi.waitFor(() => expect(container.textContent).toContain(`No recorded data for ${previousLabel}.`));
     expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
-    expect(container.textContent).toContain(`No recorded data for ${previousLabel}.`);
   });
 
   it("ignores an in-flight household result after sign-out", async () => {

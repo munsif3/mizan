@@ -4,7 +4,7 @@
  * by switching on the kind instead of pattern-matching display strings.
  */
 
-export type SyncKind = "idle" | "syncing" | "synced" | "conflict" | "error";
+type SyncKind = "idle" | "syncing" | "synced" | "conflict" | "error";
 
 export interface SyncState {
   kind: SyncKind;

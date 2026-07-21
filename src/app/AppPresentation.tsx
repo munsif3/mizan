@@ -1,4 +1,5 @@
 import type { ComponentProps, Dispatch, SetStateAction } from "react";
+import { lazy, Suspense } from "react";
 import { BarChart2, Eye, EyeOff, Home, List, Moon, Settings, Sun } from "lucide-react";
 import { monthOf } from "../domain/dates";
 import { eligibleCredits, type IncomeCandidate } from "../domain/incomeMatch";
@@ -26,28 +27,33 @@ import type { ImportResult } from "../ui/ImportModal";
 import type { ManualEntry } from "../ui/ManualModal";
 import { AuthGate } from "../ui/AuthGate";
 import { Alert, Button, ConfirmDialog, IconButton, PageHeader, Skeleton } from "../ui/bits";
-import { ClearTransactionsModal } from "../ui/ClearTransactionsModal";
 import { ConflictRecoveryDialog } from "../ui/ConflictRecoveryDialog";
 import { CreateHouseholdDialog, JoinHouseholdDialog } from "../ui/HouseholdDialogs";
 import { isSyncProblem, syncChipLabel } from "./syncState";
-import { CsvImportModal } from "../ui/CsvImportModal";
-import { EfficiencyOutcomeModal, EfficiencyReviewModal } from "../ui/EfficiencyModal";
-import { HistoryView } from "../ui/HistoryView";
 import { HomeView } from "../ui/HomeView";
-import { ImportModal } from "../ui/ImportModal";
-import { IncomeConfirmModal } from "../ui/IncomeConfirmModal";
-import { ManualModal } from "../ui/ManualModal";
 import { MonthNavigator } from "../ui/MonthNavigator";
 import { OnboardingView } from "../ui/OnboardingView";
-import { OneOffIncomeModal } from "../ui/OneOffIncomeModal";
-import { ResetHouseholdModal } from "../ui/ResetHouseholdModal";
-import { SettingsModal } from "../ui/SettingsModal";
-import { SharedContributionModal } from "../ui/SharedContributionModal";
-import { SplitModal } from "../ui/SplitModal";
 import { TransactionsView } from "../ui/TransactionsView";
 import type { AppDerivedState } from "./useAppDerivedState";
 import type { HouseholdSession, View } from "./useHouseholdSession";
 import { EMPTY_LEDGER_FILTERS } from "./useHouseholdSession";
+
+// History, Settings, import tooling, and the secondary modals are split into
+// their own chunks so their code (and heavy dependencies such as the statement
+// parsers) is fetched only when a user opens the matching screen or modal.
+const HistoryView = lazy(() => import("../ui/HistoryView").then((m) => ({ default: m.HistoryView })));
+const SettingsModal = lazy(() => import("../ui/SettingsModal").then((m) => ({ default: m.SettingsModal })));
+const ClearTransactionsModal = lazy(() => import("../ui/ClearTransactionsModal").then((m) => ({ default: m.ClearTransactionsModal })));
+const ResetHouseholdModal = lazy(() => import("../ui/ResetHouseholdModal").then((m) => ({ default: m.ResetHouseholdModal })));
+const ImportModal = lazy(() => import("../ui/ImportModal").then((m) => ({ default: m.ImportModal })));
+const CsvImportModal = lazy(() => import("../ui/CsvImportModal").then((m) => ({ default: m.CsvImportModal })));
+const ManualModal = lazy(() => import("../ui/ManualModal").then((m) => ({ default: m.ManualModal })));
+const IncomeConfirmModal = lazy(() => import("../ui/IncomeConfirmModal").then((m) => ({ default: m.IncomeConfirmModal })));
+const OneOffIncomeModal = lazy(() => import("../ui/OneOffIncomeModal").then((m) => ({ default: m.OneOffIncomeModal })));
+const SharedContributionModal = lazy(() => import("../ui/SharedContributionModal").then((m) => ({ default: m.SharedContributionModal })));
+const SplitModal = lazy(() => import("../ui/SplitModal").then((m) => ({ default: m.SplitModal })));
+const EfficiencyOutcomeModal = lazy(() => import("../ui/EfficiencyModal").then((m) => ({ default: m.EfficiencyOutcomeModal })));
+const EfficiencyReviewModal = lazy(() => import("../ui/EfficiencyModal").then((m) => ({ default: m.EfficiencyReviewModal })));
 
 export type ModalKind = null | "import" | "manual" | "settings" | "one-off-income" | "clear-transactions" | "reset";
 
@@ -203,7 +209,7 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
   };
 
   return (
-    <>
+    <Suspense fallback={null}>
       {modal === "settings" && repository && <SettingsModal {...settingsProps} />}
       {modal === "clear-transactions" && householdMeta && canResetHousehold && data.transactions.length > 0 && (
         <ClearTransactionsModal
@@ -238,7 +244,7 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
           <p>Export the current household first if you may need to restore it.</p>
         </ConfirmDialog>
       )}
-    </>
+    </Suspense>
   );
 }
 
@@ -511,16 +517,18 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
           />
         )}
         {view === "history" && (
-          <HistoryView
-            rows={history}
-            currentMonth={currentMonth}
-            targetSaveRate={summary.targetSaveRate}
-            money={money}
-            percent={percent}
-            financialValuesHidden={privacy}
-            efficiencyPlans={data.efficiencyPlans}
-            onSelectMonth={setMonth}
-          />
+          <Suspense fallback={<Skeleton label="Loading history" />}>
+            <HistoryView
+              rows={history}
+              currentMonth={currentMonth}
+              targetSaveRate={summary.targetSaveRate}
+              money={money}
+              percent={percent}
+              financialValuesHidden={privacy}
+              efficiencyPlans={data.efficiencyPlans}
+              onSelectMonth={setMonth}
+            />
+          </Suspense>
         )}
       </section>
     </>
@@ -544,7 +552,7 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
   } = model.actions;
 
   return (
-    <>
+    <Suspense fallback={null}>
       {modal === "import" && (
         <ImportModal
           onImport={importStatements}
@@ -665,7 +673,7 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
           onClose={() => setContributionConfirm(null)}
         />
       )}
-    </>
+    </Suspense>
   );
 }
 
