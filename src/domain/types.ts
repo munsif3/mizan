@@ -106,6 +106,25 @@ export interface Member {
   /** hex colour; identifies this member throughout household views */
   color: string;
   portions: IncomePortion[];
+  /** Effective-dated participation; absent on legacy data means active for all history. */
+  lifecycle?: MemberLifecycle;
+}
+
+export interface MemberAwayPeriod {
+  id: string;
+  /** First excluded calendar date, inclusive. */
+  from: string;
+  /** First participating calendar date after the absence; empty means still away. */
+  resumeOn?: string;
+}
+
+export interface MemberLifecycle {
+  /** First participating calendar date, inclusive; empty means all recorded history. */
+  activeFrom?: string;
+  /** First permanently excluded calendar date, inclusive. */
+  inactiveFrom?: string;
+  inactiveReason?: "left" | "deceased";
+  awayPeriods: MemberAwayPeriod[];
 }
 
 export interface IncomeReceipt {
@@ -150,12 +169,25 @@ export interface Account {
   owner: AccountOwner;
   /** usual consumer for spend on this account; independent from who funds it */
   beneficiaryDefault: AccountBeneficiaryDefault;
+  /** First date this account definition applies; empty means all recorded history. */
+  activeFrom?: string;
+  /** First date this account is archived and no longer eligible for new matching. */
+  inactiveFrom?: string;
+  /** Explicit evidence that this account has been reviewed through a date. */
+  coverage?: AccountCoverage;
   /**
    * case-insensitive substrings matched against the account text detected in a
    * statement (card number fragment, bank name) or the statement file name;
    * imports matching any pattern land on this account
    */
   match: string[];
+}
+
+interface AccountCoverage {
+  throughDate: string;
+  confirmedAt: string;
+  confirmedByUid: string;
+  source: "statement" | "manual";
 }
 
 export interface Split {
@@ -304,7 +336,7 @@ export interface EfficiencyPlan {
   createdAt: string;
   updatedAt: string;
   outcome?: EfficiencyOutcome;
-  closedReason?: "subject_removed";
+  closedReason?: "subject_removed" | "subject_inactive";
 }
 
 type EfficiencyOpportunityKind =
@@ -395,7 +427,7 @@ export interface MerchantRule {
 export type MerchantRules = Record<string, MerchantRule>;
 
 export interface AppData {
-  schemaVersion: 15;
+  schemaVersion: 16;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
   merchantRules: MerchantRules;

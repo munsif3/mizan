@@ -561,6 +561,7 @@ export function closeInvalidEfficiencyPlans(
   validMemberIds: Set<string>,
   validCategoryKeys: Set<string>,
   now: string,
+  closedReason: "subject_removed" | "subject_inactive" = "subject_removed",
 ): EfficiencyPlan[] {
   return plans.map((plan) => {
     if (plan.state === "closed") return plan;
@@ -571,7 +572,7 @@ export function closeInvalidEfficiencyPlans(
     return beneficiaryValid && categoryValid ? plan : {
       ...plan,
       state: "closed",
-      closedReason: "subject_removed",
+      closedReason,
       updatedAt: now,
     };
   });

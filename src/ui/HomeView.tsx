@@ -1,12 +1,13 @@
 import { useState, type CSSProperties } from "react";
 import { ChevronDown } from "lucide-react";
+import { computeAccountCoverage, coverageLabel, type AccountCoverageRow } from "../domain/accountCoverage";
 import { monthLabel } from "../domain/dates";
 import type { PortionResolution } from "../domain/income";
 import type { IncomeCandidate } from "../domain/incomeMatch";
 import type { SharedContributionCandidate } from "../domain/contributions";
 import type { EfficiencySnapshot } from "../domain/efficiency";
 import type { MonthSummary } from "../domain/summary";
-import type { CategoryKey, EfficiencyOpportunity, Member, MemberId } from "../domain/types";
+import type { Account, CategoryKey, EfficiencyOpportunity, Member, MemberId } from "../domain/types";
 import { Button, Disclosure, DrilldownAmount, MoneyValue } from "./bits";
 export interface HomeTransactionFilters {
   category?: CategoryKey;
@@ -398,13 +399,14 @@ interface HomeDetailModel {
   freshnessLabel: string;
   checkInDays: number | null;
   movementRows: MonthSummary["movementRows"];
+  coverageRows: AccountCoverageRow[];
 }
 
 function HomeDetailSections({ model }: { model: HomeDetailModel }) {
   const {
     summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency,
     onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
-    onOpenSettings, freshnessLabel, checkInDays, movementRows,
+    onOpenSettings, freshnessLabel, checkInDays, movementRows, coverageRows,
   } = model;
   return (
     <>
@@ -556,6 +558,16 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
                   ? " Reviewed today."
                   : ` Reviewed ${checkInDays} day${checkInDays === 1 ? "" : "s"} ago.`}
           </p>
+          {s.isCurrentMonth && coverageRows.length > 0 && (
+            <div className="coverage-list" aria-label="Account update coverage">
+              {coverageRows.slice(0, 4).map((row) => (
+                <small className="coverage-row" data-status={row.status} key={row.account.id}>
+                  <strong>{row.account.label}</strong>
+                  <span>{row.status === "missing" ? "Not confirmed" : `Through ${row.throughDate}`}</span>
+                </small>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
@@ -638,6 +650,7 @@ function useHomeViewModel({
   incomeCandidates,
   contributionCandidates,
   members,
+  accounts,
   onConfirmContribution,
   onOpenTransactions,
   efficiency,
@@ -659,6 +672,7 @@ function useHomeViewModel({
   incomeCandidates?: Map<string, IncomeCandidate>;
   contributionCandidates?: SharedContributionCandidate[];
   members?: Member[];
+  accounts?: Account[];
   onConfirmContribution?: (candidate: SharedContributionCandidate) => void;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
   efficiency?: EfficiencySnapshot;
@@ -671,13 +685,17 @@ function useHomeViewModel({
   const candidates = incomeCandidates ?? new Map<string, IncomeCandidate>();
   const contributionSuggestions = contributionCandidates ?? [];
   const householdMembers = members ?? [];
+  const coverageRows = computeAccountCoverage(accounts ?? [], householdMembers, new Date());
   const onTrack = s.projectedSaveRate >= s.targetSaveRate;
   const hasActivity = s.monthTransactions.length > 0 || s.totalSpend > 0;
   // One-member households have no beneficiary split or settlement to show.
   const solo = s.attribution.memberRows.length === 1;
   const movementRows = s.movementRows.filter((row) => row.value > 0 || row.delta !== 0);
-  const dataNeedsUpdate =
-    s.isCurrentMonth && (s.dataAgeDays === null ? s.dayNumber > 3 : s.dataAgeDays >= 7);
+  const coverageNeedsUpdate = coverageRows.some((row) => row.status !== "current");
+  const waitingForCoverage = s.isCurrentMonth && coverageRows.length > 0 && coverageNeedsUpdate;
+  const dataNeedsUpdate = s.isCurrentMonth && (coverageRows.length
+    ? coverageNeedsUpdate
+    : (s.dataAgeDays === null ? s.dayNumber > 3 : s.dataAgeDays >= 7));
   const checkInTimestamp = Date.parse(lastCheckInAt);
   const checkInDays = Number.isFinite(checkInTimestamp)
     ? Math.max(0, Math.floor((Date.now() - checkInTimestamp) / 86_400_000))
@@ -689,6 +707,8 @@ function useHomeViewModel({
     || s.attribution.fixedCommitments.purposeRows.some((row) => row.key === "uncategorized");
   const freshnessLabel = !s.isCurrentMonth
     ? "Historical month"
+    : coverageRows.length
+      ? coverageLabel(coverageRows)
     : !s.latestTransactionDate
       ? "No activity yet"
       : s.dataAgeDays === 0
@@ -698,6 +718,13 @@ function useHomeViewModel({
           : `${s.dataAgeDays} days behind`;
 
   const attentionItems = [
+    ...coverageRows.filter((row) => row.status !== "current").map((row) => ({
+      title: `Update ${row.account.label}`,
+      body: row.status === "missing"
+        ? `${row.ownerLabel}'s account has no confirmed coverage date. Import a statement or mark what has been reviewed.`
+        : `${row.ownerLabel}'s account is only confirmed through ${row.throughDate}. The household forecast remains incomplete.`,
+      action: <Button variant="secondary" onClick={onOpenSettings}>Review account</Button>,
+    })),
     ...contributionSuggestions.map((candidate) => {
       const contributor = householdMembers.find((member) => member.id === candidate.contributorMemberId)?.name ?? "Household member";
       const recovered = candidate.expenses.reduce((sum, expense) => sum + expense.amount, 0);
@@ -724,7 +751,7 @@ function useHomeViewModel({
       body: `${item.portion.label} cannot be included in the projection until its exchange rate is set.`,
       action: <Button variant="secondary" onClick={onOpenSettings}>Open settings</Button>,
     })),
-    ...(dataNeedsUpdate
+    ...(dataNeedsUpdate && !waitingForCoverage
       ? [
           {
             title: "Bring transactions up to date",
@@ -751,11 +778,9 @@ function useHomeViewModel({
             body: checkInReady
               ? "The data is current and this month's categories are clean. Record that you reviewed the plan."
               : "Update recent activity and resolve this month's purpose and beneficiary gaps, then record the check-in.",
-            action: checkInReady ? (
-              <Button variant="primary" onClick={onCompleteCheckIn}>Mark reviewed</Button>
-            ) : (
-              <span className="attention-pill danger">Update first</span>
-            ),
+            action: <Button variant={checkInReady ? "primary" : "secondary"} onClick={onCompleteCheckIn}>
+              {checkInReady ? "Mark reviewed" : "Acknowledge gaps"}
+            </Button>,
           },
         ]
       : []),
@@ -791,7 +816,8 @@ function useHomeViewModel({
     checkInDays, money, moneyIn, percent, solo,
     financialValuesHidden, onConfirmIncome, candidates, onAddOneOffIncome, attentionItems,
     visibleAttentionItems, showAllActions, setShowAllActions, onOpenTransactions, efficiency, onReviewEfficiency,
-    onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows,
+    onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
+    waitingForCoverage,
   };
 }
 
@@ -800,7 +826,7 @@ type HomeViewModel = ReturnType<typeof useHomeViewModel>;
 function HomeHeroSummary({ model }: { model: HomeViewModel }) {
   const {
     s, onTrack, forecastReady, onOpenImport, onReviewQueue, onOpenSettings,
-    money, financialValuesHidden, percent, solo,
+    money, financialValuesHidden, percent, solo, waitingForCoverage, freshnessLabel,
   } = model;
   return (
     <>
@@ -821,12 +847,16 @@ function HomeHeroSummary({ model }: { model: HomeViewModel }) {
             </p>
           ) : (
             <p>
-              The forecast is paused until this month has current transactions. Your {solo ? "" : "shared "}target remains a
+              {waitingForCoverage
+                ? "The forecast is paused until every active account has a current coverage confirmation."
+                : "The forecast is paused until this month has current transactions."} Your {solo ? "" : "shared "}target remains a
               {" "}<MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
             </p>
           )}
           <div className="hero-actions">
-            {!forecastReady ? (
+            {!forecastReady && waitingForCoverage ? (
+              <Button variant="primary" onClick={onOpenSettings}>Review account coverage</Button>
+            ) : !forecastReady ? (
               <Button variant="primary" onClick={onOpenImport}>Import activity</Button>
             ) : s.unresolvedCount ? (
               <Button variant="primary" onClick={onReviewQueue}>Review queue</Button>
@@ -848,8 +878,10 @@ function HomeHeroSummary({ model }: { model: HomeViewModel }) {
           ) : (
             <>
               <span>Forecast status</span>
-              <strong className="forecast-paused">Waiting for activity</strong>
-              <p>{s.latestTransactionDate ? `Latest activity: ${s.latestTransactionDate}` : "No transactions recorded yet"}</p>
+              <strong className="forecast-paused">{waitingForCoverage ? "Waiting for account coverage" : "Waiting for activity"}</strong>
+              <p>{waitingForCoverage
+                ? freshnessLabel
+                : s.latestTransactionDate ? `Latest activity: ${s.latestTransactionDate}` : "No transactions recorded yet"}</p>
             </>
           )}
         </div>
@@ -990,7 +1022,7 @@ function HomeOverview({ model }: { model: HomeViewModel }) {
   const {
     s, onOpenSettings, checkInDays, money, percent, financialValuesHidden, solo,
     onOpenTransactions, efficiency, onReviewEfficiency,
-    onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows,
+    onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
   } = model;
   if (!s.incomeItems.length) {
     return (
@@ -1018,7 +1050,7 @@ function HomeOverview({ model }: { model: HomeViewModel }) {
       <HomeDetailSections model={{
         summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency,
         onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
-        onOpenSettings, freshnessLabel, checkInDays, movementRows,
+        onOpenSettings, freshnessLabel, checkInDays, movementRows, coverageRows,
       }} />
     </div>
   );

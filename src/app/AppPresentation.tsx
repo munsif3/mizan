@@ -24,6 +24,7 @@ import type {
 } from "../domain/types";
 import { hasLocalFinancialData } from "../household/households";
 import type { ImportResult } from "../ui/ImportModal";
+import type { AccountCoverageConfirmation } from "../ui/AccountCoverageConfirm";
 import type { ManualEntry } from "../ui/ManualModal";
 import { AuthGate } from "../ui/AuthGate";
 import { Alert, Button, ConfirmDialog, IconButton, PageHeader, Skeleton } from "../ui/bits";
@@ -105,6 +106,7 @@ interface PresentationActions {
   addManual: (entry: ManualEntry) => void;
   importStatements: ComponentProps<typeof ImportModal>["onImport"];
   ingestTransactions: (transactions: Transaction[], failures: string[], notes?: string[]) => ImportResult;
+  confirmImportedAccountCoverage: (confirmations: AccountCoverageConfirmation[]) => void;
   setTransactionCategory: (id: string, category: CategoryKey) => void;
   setTransactionBeneficiary: (id: string, beneficiary: SpendBeneficiary) => void;
   setTransactionKind: (id: string, kind: MovementKind) => void;
@@ -158,7 +160,8 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
   const {
     auth, repository, data, setData, legacyPresent, householdMeta, availableHouseholds, syncStatus,
     clearActiveHouseholdTransactions, resetActiveHousehold, setHouseholdDialog,
-    switchHousehold, rotateInvite, handleSignIn, handleSignOut,
+    switchHousehold, rotateInvite, linkAccessMember, promoteOwner, revokeAccess, leaveHousehold,
+    handleSignIn, handleSignOut,
   } = model.session;
   const { modal, setModal, pendingBackup, setPendingBackup } = model.ui;
   const {
@@ -167,7 +170,7 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
   } = model.actions;
   const canResetHousehold = auth.status === "signed-in"
     && Boolean(householdMeta)
-    && householdMeta?.ownerUid === auth.user.uid;
+    && householdMeta?.membersByUid[auth.user.uid]?.role === "owner";
   const settingsProps: ComponentProps<typeof SettingsModal> = {
     data,
     onUpdateMembers: updateMembers,
@@ -196,6 +199,10 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
     onJoinHousehold: () => setHouseholdDialog("join"),
     onSwitchHousehold: switchHousehold,
     onRotateInvite: rotateInvite,
+    onLinkAccessMember: linkAccessMember,
+    onPromoteOwner: promoteOwner,
+    onRevokeAccess: revokeAccess,
+    onLeaveHousehold: leaveHousehold,
     onExport: exportBackup,
     onImportBackup: importBackup,
     hasLegacyBrowserData: legacyPresent,
@@ -457,6 +464,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             contributionCandidates={contributionCandidates.filter((candidate) =>
               candidate.expenses.some((expense) => monthOf(expense.date) === currentMonth))}
             members={data.settings.members}
+            accounts={data.accounts}
             onConfirmContribution={(candidate) => setContributionConfirm({ candidate })}
             efficiency={efficiency}
             onReviewEfficiency={setEfficiencyReview}
@@ -547,7 +555,7 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
     efficiencyVerification, setEfficiencyVerification,
   } = model.ui;
   const {
-    importStatements, ingestTransactions, addManual, saveEfficiencyDecision, verifyEfficiencyOutcome,
+    importStatements, ingestTransactions, confirmImportedAccountCoverage, addManual, saveEfficiencyDecision, verifyEfficiencyOutcome,
     saveSplit, clearSplit, recordIncomeReceipts, removeIncomeConfirmation, unlinkIncomeEvidence,
     addOneOffIncome, saveSharedContribution, removeSharedContribution,
   } = model.actions;
@@ -566,6 +574,7 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
             setLedgerFilters(EMPTY_LEDGER_FILTERS);
             setView("transactions");
           }}
+          onConfirmCoverage={confirmImportedAccountCoverage}
           onClose={() => setModal(null)}
         />
       )}
@@ -582,6 +591,7 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
               ...previous,
               settings: { ...previous.settings, csvPresets: { ...previous.settings.csvPresets, [signature]: mapping } },
             }))}
+          onConfirmCoverage={confirmImportedAccountCoverage}
           onClose={() => setCsvFile(null)}
         />
       )}

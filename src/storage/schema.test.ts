@@ -235,7 +235,7 @@ describe("migrate (v7 income portions)", () => {
       schemaVersion: 6,
       settings: { members: [{ id: "m", name: "Member", color: "#123456", income: 1000 }], currency: "LKR" },
     });
-    expect(data.schemaVersion).toBe(15);
+    expect(data.schemaVersion).toBe(16);
     expect(data.settings.members[0]?.portions).toEqual([
       { id: "por_m", label: "Monthly income", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" },
     ]);
@@ -322,7 +322,7 @@ describe("migrate (v13 -> v14 scheduled income)", () => {
       },
       incomeReceipts: [{ id: "old", month: "2026-07", memberId: "m", portionId: "salary", amount: 1100 }],
     });
-    expect(data.schemaVersion).toBe(15);
+    expect(data.schemaVersion).toBe(16);
     expect(data.settings.members[0]?.portions[0]).toMatchObject({
       schedule: { frequency: "monthly" },
       budgetTreatment: "ordinary",
@@ -425,7 +425,7 @@ describe("migrate (v11 -> v12 purpose and beneficiary classification)", () => {
 
   it("preserves purpose categories and separates valid legacy personal beneficiaries", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(15);
+    expect(data.schemaVersion).toBe(16);
     expect(data.transactions.map(({ id, category, beneficiary }) => ({ id, category, beneficiary }))).toEqual([
       { id: "shared", category: "food", beneficiary: { type: "household" } },
       { id: "personal", category: "uncategorized", beneficiary: { type: "member", memberId: "sam" } },
@@ -556,7 +556,7 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
 
   it("preserves valid statement-backed contribution links", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(15);
+    expect(data.schemaVersion).toBe(16);
     expect(data.sharedContributions).toEqual([{
       id: "c1",
       allocations: [{ expenseTransactionId: "loan", amount: 125000 }],
@@ -673,5 +673,42 @@ describe("deterministic legacy identities", () => {
     expect(first.settings.members[0]?.portions[0]?.id).toMatch(/^por_/);
     expect(first.settings.counterparties[0]?.id).toMatch(/^cp_/);
     expect(first.settings.customCategories[0]?.id).toMatch(/^cat_/);
+  });
+});
+
+describe("schema v16 household continuity", () => {
+  it("round-trips lifecycle and account coverage while legacy members remain all-time active", () => {
+    const current = migrate({
+      schemaVersion: 16,
+      settings: {
+        members: [{
+          id: "sam", name: "Sam", color: "#fff", portions: [],
+          lifecycle: {
+            inactiveFrom: "2026-08-01",
+            inactiveReason: "left",
+            awayPeriods: [{ id: "trip", from: "2026-07-10", resumeOn: "2026-07-20" }],
+          },
+        }],
+      },
+      accounts: [{
+        id: "card", label: "Card", owner: "sam", beneficiaryDefault: "review", match: [],
+        inactiveFrom: "2026-08-01",
+        coverage: {
+          throughDate: "2026-07-31",
+          confirmedAt: "2026-08-01T00:00:00.000Z",
+          confirmedByUid: "user-1",
+          source: "statement",
+        },
+      }],
+    });
+    expect(current.schemaVersion).toBe(16);
+    expect(current.settings.members[0]?.lifecycle).toMatchObject({ inactiveReason: "left" });
+    expect(current.accounts[0]?.coverage?.throughDate).toBe("2026-07-31");
+
+    const legacy = migrate({
+      schemaVersion: 15,
+      settings: { members: [{ id: "sam", name: "Sam", color: "#fff", portions: [] }] },
+    });
+    expect(legacy.settings.members[0]?.lifecycle).toBeUndefined();
   });
 });

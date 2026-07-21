@@ -7,9 +7,13 @@ import {
   FirestoreHouseholdRepository,
   createFirestoreHousehold,
   joinFirestoreHousehold,
+  leaveFirestoreHousehold,
+  linkFirestoreAccessMember,
   loadHouseholdMeta,
   loadUserHouseholds,
   loadUserProfile,
+  promoteFirestoreHouseholdOwner,
+  revokeFirestoreHouseholdAccess,
   rotateFirestoreInvite,
   saveUserProfile,
 } from "../household/firestoreRepository";
@@ -207,10 +211,24 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
         clearUndo();
         setSyncStatus(sync.synced("Synced to Firestore"));
       },
-      (message) => setSyncStatus(sync.error(`Sync failed: ${message}`)),
+      (message) => {
+        if (/permission|insufficient|access/i.test(message)) {
+          const removedId = householdMeta?.id ?? "";
+          setRepository(null);
+          setHouseholdMeta(null);
+          setData(emptyData());
+          writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, "");
+          setAvailableHouseholds((current) => current.filter((item) => item.householdId !== removedId));
+          setBootstrapPhase("needs-household");
+          setNotice("Your access to this household was removed.");
+          setSyncStatus(sync.error("Household access removed"));
+          return;
+        }
+        setSyncStatus(sync.error(`Sync failed: ${message}`));
+      },
       { skipInitial: true },
     );
-  }, [clearUndo, repository]);
+  }, [clearUndo, householdMeta?.id, repository]);
 
   const resolveConflict = useCallback((choice: ConflictResolution) => {
     const current = conflictRef.current;
@@ -444,7 +462,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     if (auth.status !== "signed-in" || !repository || !householdMeta) {
       throw new Error("An active Firestore household is required.");
     }
-    if (householdMeta.ownerUid !== auth.user.uid) {
+    if (householdMeta.membersByUid[auth.user.uid]?.role !== "owner") {
       throw new Error("Only the household owner can clear its transactions.");
     }
     if (!data.transactions.length) {
@@ -473,7 +491,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     if (auth.status !== "signed-in" || !repository || !householdMeta) {
       throw new Error("An active Firestore household is required.");
     }
-    if (householdMeta.ownerUid !== auth.user.uid) throw new Error("Only the household owner can reset its data.");
+    if (householdMeta.membersByUid[auth.user.uid]?.role !== "owner") throw new Error("Only a household owner can reset its data.");
     setSyncStatus(sync.syncing("Resetting household data"));
     try {
       await saveAuthoritativeSnapshot(repository, emptyData());
@@ -605,6 +623,61 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     }
   }
 
+  async function linkAccessMember(uid: string, memberId: string) {
+    if (!householdMeta || !services) return;
+    try {
+      const next = await linkFirestoreAccessMember(services.db, householdMeta.id, uid, memberId);
+      setHouseholdMeta(next);
+      setNotice(memberId ? "Access user linked to a budget member." : "Budget-member link removed.");
+    } catch (error) {
+      setNotice(`Could not update the access link: ${(error as Error).message}`);
+    }
+  }
+
+  async function promoteOwner(uid: string, makePrimary = false) {
+    if (!householdMeta || !services) return;
+    try {
+      const next = await promoteFirestoreHouseholdOwner(services.db, householdMeta.id, uid, makePrimary);
+      setHouseholdMeta(next);
+      void loadUserHouseholds(services.db, authUid).then(setAvailableHouseholds).catch(() => undefined);
+      setNotice(makePrimary ? "Primary ownership transferred." : "Recovery owner added.");
+    } catch (error) {
+      setNotice(`Could not change household ownership: ${(error as Error).message}`);
+    }
+  }
+
+  async function revokeAccess(uid: string) {
+    if (!householdMeta || !services) return;
+    try {
+      const next = await revokeFirestoreHouseholdAccess(services.db, householdMeta.id, uid);
+      setHouseholdMeta(next);
+      setNotice("Household access revoked. The invite code was rotated.");
+    } catch (error) {
+      setNotice(`Could not revoke household access: ${(error as Error).message}`);
+    }
+  }
+
+  async function leaveHousehold() {
+    if (auth.status !== "signed-in" || !householdMeta || !services) return;
+    try {
+      await flushPendingAutosave();
+      const leavingId = householdMeta.id;
+      await leaveFirestoreHousehold(services.db, leavingId, auth.user.uid);
+      activationVersion.current += 1;
+      setRepository(null);
+      setHouseholdMeta(null);
+      setData(emptyData());
+      writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, "");
+      setAvailableHouseholds((current) => current.filter((item) => item.householdId !== leavingId));
+      setBootstrapPhase("needs-household");
+      setSyncStatus(sync.idle("Choose or join a Firestore household"));
+      await saveUserProfile(services.db, auth.user.uid, { activeHouseholdId: "" }).catch(() => undefined);
+      setNotice("You left the household. Its financial history was not changed.");
+    } catch (error) {
+      setNotice(`Could not leave the household: ${(error as Error).message}`);
+    }
+  }
+
   async function handleSignIn() {
     setNotice("");
     try {
@@ -683,6 +756,10 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     householdNameSuggestion,
     switchHousehold,
     rotateInvite,
+    linkAccessMember,
+    promoteOwner,
+    revokeAccess,
+    leaveHousehold,
     handleSignIn,
     handleSignOut,
   };

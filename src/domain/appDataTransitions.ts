@@ -164,6 +164,15 @@ export function transitionMembers(
         transactions,
         sharedContributions: pruneSharedContributions(data.sharedContributions, transactions, data.accounts, members),
         incomeReceipts: pruneReceipts(data.incomeReceipts, members),
+        efficiencyPlans: closeInvalidEfficiencyPlans(
+          data.efficiencyPlans,
+          new Set(members
+            .filter((member) => !member.lifecycle?.inactiveFrom || member.lifecycle.inactiveFrom > changedAt.slice(0, 10))
+            .map((member) => member.id)),
+          new Set(data.settings.customCategories.map((category) => `custom:${category.id}`)),
+          changedAt,
+          "subject_inactive",
+        ),
         settings: { ...data.settings, members },
       },
     };

@@ -12,7 +12,7 @@ import type {
   Transaction,
 } from "../domain/types";
 
-export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 8;
+export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 9;
 export const CLOUD_SNAPSHOT_MANIFEST_VERSION = 1;
 
 type HouseholdRole = "owner" | "member";
@@ -22,6 +22,8 @@ interface HouseholdMemberAccess {
   displayName: string;
   email: string;
   joinedAt: string;
+  /** Optional link to the financial profile this signed-in user represents. */
+  memberId?: string;
 }
 
 export interface HouseholdMeta {

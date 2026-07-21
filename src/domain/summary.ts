@@ -4,6 +4,7 @@ import { categoryInfo, spendingCategoryOptions } from "./categories";
 import { pruneSharedContributions } from "./contributions";
 import { addMonths, daysInMonth, isoDateOf, monthOf } from "./dates";
 import { resolveMonthIncome, type PortionResolution } from "./income";
+import { memberParticipatesInMonth, memberParticipatesOn, participatingMembersOn } from "./memberLifecycle";
 import { SPEND_KINDS } from "./movements";
 import { netAmount } from "./transactionMath";
 import {
@@ -396,12 +397,20 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
   }
 
   const activeFixed = data.fixedCosts.filter((fixed) => fixedActive(fixed, month));
-  const fixedEntries: AttributionEntry[] = activeFixed.map((fixed) => ({
-    category: fixed.category,
-    beneficiary: fixed.beneficiary,
-    amount: Number(fixed.amount || 0),
-    merchant: fixed.label,
-  }));
+  const fixedEntries: AttributionEntry[] = activeFixed.map((fixed) => {
+    const beneficiary = fixed.beneficiary;
+    const assignedMember = beneficiary.type === "member"
+      ? members.find((member) => member.id === beneficiary.memberId)
+      : undefined;
+    return {
+      category: fixed.category,
+      beneficiary: assignedMember && !memberParticipatesInMonth(assignedMember, month)
+        ? { type: "unassigned" }
+        : beneficiary,
+      amount: Number(fixed.amount || 0),
+      merchant: fixed.label,
+    };
+  });
   const fixedTotals = emptyBeneficiaryAmounts(members);
   for (const entry of fixedEntries) {
     addBeneficiaryAmount(fixedTotals, entry.beneficiary, entry.amount, memberIds);
@@ -409,11 +418,13 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
 
   const amountFronted = new Map<MemberId, number>();
   const sharedFronted = new Map<MemberId, number>();
+  const sharedResponsibilityByMember = new Map<MemberId, number>();
   const personalFrontedForOthers = new Map<MemberId, number>();
   const settlementNet = new Map<MemberId, number>();
   for (const member of members) {
     amountFronted.set(member.id, 0);
     sharedFronted.set(member.id, 0);
+    sharedResponsibilityByMember.set(member.id, 0);
     personalFrontedForOthers.set(member.id, 0);
     settlementNet.set(member.id, 0);
   }
@@ -433,7 +444,6 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
     }
   }
 
-  let memberFundedShared = 0;
   for (const txn of recordedTransactions) {
     const value = netAmount(txn);
     const beneficiary = normalizedBeneficiary(txn.beneficiary, memberIds);
@@ -476,22 +486,27 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
         );
       }
     }
-    if (beneficiary.type === "household") memberFundedShared += fundedByMembers;
+    if (beneficiary.type === "household") {
+      const participants = participatingMembersOn(members, txn.date);
+      const recordedShare = participants.length ? value / participants.length : 0;
+      const fundedShare = participants.length ? fundedByMembers / participants.length : 0;
+      for (const participant of participants) {
+        sharedResponsibilityByMember.set(
+          participant.id,
+          (sharedResponsibilityByMember.get(participant.id) ?? 0) + recordedShare,
+        );
+        settlementNet.set(participant.id, (settlementNet.get(participant.id) ?? 0) - fundedShare);
+      }
+      if (participants.length) {
+        for (const [funderId, amount] of funding) {
+          settlementNet.set(funderId, (settlementNet.get(funderId) ?? 0) + amount);
+        }
+      }
+    }
   }
-
-  const perMemberFundedShared = members.length ? memberFundedShared / members.length : 0;
-  for (const member of members) {
-    settlementNet.set(
-      member.id,
-      (settlementNet.get(member.id) ?? 0)
-        + (sharedFronted.get(member.id) ?? 0)
-        - perMemberFundedShared,
-    );
-  }
-
-  const sharedResponsibility = members.length ? recordedTotals.household / members.length : 0;
   const memberRows: SpendingAttributionMemberRow[] = members.map((member) => {
     const personalSpend = recordedTotals.byMember[member.id] ?? 0;
+    const sharedResponsibility = sharedResponsibilityByMember.get(member.id) ?? 0;
     return {
       member,
       personalSpend,
@@ -502,7 +517,11 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
       personalFrontedForOthers: personalFrontedForOthers.get(member.id) ?? 0,
       settlementNet: settlementNet.get(member.id) ?? 0,
     };
-  });
+  }).filter((row) => memberParticipatesInMonth(row.member, month)
+    || row.personalSpend !== 0
+    || row.amountFronted !== 0
+    || row.sharedResponsibility !== 0
+    || row.settlementNet !== 0);
   const memberFundedSpend = memberRows.reduce((sum, row) => sum + row.amountFronted, 0);
   // Derive the remainder so the funding reconciliation is an exact invariant,
   // even when split arithmetic produces repeating floating-point values.
@@ -648,7 +667,9 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
   const totalPersonal = attribution.memberRows.reduce((sum, row) => sum + row.personalSpend, 0)
     + Object.values(attribution.fixedCommitments.byMember).reduce((sum, value) => sum + value, 0);
   const sharedSpend = Math.max(0, totalSpend - totalPersonal);
-  const fairShare = members.length ? householdShared / members.length : 0;
+  const monthEnd = `${month}-${String(daysInMonth(month)).padStart(2, "0")}`;
+  const activeAtMonthEnd = members.filter((member) => memberParticipatesOn(member, monthEnd));
+  const fairShare = activeAtMonthEnd.length ? householdShared / activeAtMonthEnd.length : 0;
 
   // The check-in is month-specific. Old review debt should remain in the full
   // review queue, but must not make the selected month's forecast look untrusted.

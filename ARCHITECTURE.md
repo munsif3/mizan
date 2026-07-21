@@ -55,21 +55,24 @@ One deterministic system for a household's financial awareness.
 | 32 | One-off income is scheduled and protected by default | An income portion has a monthly or exact-month one-off schedule plus an ordinary/protected budget treatment. Confirmed bonuses count in income, savings, and save rate, while protected amounts do not expand target spend or daily allowance. A combined salary-and-bonus credit may evidence several atomically saved receipts; the credit remains provenance only and is never counted again. |
 | 33 | Efficiency advice is derived; household decisions are stored | `computeEfficiencySnapshot` uses classified recorded spend, beneficiary-aware merchant groups, and completed-month medians to surface explainable opportunities. Only value/action plans and confirmed outcomes persist. Estimates and observed reductions remain counterfactual annotations and never change ledger spend, settlement, savings, or save rate. |
 | 34 | One-member households collapse the beneficiary axis | With exactly one member every spend is that member's, so `beneficiaryForAccount` fills the account-default (lowest) tier with the sole member, keeping `account_default` provenance so it recalculates if a second member joins. `migrate` and `transitionMembers` backfill existing unlocked-unassigned spend through `applySoloBeneficiaryDefaults`; Home hides the settlement, member-statement, and funding-reconciliation panels and reduces the "who spent what" matrix to purpose x total; Transactions and the manual entry drop the "for whom" field and filters. Settlement already nets to zero for one member. Two-plus-member behavior is unchanged, and an explicit or locked classification always wins (ADR #29). |
+| 35 | Financial participation is effective-dated and archival | `Member.lifecycle` records when participation starts, temporary away intervals, and a permanent left/deceased date. Shared responsibility resolves the participant set on each transaction date; income expectations and fixed-commitment review resolve by month. Permanent departure archives owned accounts from the same date. Transactions, receipts, classifications, and account ownership history are never rewritten. |
+| 36 | Freshness is explicit per-account evidence | An active account may store a user-confirmed `coverage` date and audit fields. Imports only prefill candidates from the latest parsed transaction and require a separate confirmation; they never infer the statement end. Home treats one missing or stale active account as a household freshness gap, while still allowing the weekly check-in to acknowledge that gap. |
+| 37 | Firestore access is separate from budget identity | `HouseholdMeta.membersByUid` may link an auth user to a `memberId`, but leaving/revoking access does not remove that financial profile. Any owner role can manage recovery; `ownerUid` identifies the primary owner that must exist. Primary ownership must transfer before that user leaves or is revoked, and the UI warns when no second owner exists. |
 
-## Data model (schema v15)
+## Data model (schema v16)
 
 ```
 AppData
-├── schemaVersion: 15
+├── schemaVersion: 16
 ├── transactions: Transaction[]   { id, date, description, amount, category, beneficiary, beneficiarySource?, classificationLocked?, account, accountId?, rawAccount?, note, source, direction, kind, counterpartyId?, split? }
 ├── sharedContributions: SharedContribution[] { id, allocations: { expenseTransactionId, amount }[], transferDebitTransactionId, transferCreditTransactionId, contributorMemberId, amount }
 ├── merchantRules: { CLEANED_MERCHANT: { category, beneficiary | account_default, kind, counterpartyId? } }
-├── accounts: Account[]           { id, label, currency, owner, beneficiaryDefault, match[] }
+├── accounts: Account[]           { id, label, currency, owner, beneficiaryDefault, activeFrom?, inactiveFrom?, coverage?, match[] }
 ├── fixedCosts: FixedCost[]       { id, label, amount, kind, category, beneficiary, until? }   // kind = expense | loan_payment; until = "YYYY-MM", inclusive
 ├── incomeReceipts: IncomeReceipt[] { id, month, memberId, portionId, amount, receivedAmount?, receivedCurrency?, fxRate?, currencyReview?, date?, transactionId?, label?, taxRate?, taxWithheld?, budgetTreatment? }
 ├── efficiencyPlans: EfficiencyPlan[] { id, subject, value, action, effort, state, baseline, targetMonthlySavings, targetMonth?, revisitAfterMonth?, outcome? }
 └── settings:
-    ├── members: Member[]         { id, name, color, portions: IncomePortion[] { schedule: monthly | one_off(YYYY-MM), budgetTreatment: ordinary | protected } }
+    ├── members: Member[]         { id, name, color, lifecycle?: { activeFrom?, inactiveFrom?, inactiveReason?, awayPeriods[] }, portions: IncomePortion[] { schedule: monthly | one_off(YYYY-MM), budgetTreatment: ordinary | protected } }
     ├── fxRates: { [ISO currency]: householdCurrencyPerUnit }
     ├── targetSaveRate: number
     ├── currency: string          // ISO 4217, e.g. "USD"
@@ -105,8 +108,12 @@ history. `settings.fxRates` converts foreign expected portions for projections a
 - `counterpartyId` tags the other party on `money_lent` / `repayment_received` /
   `gift_or_handout`. Counterparties are a **label only** — Mizan tracks no running
   outstanding balance (deliberate: keeps to three screens).
+- `Member.lifecycle` defaults to all-time active when absent. Away intervals and permanent inactivity
+  are inclusive at `from`/`inactiveFrom`; `resumeOn` is the first participating day after an absence.
+- `Account.coverage` is explicit evidence (`throughDate`, confirmer, confirmation timestamp, and source).
+  It is independent of the latest transaction because an account may legitimately have no recent activity.
 
-## Cloud household model (sync v8)
+## Cloud household model (sync v9)
 
 `AppData` remains the canonical in-app shape. Firestore publishes one active snapshot revision
 through a small manifest; each revision keeps the same split-collection layout:
@@ -139,8 +146,11 @@ two writes share a timestamp. The former root split collections remain read-only
 until the first revisioned save.
 
 Firebase Auth identifies users; household membership controls Firestore access. Roles are `owner`
-and `member`; both can read/write household data, while owner-only metadata changes are enforced by
-Firestore rules. `users/{uid}/profile/current` stores non-financial cross-device state such as active
+and `member`; both can read/write household data. Every owner role may manage household metadata,
+while `ownerUid` remains the required primary owner. A metadata access entry may carry `memberId` to
+link login identity to budget identity without coupling their deletion semantics. Firestore rules enforce
+promotion, primary-owner continuity, self-leave, and owner-driven revocation.
+`users/{uid}/profile/current` stores non-financial cross-device state such as active
 household, privacy mode, last view, filters, and the user's last weekly check-in per household.
 
 `App.tsx` shows an authentication gate until Firebase Auth reports a signed-in Google user. After
@@ -149,7 +159,7 @@ If a legacy `mizan_v2` or `trackr_v1` browser payload is found, only an explicit
 household receives it. Joining or switching never overwrites an existing household, and the browser
 financial keys are cleared only after the Firestore save succeeds.
 
-**Migration.** `migrate()` normalizes any known shape into v15; unrelated junk degrades to empty
+**Migration.** `migrate()` normalizes any known shape into v16; unrelated junk degrades to empty
 data, while a newer schema fails loudly so an older client cannot discard unknown fields. Legacy
 data (schema v4, or a v1 "trackr" backup) seeds members from ids already present
 and pins the previous currency. v5 → v6 adds movement kinds, v6 → v7 adds income portions, v7 → v8
@@ -162,9 +172,11 @@ remain Unassigned. Existing accounts start with `beneficiaryDefault: "review"`; 
 unlocked Unassigned rows, while explicit Household/member history stays untouched. Split-cloud v4 hydrates
 as pre-beneficiary data, v5 round-trips account policies, rule policies, and beneficiary provenance,
 v12 → v13 defaults existing fixed commitments to `kind: "expense"`, v13 → v14 defaults income
-portions to monthly/ordinary while conservatively snapshotting receipt metadata, and v14 → v15 adds an
-empty household-shared efficiency-plan list. Split-cloud v7 retains scheduled income and protected-budget
-semantics; split-cloud v8 round-trips efficiency decisions in their own revisioned collection.
+portions to monthly/ordinary while conservatively snapshotting receipt metadata, v14 → v15 adds an
+empty household-shared efficiency-plan list, and v15 → v16 adds optional member/account lifecycle plus
+account coverage evidence with legacy members remaining all-time active. Split-cloud v7 retains scheduled
+income and protected-budget semantics; split-cloud v8 round-trips efficiency decisions in their own revisioned
+collection, and split-cloud v9 carries lifecycle and coverage fields.
 The migrator preserves statement provenance, movement semantics, contribution evidence, and locked one-row
 classifications. Fresh data with no member list triggers onboarding.
 

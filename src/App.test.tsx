@@ -353,7 +353,8 @@ describe("UI render smoke", () => {
     expect(html).toContain("income-member-header");
     expect(html).toContain("income-deposit-card");
     expect(html).toContain("arrival-inputs");
-    expect(html).toContain('aria-label="Delete Ana"');
+    expect(html).toContain("Change participation");
+    expect(html).not.toContain('aria-label="Delete Ana"');
     expect(html).toContain("Accounts &amp; rules");
     expect(html).toContain("Sync &amp; backup");
     expect(html).toContain("aria-label=\"Close Settings\"");

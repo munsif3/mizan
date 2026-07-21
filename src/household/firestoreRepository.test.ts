@@ -5,6 +5,11 @@ import { emptyData } from "../storage/schema";
 import { appDataToCloudCollections } from "./households";
 
 const firestore = vi.hoisted(() => ({
+  batchDelete: vi.fn(),
+  batchSet: vi.fn(),
+  batchUpdate: vi.fn(),
+  batchCommit: vi.fn(),
+  deleteField: vi.fn(() => "DELETE_FIELD"),
   deleteDoc: vi.fn(),
   getDoc: vi.fn(),
   getDocs: vi.fn(),
@@ -18,6 +23,7 @@ const firestore = vi.hoisted(() => ({
 vi.mock("firebase/firestore", () => ({
   collection: (base: { path?: string }, ...parts: string[]) => ({ path: [base?.path, ...parts].filter(Boolean).join("/") }),
   deleteDoc: firestore.deleteDoc,
+  deleteField: firestore.deleteField,
   doc: (base: { path?: string }, ...parts: string[]) => ({ path: [base?.path, ...parts].filter(Boolean).join("/") }),
   getDoc: firestore.getDoc,
   getDocs: firestore.getDocs,
@@ -29,7 +35,12 @@ vi.mock("firebase/firestore", () => ({
   writeBatch: firestore.writeBatch,
 }));
 
-import { FirestoreHouseholdRepository, loadUserProfile } from "./firestoreRepository";
+import {
+  FirestoreHouseholdRepository,
+  loadUserProfile,
+  promoteFirestoreHouseholdOwner,
+  revokeFirestoreHouseholdAccess,
+} from "./firestoreRepository";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -74,10 +85,10 @@ describe("Firestore household loading", () => {
       delete: vi.fn(),
     }));
     firestore.writeBatch.mockImplementation(() => ({
-      set: vi.fn(),
-      update: vi.fn(),
-      delete: vi.fn(),
-      commit: vi.fn().mockResolvedValue(undefined),
+      set: firestore.batchSet,
+      update: firestore.batchUpdate,
+      delete: firestore.batchDelete,
+      commit: firestore.batchCommit.mockResolvedValue(undefined),
     }));
     firestore.onSnapshot.mockReturnValue(() => undefined);
     firestore.getDoc.mockImplementation((ref: { path: string }) => {
@@ -325,5 +336,51 @@ describe("Firestore household loading", () => {
     expect(deleted).toContain("households/household-1/snapshots/rev_stale/transactions/doc_1");
     expect(deleted).toContain("households/household-1/snapshots/rev_stale");
     expect(deleted.every((path) => !path.includes("rev_recent"))).toBe(true);
+  });
+
+  it("promotes a recovery owner and can make them primary", async () => {
+    const meta = {
+      id: "household-1", name: "Home", ownerUid: "user-1", inviteCode: "household-1_invite",
+      createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z",
+      membersByUid: {
+        "user-1": { role: "owner", displayName: "Owner", email: "owner@example.com", joinedAt: "2026-07-01T00:00:00.000Z" },
+        "user-2": { role: "member", displayName: "Member", email: "member@example.com", joinedAt: "2026-07-02T00:00:00.000Z" },
+      },
+    };
+    firestore.getDoc.mockResolvedValue(docSnapshot(meta));
+
+    await promoteFirestoreHouseholdOwner(db, "household-1", "user-2", true);
+
+    expect(firestore.batchUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "households/household-1/meta/current" }),
+      expect.objectContaining({ "membersByUid.user-2.role": "owner", ownerUid: "user-2" }),
+    );
+    expect(firestore.batchSet).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "users/user-2/households/household-1" }),
+      expect.objectContaining({ role: "owner" }),
+      { merge: true },
+    );
+  });
+
+  it("revokes access without deleting budget data and rotates the invite", async () => {
+    const meta = {
+      id: "household-1", name: "Home", ownerUid: "user-1", inviteCode: "household-1_invite",
+      createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z",
+      membersByUid: {
+        "user-1": { role: "owner", displayName: "Owner", email: "owner@example.com", joinedAt: "2026-07-01T00:00:00.000Z" },
+        "user-2": { role: "member", displayName: "Member", email: "member@example.com", joinedAt: "2026-07-02T00:00:00.000Z" },
+      },
+    };
+    firestore.getDoc.mockResolvedValue(docSnapshot(meta));
+
+    await revokeFirestoreHouseholdAccess(db, "household-1", "user-2");
+
+    expect(firestore.batchUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "households/household-1/meta/current" }),
+      expect.objectContaining({ "membersByUid.user-2": "DELETE_FIELD" }),
+    );
+    expect(firestore.batchDelete).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "users/user-2/households/household-1" }),
+    );
   });
 });

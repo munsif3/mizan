@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { computeMonthSummary } from "../domain/summary";
+import { isoDateOf, monthOf } from "../domain/dates";
 import type { EfficiencySnapshot } from "../domain/efficiency";
 import type { AppData, EfficiencyOpportunity } from "../domain/types";
 import { emptyData } from "../storage/schema";
@@ -182,6 +183,55 @@ describe("HomeView spending attribution", () => {
 
     // Privacy formatting is reused by visible and accessible amount labels.
     expect(householdGroceries?.getAttribute("aria-label")).not.toContain("20000");
+  });
+
+  it("pauses the forecast for one stale account and points to account coverage", async () => {
+    const data = fixture();
+    const today = new Date();
+    const todayDate = isoDateOf(today);
+    const staleDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 10);
+    data.transactions = data.transactions.map((transaction, index) => ({
+      ...transaction,
+      date: todayDate,
+      accountId: index === 2 ? "sam-card" : "alex-card",
+    }));
+    data.accounts = data.accounts.map((account) => ({
+      ...account,
+      coverage: {
+        throughDate: account.id === "sam-card" ? isoDateOf(staleDay) : todayDate,
+        confirmedAt: today.toISOString(),
+        confirmedByUid: "user",
+        source: "manual" as const,
+      },
+    }));
+    const onOpenSettings = vi.fn();
+    const summary = computeMonthSummary(data, monthOf(todayDate), today);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => root?.render(
+      <HomeView
+        summary={summary}
+        accounts={data.accounts}
+        members={data.settings.members}
+        money={() => "Hidden"}
+        lastCheckInAt=""
+        onOpenSettings={onOpenSettings}
+        onOpenImport={() => {}}
+        onReviewQueue={() => {}}
+        onCompleteCheckIn={() => {}}
+        onConfirmIncome={() => {}}
+      />,
+    ));
+
+    expect(container.textContent).toContain("Waiting for account coverage");
+    expect(container.textContent).toContain("Update Sam Card");
+    expect(container.textContent).not.toContain("Bring transactions up to date");
+    const review = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Review account coverage");
+    await act(async () => review?.click());
+    expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
   it("shows the top three efficiency opportunities and expands the same-screen backlog", async () => {

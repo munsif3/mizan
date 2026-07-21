@@ -705,6 +705,77 @@ describe("shared loan contributions", () => {
   });
 });
 
+describe("effective-dated household participation", () => {
+  function lifecycleData(): AppData {
+    const data = emptyData();
+    data.settings.currency = "LKR";
+    data.settings.members = [
+      { id: "alex", name: "Alex", color: "#5b8cff", portions: [] },
+      {
+        id: "sam", name: "Sam", color: "#ff80b5", portions: [],
+        lifecycle: { inactiveFrom: "2026-07-15", inactiveReason: "left", awayPeriods: [] },
+      },
+    ];
+    data.accounts = [{ id: "alex-card", label: "Alex Card", owner: "alex", beneficiaryDefault: "review", match: [] }];
+    data.transactions = [
+      txn("before", "2026-07-10", "BEFORE", 100, "food", "Alex Card"),
+      txn("after", "2026-07-20", "AFTER", 100, "food", "Alex Card"),
+      txn("history", "2026-06-10", "HISTORY", 100, "food", "Alex Card"),
+    ];
+    return data;
+  }
+
+  it("changes shared responsibility from the departure date without rewriting history", () => {
+    const data = lifecycleData();
+    const july = computeSpendingAttribution(data, "2026-07");
+    expect(july.memberRows.map((row) => ({ id: row.member.id, shared: row.sharedResponsibility, net: row.settlementNet }))).toEqual([
+      { id: "alex", shared: 150, net: 50 },
+      { id: "sam", shared: 50, net: -50 },
+    ]);
+    const june = computeSpendingAttribution(data, "2026-06");
+    expect(june.memberRows.map((row) => ({ id: row.member.id, shared: row.sharedResponsibility }))).toEqual([
+      { id: "alex", shared: 50 },
+      { id: "sam", shared: 50 },
+    ]);
+  });
+
+  it("excludes a temporarily away member only inside the absence interval", () => {
+    const data = lifecycleData();
+    data.settings.members[1] = {
+      ...data.settings.members[1]!,
+      lifecycle: { awayPeriods: [{ id: "trip", from: "2026-07-10", resumeOn: "2026-07-20" }] },
+    };
+    data.transactions = [
+      txn("early", "2026-07-05", "EARLY", 100, "food", "Alex Card"),
+      txn("away", "2026-07-15", "AWAY", 100, "food", "Alex Card"),
+      txn("back", "2026-07-25", "BACK", 100, "food", "Alex Card"),
+    ];
+    const summary = computeSpendingAttribution(data, "2026-07");
+    expect(summary.memberRows.map((row) => ({ id: row.member.id, shared: row.sharedResponsibility }))).toEqual([
+      { id: "alex", shared: 200 },
+      { id: "sam", shared: 100 },
+    ]);
+  });
+
+  it("flags a former member's future fixed commitment for reassignment", () => {
+    const data = lifecycleData();
+    data.fixedCosts = [{
+      id: "sam-phone",
+      label: "Sam phone",
+      amount: 50,
+      kind: "expense",
+      category: "lifestyle",
+      beneficiary: { type: "member", memberId: "sam" },
+    }];
+
+    expect(computeSpendingAttribution(data, "2026-06").fixedCommitments.byMember.sam).toBe(50);
+    expect(computeSpendingAttribution(data, "2026-08").fixedCommitments).toMatchObject({
+      unassigned: 50,
+      byMember: { sam: 0 },
+    });
+  });
+});
+
 describe("history", () => {
   it("lists months with data plus the current month, and computes per-month rates", () => {
     const months = monthsWithData(fixture(), new Date(2026, 7, 1));

@@ -1,6 +1,7 @@
 import { hasFxConversionEvidence } from "./fx";
 import { beneficiaryEquals } from "./beneficiaries";
 import { isSpendKind } from "./movements";
+import { accountActiveOn, participatingMembersOn } from "./memberLifecycle";
 import type { Account, AccountOwner, Member, SpendBeneficiary, Transaction } from "./types";
 
 const UNASSIGNED_BENEFICIARY: SpendBeneficiary = { type: "unassigned" };
@@ -21,11 +22,12 @@ export function resolveAccountLabel(raw: string, accounts: Account[]): string {
 }
 
 /** Resolve raw statement text to the full registered-account record. */
-function resolveAccount(raw: string, accounts: Account[]): Account | undefined {
+function resolveAccount(raw: string, accounts: Account[], date = ""): Account | undefined {
   const text = normalize(raw);
   if (!text) return undefined;
   const candidates: { account: Account; length: number }[] = [];
   for (const account of accounts) {
+    if (date && !accountActiveOn(account, date)) continue;
     if (!normalize(account.label)) continue;
     if (normalize(account.label) === text) candidates.push({ account, length: text.length });
     for (const pattern of account.match) {
@@ -40,10 +42,12 @@ function resolveAccount(raw: string, accounts: Account[]): Account | undefined {
 
 /** Resolve a transaction through its stable account id before trying imported text. */
 export function accountForTransaction(txn: Transaction, accounts: Account[]): Account | undefined {
-  const linked = txn.accountId ? accounts.find((account) => account.id === txn.accountId) : undefined;
+  const linked = txn.accountId
+    ? accounts.find((account) => account.id === txn.accountId && accountActiveOn(account, txn.date))
+    : undefined;
   return linked
-    ?? resolveAccount(txn.rawAccount ?? txn.account, accounts)
-    ?? resolveAccount(txn.account, accounts);
+    ?? resolveAccount(txn.rawAccount ?? txn.account, accounts, txn.date)
+    ?? resolveAccount(txn.account, accounts, txn.date);
 }
 
 /**
@@ -54,8 +58,10 @@ export function accountForTransaction(txn: Transaction, accounts: Account[]): Ac
 export function applyAccounts(transactions: Transaction[], accounts: Account[]): Transaction[] {
   return transactions.map((txn) => {
     const rawAccount = txn.rawAccount ?? txn.account;
-    const linked = txn.accountId ? accounts.find((account) => account.id === txn.accountId && normalize(account.label)) : undefined;
-    const account = linked ?? resolveAccount(rawAccount, accounts);
+    const linked = txn.accountId
+      ? accounts.find((account) => account.id === txn.accountId && normalize(account.label) && accountActiveOn(account, txn.date))
+      : undefined;
+    const account = linked ?? resolveAccount(rawAccount, accounts, txn.date);
     if (!account) {
       if (!txn.accountId && !txn.rawAccount) return txn;
       const next = { ...txn, account: rawAccount, rawAccount };
@@ -68,15 +74,16 @@ export function applyAccounts(transactions: Transaction[], accounts: Account[]):
 }
 
 /** Resolve one account's configured beneficiary without guessing for joint/invalid owners. */
-export function beneficiaryForAccount(account: Account | undefined, members: Member[]): SpendBeneficiary {
-  const configured = configuredBeneficiaryForAccount(account, members);
+export function beneficiaryForAccount(account: Account | undefined, members: Member[], date = ""): SpendBeneficiary {
+  const participating = date ? participatingMembersOn(members, date) : members;
+  const configured = configuredBeneficiaryForAccount(account, participating);
   // A one-member household has no "for whom?" question: every spend is that
   // member's. Fill only the lowest (account-default) tier, so an explicit
   // Household or account-owner policy still wins, and the value stays inferred
   // (`account_default` provenance) so it recalculates cleanly if a second member
   // is ever added.
-  if (configured.type === "unassigned" && members.length === 1) {
-    return { type: "member", memberId: members[0]!.id };
+  if (configured.type === "unassigned" && participating.length === 1) {
+    return { type: "member", memberId: participating[0]!.id };
   }
   return configured;
 }
@@ -97,7 +104,7 @@ function accountBeneficiaryForTransaction(
   accounts: Account[],
   members: Member[],
 ): SpendBeneficiary {
-  return beneficiaryForAccount(accountForTransaction(txn, accounts), members);
+  return beneficiaryForAccount(accountForTransaction(txn, accounts), members, txn.date);
 }
 
 /** Force one spend row back to its current account-default baseline. */
@@ -156,8 +163,17 @@ export function applySoloBeneficiaryDefaults(
   accounts: Account[],
   members: Member[],
 ): Transaction[] {
-  if (members.length !== 1) return transactions;
-  return applyAccountBeneficiaryDefaults(transactions, accounts, members, { fillUnassigned: true });
+  let changed = false;
+  const next = transactions.map((txn) => {
+    if (participatingMembersOn(members, txn.date).length !== 1) return txn;
+    const inferred = txn.beneficiarySource === "account_default";
+    const unresolved = txn.beneficiary.type === "unassigned" && !txn.classificationLocked;
+    if (!inferred && !unresolved) return txn;
+    const updated = withAccountBeneficiaryDefault(txn, accounts, members);
+    if (updated !== txn) changed = true;
+    return updated;
+  });
+  return changed ? next : transactions;
 }
 
 /** Explicitly bind a row to a registered account without losing its import provenance. */

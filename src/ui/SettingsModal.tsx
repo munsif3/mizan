@@ -5,6 +5,7 @@ import type { AuthState } from "../auth/authStore";
 import { categoryOptions, nextMemberColor } from "../domain/categories";
 import { isoDateOf } from "../domain/dates";
 import { movementInfo } from "../domain/movements";
+import { memberLifecycleLabel, memberStatusOn } from "../domain/memberLifecycle";
 import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, FixedCost, FixedCostKind, IncomePortion, Member, MerchantRule, MovementKind, SpendBeneficiary } from "../domain/types";
 import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import type { RepositoryMode } from "../storage/repository";
@@ -50,6 +51,10 @@ type SettingsModalProps = {
   onJoinHousehold: () => void;
   onSwitchHousehold: (householdId: string) => void;
   onRotateInvite: () => void;
+  onLinkAccessMember?: (uid: string, memberId: string) => Promise<void>;
+  onPromoteOwner?: (uid: string, makePrimary?: boolean) => Promise<void>;
+  onRevokeAccess?: (uid: string) => Promise<void>;
+  onLeaveHousehold?: () => Promise<void>;
   onExport: () => void;
   onImportBackup: (file: File) => void;
   hasLegacyBrowserData: boolean;
@@ -70,6 +75,122 @@ function beneficiaryValue(beneficiary: SpendBeneficiary): string {
 function beneficiaryFromValue(value: string): SpendBeneficiary {
   if (value.startsWith("member:")) return { type: "member", memberId: value.slice("member:".length) };
   return value === "household" ? { type: "household" } : { type: "unassigned" };
+}
+
+function memberHasReferences(data: AppData, memberId: string): boolean {
+  const benefitsMember = (beneficiary: SpendBeneficiary | MerchantRule["beneficiary"]) =>
+    beneficiary.type === "member" && beneficiary.memberId === memberId;
+  return data.transactions.some((transaction) => benefitsMember(transaction.beneficiary))
+    || data.accounts.some((account) => account.owner === memberId)
+    || data.fixedCosts.some((fixed) => benefitsMember(fixed.beneficiary))
+    || Object.values(data.merchantRules).some((rule) => benefitsMember(rule.beneficiary))
+    || data.incomeReceipts.some((receipt) => receipt.memberId === memberId)
+    || data.sharedContributions.some((contribution) => contribution.contributorMemberId === memberId)
+    || data.efficiencyPlans.some((plan) => benefitsMember(plan.subject.beneficiary));
+}
+
+type LifecycleAction = "away" | "resume" | "left" | "deceased" | "restore";
+
+function MemberLifecycleDialog({
+  member,
+  onSave,
+  onClose,
+}: {
+  member: Member;
+  onSave: (member: Member, accountArchiveOn?: string, accountRestoreFrom?: string) => void;
+  onClose: () => void;
+}) {
+  const today = isoDateOf(new Date());
+  const status = memberStatusOn(member, today);
+  const [action, setAction] = useState<LifecycleAction>(
+    status === "away" ? "resume" : status === "left" || status === "deceased" ? "restore" : "away",
+  );
+  const [effectiveOn, setEffectiveOn] = useState(today);
+  const [resumeOn, setResumeOn] = useState("");
+  const openAwayFrom = member.lifecycle?.awayPeriods.find((period) => !period.resumeOn)?.from ?? "";
+  const invalidDate = (action === "away" && Boolean(resumeOn) && resumeOn <= effectiveOn)
+    || (action === "resume" && Boolean(openAwayFrom) && effectiveOn <= openAwayFrom);
+  const submit = () => {
+    if (!effectiveOn || invalidDate) return;
+    const lifecycle = member.lifecycle ?? { awayPeriods: [] };
+    if (action === "away") {
+      onSave({
+        ...member,
+        lifecycle: {
+          ...lifecycle,
+          awayPeriods: [...lifecycle.awayPeriods, {
+            id: uid("away"),
+            from: effectiveOn,
+            ...(resumeOn && resumeOn > effectiveOn ? { resumeOn } : {}),
+          }],
+        },
+      });
+    } else if (action === "resume") {
+      onSave({
+        ...member,
+        lifecycle: {
+          ...lifecycle,
+          awayPeriods: lifecycle.awayPeriods.map((period) => !period.resumeOn
+            ? { ...period, resumeOn: effectiveOn }
+            : period),
+        },
+      });
+    } else if (action === "left" || action === "deceased") {
+      onSave({
+        ...member,
+        lifecycle: {
+          ...lifecycle,
+          inactiveFrom: effectiveOn,
+          inactiveReason: action,
+          awayPeriods: lifecycle.awayPeriods.map((period) => !period.resumeOn
+            ? { ...period, resumeOn: effectiveOn }
+            : period),
+        },
+      }, effectiveOn);
+    } else {
+      const inactiveFrom = lifecycle.inactiveFrom;
+      const awayPeriods = inactiveFrom && effectiveOn > inactiveFrom
+        ? [...lifecycle.awayPeriods, { id: uid("away"), from: inactiveFrom, resumeOn: effectiveOn }]
+        : lifecycle.awayPeriods;
+      const { inactiveFrom: _inactiveFrom, inactiveReason: _inactiveReason, ...rest } = lifecycle;
+      onSave({ ...member, lifecycle: { ...rest, awayPeriods } }, undefined, inactiveFrom);
+    }
+    onClose();
+  };
+  return (
+    <Modal title={`Change ${member.name}'s participation`} onClose={onClose}>
+      <div className="reset-household-form">
+        <p className="muted">Effective dates change future allocations without rewriting transactions, receipts, or account ownership history.</p>
+        <label className="field">
+          <span>Change</span>
+          <select value={action} onChange={(event) => setAction(event.target.value as LifecycleAction)}>
+            {(status === "active" || status === "not_started") && <option value="away">Temporarily away</option>}
+            {status === "away" && <option value="resume">Resume participation</option>}
+            {(status === "left" || status === "deceased") && <option value="restore">Restore participation</option>}
+            {status !== "left" && status !== "deceased" && <option value="left">Left household</option>}
+            {status !== "left" && status !== "deceased" && <option value="deceased">Deceased</option>}
+          </select>
+        </label>
+        <label className="field">
+          <span>{action === "resume" || action === "restore" ? "Participates again from" : "Effective from"}</span>
+          <input type="date" value={effectiveOn} onChange={(event) => setEffectiveOn(event.target.value)} />
+        </label>
+        {action === "away" && <label className="field">
+          <span>Expected return date (optional)</span>
+          <input type="date" min={effectiveOn} value={resumeOn} onChange={(event) => setResumeOn(event.target.value)} />
+        </label>}
+        {invalidDate && <p className="notice" role="alert">The return date must be after the absence starts.</p>}
+        {(action === "left" || action === "deceased") && <div className="reset-warning">
+          Owned accounts will be archived from this date. Future personal fixed commitments will be flagged
+          for reassignment. Historical financial evidence remains intact.
+        </div>}
+        <div className="modal-actions">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant={action === "deceased" ? "danger" : "primary"} disabled={!effectiveOn || invalidDate} onClick={submit}>Save participation</Button>
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 function looksLikeLoanCommitment(label: string): boolean {
@@ -95,6 +216,10 @@ function useSettingsModel({
   onJoinHousehold,
   onSwitchHousehold,
   onRotateInvite,
+  onLinkAccessMember = async () => undefined,
+  onPromoteOwner = async () => undefined,
+  onRevokeAccess = async () => undefined,
+  onLeaveHousehold = async () => undefined,
   onExport,
   onImportBackup,
   hasLegacyBrowserData,
@@ -116,6 +241,7 @@ function useSettingsModel({
     confirmLabel: string;
     action: () => void;
   }>(null);
+  const [lifecycleMemberId, setLifecycleMemberId] = useState("");
   const { members, currency, locale, fxRates, counterparties, customCategories } = data.settings;
   const fixedCosts = data.fixedCosts;
   const categoryChoices = categoryOptions(customCategories);
@@ -158,11 +284,11 @@ function useSettingsModel({
     .filter((code) => code && code !== currency.trim().toUpperCase())
     .sort();
   const removeMember = (member: Member) => {
-    if (members.length <= 1) return;
+    if (members.length <= 1 || memberHasReferences(data, member.id)) return;
     setPendingDelete({
       title: `Delete ${member.name || "member"}?`,
-      body: "Spending assigned to this member will become Unassigned and their accounts will become Joint.",
-      confirmLabel: "Delete member",
+      body: "This unused profile has no financial references and will be removed.",
+      confirmLabel: "Delete unused profile",
       action: () => onUpdateMembers(members.filter((item) => item.id !== member.id)),
     });
   };
@@ -177,10 +303,12 @@ function useSettingsModel({
     data, onUpdateMembers, onUpdateTarget, onUpdateCurrency, onUpdateFxRates,
     onUpdateFixedCosts, onUpdateAccounts, onUpsertRule, onDeleteRule, onUpdateCounterparties,
     onUpdateCustomCategories, sync, onSignIn, onSignOut, onCreateHousehold,
-    onJoinHousehold, onSwitchHousehold, onRotateInvite, onExport, onImportBackup,
+    onJoinHousehold, onSwitchHousehold, onRotateInvite, onLinkAccessMember, onPromoteOwner,
+    onRevokeAccess, onLeaveHousehold, onExport, onImportBackup,
     hasLegacyBrowserData, onClearData, canClearTransactions, hasTransactions,
     onClearTransactions, canResetHousehold, hasResettableData, onResetHousehold, onClose,
     currenciesId, importRef, activeTab, setActiveTab, pendingDelete, setPendingDelete,
+    lifecycleMemberId, setLifecycleMemberId,
     members, currency, locale, fxRates, counterparties, customCategories, fixedCosts,
     categoryChoices, patchCounterparty, patchCustom, patchMember, patchPortion,
     removePortion, addPortion, foreignCurrencies, removeMember, requestDelete,
@@ -193,7 +321,8 @@ type SettingsModel = ReturnType<typeof useSettingsModel>;
 function HouseholdSettings({ model }: { model: SettingsModel }) {
   const {
     activeTab, data, onUpdateMembers, members, patchMember, addPortion, removeMember,
-    removePortion, patchPortion, currenciesId, currency,
+    removePortion, patchPortion, currenciesId, currency, lifecycleMemberId, setLifecycleMemberId,
+    onUpdateAccounts,
   } = model;
   return (
     <>
@@ -218,7 +347,9 @@ function HouseholdSettings({ model }: { model: SettingsModel }) {
                   <div className="income-member-title">
                     <span className="income-member-avatar" aria-hidden="true">{member.name.trim().charAt(0).toUpperCase() || memberIndex + 1}</span>
                     <div>
-                      <span className="income-profile-kicker">Income profile {memberIndex + 1}</span>
+                      <span className="income-profile-kicker">
+                        Income profile {memberIndex + 1} · {memberLifecycleLabel(member, isoDateOf(new Date()))}
+                      </span>
                       <label className="member-name-field">
                       <span>Member name</span>
                       <input aria-label={`${member.name || "Member"} name`} value={member.name} onChange={(event) => patchMember(member.id, { name: event.target.value })} />
@@ -235,7 +366,10 @@ function HouseholdSettings({ model }: { model: SettingsModel }) {
                     </label>
                     <Button variant="primary" onClick={() => addPortion(member.id)}>Add monthly deposit</Button>
                     <Button variant="secondary" onClick={() => addPortion(member.id, "one_off")}>Add one-off income</Button>
-                    <IconButton label={`Delete ${member.name || "member"}`} title="Delete member" icon={Trash2} danger disabled={members.length <= 1} onClick={() => removeMember(member)} />
+                    <Button variant="secondary" onClick={() => setLifecycleMemberId(member.id)}>Change participation</Button>
+                    {members.length > 1 && !memberHasReferences(data, member.id) && (
+                      <IconButton label={`Delete ${member.name || "member"}`} title="Delete unused profile" icon={Trash2} danger onClick={() => removeMember(member)} />
+                    )}
                   </div>
                 </div>
                 <div className="income-deposit-list">
@@ -352,6 +486,26 @@ function HouseholdSettings({ model }: { model: SettingsModel }) {
             ))}
             <datalist id={currenciesId}>{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
           </div>
+          {lifecycleMemberId && members.find((member) => member.id === lifecycleMemberId) && (
+            <MemberLifecycleDialog
+              member={members.find((member) => member.id === lifecycleMemberId)!}
+              onClose={() => setLifecycleMemberId("")}
+              onSave={(nextMember, accountArchiveOn, accountRestoreFrom) => {
+                onUpdateMembers(members.map((member) => member.id === nextMember.id ? nextMember : member));
+                if (accountArchiveOn) {
+                  onUpdateAccounts(data.accounts.map((account) => account.owner === nextMember.id
+                    && (!account.inactiveFrom || account.inactiveFrom > accountArchiveOn)
+                    ? { ...account, inactiveFrom: accountArchiveOn }
+                    : account));
+                } else if (accountRestoreFrom) {
+                  onUpdateAccounts(data.accounts.map((account) => account.owner === nextMember.id
+                    && account.inactiveFrom === accountRestoreFrom
+                    ? { ...account, inactiveFrom: undefined }
+                    : account));
+                }
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -653,6 +807,7 @@ function AccountRuleSettings({ model }: { model: SettingsModel }) {
                 <span>Usually for</span>
                 <span>Currency</span>
                 <span>Statement match</span>
+                <span>Updated through</span>
                 <span />
               </div>
             )}
@@ -690,6 +845,22 @@ function AccountRuleSettings({ model }: { model: SettingsModel }) {
                   onChange={(event) =>
                     patchAccount(account.id, { match: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })
                   }
+                />
+                <input
+                  aria-label={`${account.label || "Account"} updated through`}
+                  type="date"
+                  max={isoDateOf(new Date())}
+                  value={account.coverage?.throughDate ?? ""}
+                  onChange={(event) => patchAccount(account.id, {
+                    coverage: event.target.value && model.sync.auth.status === "signed-in"
+                      ? {
+                          throughDate: event.target.value,
+                          confirmedAt: new Date().toISOString(),
+                          confirmedByUid: model.sync.auth.user.uid,
+                          source: "manual",
+                        }
+                      : undefined,
+                  })}
                 />
                 <IconButton
                   label={`Delete ${account.label}`}
@@ -773,7 +944,11 @@ function SyncBackupSettings({ model }: { model: SettingsModel }) {
     onRotateInvite, onSwitchHousehold, onExport, importRef, hasLegacyBrowserData,
     requestDelete, onClearData, canClearTransactions, hasTransactions, onClearTransactions,
     canResetHousehold, hasResettableData, onResetHousehold, onImportBackup,
+    onLinkAccessMember, onPromoteOwner, onRevokeAccess, onLeaveHousehold, data,
   } = model;
+  const currentUid = sync.auth.status === "signed-in" ? sync.auth.user.uid : "";
+  const currentAccess = sync.household?.membersByUid[currentUid];
+  const canManageAccess = currentAccess?.role === "owner";
   return (
     <>
       {activeTab === "sync" && (
@@ -823,7 +998,59 @@ function SyncBackupSettings({ model }: { model: SettingsModel }) {
                   <div className="invite-box">
                     <span className="soft-label">Invite code</span>
                     <code>{sync.household.inviteCode}</code>
-                    <Button variant="secondary" onClick={onRotateInvite}>Rotate invite code</Button>
+                    {canManageAccess && <Button variant="secondary" onClick={onRotateInvite}>Rotate invite code</Button>}
+                  </div>
+                )}
+                {sync.household && (
+                  <div className="access-list" aria-label="Household app access">
+                    <div>
+                      <h4>App access and recovery owners</h4>
+                      <p className="muted">Access is separate from financial participation. Keep a second owner so the household is not stranded.</p>
+                    </div>
+                    {Object.entries(sync.household.membersByUid).map(([uidValue, access]) => (
+                      <div className="access-row" key={uidValue}>
+                        <div>
+                          <strong>{access.displayName || access.email}</strong>
+                          <small>{access.email} · {access.role}{uidValue === sync.household?.ownerUid ? " · primary" : ""}</small>
+                        </div>
+                        <select
+                          aria-label={`Budget member for ${access.displayName || access.email}`}
+                          value={access.memberId ?? ""}
+                          disabled={!canManageAccess}
+                          onChange={(event) => void onLinkAccessMember(uidValue, event.target.value)}
+                        >
+                          <option value="">Not linked</option>
+                          {data.settings.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                        </select>
+                        {canManageAccess && access.role !== "owner" && (
+                          <Button variant="secondary" onClick={() => void onPromoteOwner(uidValue)}>Make recovery owner</Button>
+                        )}
+                        {canManageAccess && access.role === "owner" && uidValue !== sync.household?.ownerUid && (
+                          <Button variant="secondary" onClick={() => void onPromoteOwner(uidValue, true)}>Make primary</Button>
+                        )}
+                        {canManageAccess && uidValue !== sync.household?.ownerUid && uidValue !== currentUid && (
+                          <Button variant="danger" onClick={() => requestDelete(
+                            "Revoke household access?",
+                            `${access.displayName || access.email} will immediately lose Firestore access. Financial history is preserved and the invite code will rotate.`,
+                            "Revoke access",
+                            () => { void onRevokeAccess(uidValue); },
+                          )}>Revoke</Button>
+                        )}
+                      </div>
+                    ))}
+                    {Object.values(sync.household.membersByUid).filter((access) => access.role === "owner").length < 2 && (
+                      <div className="reset-warning">Add a recovery owner. A sole owner who becomes unavailable cannot be replaced safely from the client.</div>
+                    )}
+                    {currentUid !== sync.household.ownerUid ? (
+                      <Button variant="danger" onClick={() => requestDelete(
+                        "Leave household access?",
+                        "You will lose access, but budget members and financial history will not be changed.",
+                        "Leave household",
+                        () => { void onLeaveHousehold(); },
+                      )}>Leave household</Button>
+                    ) : (
+                      <small className="muted">Transfer primary ownership before leaving this household.</small>
+                    )}
                   </div>
                 )}
                 {sync.households.length > 0 && (

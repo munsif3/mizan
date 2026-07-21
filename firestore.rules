@@ -45,7 +45,7 @@ service cloud.firestore {
     // lock every other member's client out of the household.
     function validVersionField(data) {
       return !("schemaVersion" in data)
-        || (data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 8);
+        || (data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 9);
     }
 
     // The snapshot manifest is the compare-and-swap authority for the whole
@@ -73,26 +73,38 @@ service cloud.firestore {
     function isMember(householdId) {
       return signedIn()
         && exists(metaPath(householdId))
+        && request.auth.uid in get(metaPath(householdId)).data.membersByUid
         && get(metaPath(householdId)).data.membersByUid[request.auth.uid].role in ["owner", "member"];
     }
 
     function isMemberAfter(householdId) {
       return signedIn()
         && existsAfter(metaPath(householdId))
+        && request.auth.uid in getAfter(metaPath(householdId)).data.membersByUid
         && getAfter(metaPath(householdId)).data.membersByUid[request.auth.uid].role in ["owner", "member"];
     }
 
     function isOwner(householdId) {
       return signedIn()
         && exists(metaPath(householdId))
-        && get(metaPath(householdId)).data.ownerUid == request.auth.uid;
+        && request.auth.uid in get(metaPath(householdId)).data.membersByUid
+        && get(metaPath(householdId)).data.membersByUid[request.auth.uid].role == "owner";
+    }
+
+    function validMetaAfter(householdId) {
+      return request.resource.data.keys().hasOnly(["id", "name", "ownerUid", "membersByUid", "inviteCode", "createdAt", "updatedAt"])
+        && request.resource.data.id == householdId
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.ownerUid in request.resource.data.membersByUid
+        && request.resource.data.membersByUid[request.resource.data.ownerUid].role == "owner";
     }
 
     function isSelfInviteJoin(householdId) {
       return signedIn()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["membersByUid", "updatedAt"])
         && request.resource.data.membersByUid.diff(resource.data.membersByUid).affectedKeys().hasOnly([request.auth.uid])
-        && request.resource.data.membersByUid[request.auth.uid].keys().hasOnly(["role", "displayName", "email", "joinedAt"])
+        && request.resource.data.membersByUid[request.auth.uid].keys().hasOnly(["role", "displayName", "email", "joinedAt", "memberId"])
         && request.resource.data.membersByUid[request.auth.uid].role == "member"
         && request.resource.data.membersByUid[request.auth.uid].displayName is string
         && request.resource.data.membersByUid[request.auth.uid].email is string
@@ -101,6 +113,16 @@ service cloud.firestore {
         && getAfter(joinRequestPath(householdId, request.auth.uid)).data.uid == request.auth.uid
         && getAfter(joinRequestPath(householdId, request.auth.uid)).data.inviteCode == resource.data.inviteCode
         && getAfter(joinRequestPath(householdId, request.auth.uid)).data.createdAt == request.time;
+    }
+
+    function isSelfLeave(householdId) {
+      return signedIn()
+        && resource.data.ownerUid != request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["membersByUid", "updatedAt"])
+        && request.resource.data.membersByUid.diff(resource.data.membersByUid).affectedKeys().hasOnly([request.auth.uid])
+        && request.auth.uid in resource.data.membersByUid
+        && !(request.auth.uid in request.resource.data.membersByUid)
+        && validMetaAfter(householdId);
     }
 
     match /households/{householdId}/meta/current {
@@ -113,7 +135,9 @@ service cloud.firestore {
         && request.resource.data.membersByUid.keys().hasOnly([request.auth.uid])
         && request.resource.data.membersByUid[request.auth.uid].keys().hasOnly(["role", "displayName", "email", "joinedAt"])
         && request.resource.data.membersByUid[request.auth.uid].role == "owner";
-      allow update: if isOwner(householdId) || isSelfInviteJoin(householdId);
+      allow update: if (isOwner(householdId) && validMetaAfter(householdId))
+        || isSelfInviteJoin(householdId)
+        || isSelfLeave(householdId);
       allow delete: if isOwner(householdId);
     }
 
@@ -145,7 +169,8 @@ service cloud.firestore {
     }
 
     match /users/{uid}/households/{householdId} {
-      allow read, write: if signedIn() && request.auth.uid == uid;
+      allow read, create, update: if signedIn() && (request.auth.uid == uid || isOwner(householdId));
+      allow delete: if signedIn() && (request.auth.uid == uid || isOwner(householdId));
     }
 
     match /users/{uid}/profile/current {

@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteField,
   deleteDoc,
   doc,
   getDoc,
@@ -361,6 +362,88 @@ export async function rotateFirestoreInvite(db: Firestore, householdId: string):
   const nextMeta = { ...meta, inviteCode: makeInviteCode(householdId), updatedAt: new Date().toISOString() };
   await updateDoc(metaRef(db, householdId), { inviteCode: nextMeta.inviteCode, updatedAt: nextMeta.updatedAt });
   return nextMeta;
+}
+
+/** Link a signed-in access identity to the budget profile it represents. Owner-only by rules. */
+export async function linkFirestoreAccessMember(
+  db: Firestore,
+  householdId: string,
+  uid: string,
+  memberId: string,
+): Promise<HouseholdMeta> {
+  const meta = await loadHouseholdMeta(db, householdId);
+  if (!meta.membersByUid[uid]) throw new Error("That user no longer has household access.");
+  const now = new Date().toISOString();
+  await updateDoc(metaRef(db, householdId), {
+    [`membersByUid.${uid}.memberId`]: memberId || deleteField(),
+    updatedAt: now,
+  });
+  return loadHouseholdMeta(db, householdId);
+}
+
+/** Promote an existing access user to recovery owner, optionally making them primary. */
+export async function promoteFirestoreHouseholdOwner(
+  db: Firestore,
+  householdId: string,
+  uid: string,
+  makePrimary = false,
+): Promise<HouseholdMeta> {
+  const meta = await loadHouseholdMeta(db, householdId);
+  if (!meta.membersByUid[uid]) throw new Error("Only an existing household user can become an owner.");
+  const now = new Date().toISOString();
+  const batch = writeBatch(db);
+  batch.update(metaRef(db, householdId), {
+    [`membersByUid.${uid}.role`]: "owner",
+    ...(makePrimary ? { ownerUid: uid } : {}),
+    updatedAt: now,
+  });
+  batch.set(userHouseholdRef(db, uid, householdId), cleanForFirestore({
+    ...linkFromMeta(meta, uid),
+    role: "owner",
+    updatedAt: now,
+  }), { merge: true });
+  await batch.commit();
+  return loadHouseholdMeta(db, householdId);
+}
+
+/** Revoke a user's access without touching their budget-member history. */
+export async function revokeFirestoreHouseholdAccess(
+  db: Firestore,
+  householdId: string,
+  uid: string,
+): Promise<HouseholdMeta> {
+  const meta = await loadHouseholdMeta(db, householdId);
+  if (!meta.membersByUid[uid]) return meta;
+  if (meta.ownerUid === uid) throw new Error("Transfer primary ownership before revoking this owner.");
+  const now = new Date().toISOString();
+  const inviteCode = makeInviteCode(householdId);
+  const batch = writeBatch(db);
+  batch.update(metaRef(db, householdId), {
+    [`membersByUid.${uid}`]: deleteField(),
+    inviteCode,
+    updatedAt: now,
+  });
+  batch.delete(userHouseholdRef(db, uid, householdId));
+  await batch.commit();
+  return loadHouseholdMeta(db, householdId);
+}
+
+/** Leave the access group. Financial participation is deliberately unchanged. */
+export async function leaveFirestoreHousehold(
+  db: Firestore,
+  householdId: string,
+  uid: string,
+): Promise<void> {
+  const meta = await loadHouseholdMeta(db, householdId);
+  if (!meta.membersByUid[uid]) return;
+  if (meta.ownerUid === uid) throw new Error("Transfer primary ownership before leaving this household.");
+  const batch = writeBatch(db);
+  batch.update(metaRef(db, householdId), {
+    [`membersByUid.${uid}`]: deleteField(),
+    updatedAt: new Date().toISOString(),
+  });
+  batch.delete(userHouseholdRef(db, uid, householdId));
+  await batch.commit();
 }
 
 export class FirestoreHouseholdRepository implements DataRepository {

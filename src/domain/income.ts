@@ -1,5 +1,6 @@
 import { daysInMonth, isoDateOf } from "./dates";
 import { normalizeCurrency } from "./money";
+import { memberParticipatesInMonth } from "./memberLifecycle";
 import type { IncomeBudgetTreatment, IncomePortion, IncomeReceipt, Member, MemberId } from "./types";
 
 export type IncomeStatus = "received" | "due" | "overdue" | "upcoming" | "unscheduled";
@@ -138,7 +139,7 @@ export function resolveMonthIncome(
   const items = members.flatMap((member) =>
     member.portions.flatMap((portion): PortionResolution[] => {
       const receipt = receiptFor(receipts, month, member.id, portion.id);
-      if (!receipt && !portionActiveInMonth(portion, month)) return [];
+      if (!receipt && (!memberParticipatesInMonth(member, month) || !portionActiveInMonth(portion, month))) return [];
       const expected = expectedDeposit(portion, householdCurrency, fxRates);
       const status = portionStatus(portion, receipt, month, today);
       const countsInTotal = Boolean(receipt) || portion.schedule.frequency === "monthly" || status !== "overdue";

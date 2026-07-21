@@ -133,8 +133,8 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
   return migrate({
     // Split-cloud v4 stored AppData v10 semantics; v5 added beneficiaries,
     // v6 recurring-commitment payment types, v7 scheduled income sources,
-    // and v8 household-shared efficiency plans.
-    schemaVersion: cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
+    // v8 household-shared efficiency plans, and v9 lifecycle/coverage evidence.
+    schemaVersion: cloudSchemaVersion >= 9 ? 16 : cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
     transactions: collections.transactions ?? [],
     sharedContributions: collections.sharedContributions ?? [],
     merchantRules,

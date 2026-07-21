@@ -2,6 +2,11 @@ import { useMemo, useState } from "react";
 import { FileSpreadsheet, Landmark } from "lucide-react";
 import { parsersFor } from "../import/registry";
 import type { StatementParser } from "../import/types";
+import {
+  AccountCoverageConfirm,
+  type AccountCoverageCandidate,
+  type AccountCoverageConfirmation,
+} from "./AccountCoverageConfirm";
 import { Button, Modal, Tabs } from "./bits";
 
 export interface ImportResult {
@@ -9,6 +14,7 @@ export interface ImportResult {
   duplicates: number;
   needsReview: number;
   failures: string[];
+  coverageCandidates?: AccountCoverageCandidate[];
 }
 
 type ImportMode = "statement" | "csv";
@@ -17,6 +23,7 @@ export function ImportModal({
   onImport,
   onCsv,
   onReview,
+  onConfirmCoverage = () => undefined,
   onClose,
 }: {
   onImport: (
@@ -26,6 +33,7 @@ export function ImportModal({
   ) => Promise<ImportResult>;
   onCsv: (file: File) => void;
   onReview: () => void;
+  onConfirmCoverage?: (confirmations: AccountCoverageConfirmation[]) => void;
   onClose: () => void;
 }) {
   const [mode, setMode] = useState<ImportMode>("statement");
@@ -140,6 +148,10 @@ export function ImportModal({
             {result.failures.map((failure) => <small key={failure}>{failure}</small>)}
           </div>
         )}
+
+        {result?.coverageCandidates?.length ? (
+          <AccountCoverageConfirm candidates={result.coverageCandidates} onConfirm={onConfirmCoverage} />
+        ) : null}
 
         <div className="modal-actions">
           <Button variant="secondary" onClick={onClose} disabled={!!busy}>{result ? "Close" : "Cancel"}</Button>

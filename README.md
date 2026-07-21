@@ -13,6 +13,8 @@ Firestore household before any financial data screen is available.
   always produces the same result.
 - **Multi-member settlement.** Add anyone who shares the budget. Mizan splits shared spending fairly
   and shows the minimal set of payments that settles everyone up.
+- **Household continuity.** Effective-dated away, left, and deceased states change future income and
+  shared responsibility without deleting a person's accounts, receipts, or transaction history.
 - **Works solo, too.** A one-member household automatically drops settlement, the member split, and the
   "for whom" question, so an individual gets a clean single-person view without the shared-budget machinery.
 - **Bring your own bank.** Import a plain CSV export from any bank with an interactive column mapper,
@@ -21,7 +23,8 @@ Firestore household before any financial data screen is available.
   the same budget data.
 - **Installable PWA.** Works offline for the app shell and installs to your home screen.
 - **A repeatable check-in.** Home shows whether transaction data is current, keeps old review debt
-  separate from the selected month, and records a user-specific weekly review for each household.
+  separate from the selected month, checks every active account's confirmed coverage date, and records
+  a user-specific weekly review for each household.
 - **Explainable efficiency opportunities.** Mizan compares classified recorded spending with completed-month
   baselines, asks the household what is actually valuable, and tracks planned changes without altering ledger math.
 
@@ -78,7 +81,8 @@ You can change this later in Settings. There you can also add recurring fixed co
 already counted in imported transactions; Mizan flags exact category-and-amount matches that may be
 the same payment twice. The account registry has one row per card/account, whose spending it is, and
 match text so imported statements land on the right account automatically. Settlement comes from
-these account owners.
+these account owners. Member profiles are archived with an effective date rather than deleted once
+they have financial history. A temporary absence excludes that person only during the recorded interval.
 
 ## Importing Transactions
 
@@ -91,12 +95,27 @@ Open Import and choose files. Everything is processed in your browser.
 - **Manual entry** - add one-off transactions by hand.
 
 Duplicates are skipped automatically. New merchants land in the review queue; pick a category once
-and a rule is created and applied everywhere.
+and a rule is created and applied everywhere. After a statement or CSV import, Mizan offers an explicit
+per-account coverage confirmation. The suggested date is the latest parsed transaction, so the user can
+correct it to the actual statement end; importing activity never silently claims that every account is current.
+
+## Household continuity and access
+
+Financial participation and app access are separate controls. Mark a budget member temporarily away,
+left, or deceased in Settings -> Household. Their historical rows remain unchanged; shared spending and
+expected income follow the effective dates, owned accounts stop matching new transactions after a permanent
+departure, and future personal fixed commitments are flagged for reassignment.
+
+Settings -> Sync & backup links each signed-in user to the budget member they represent. Owners can add a
+second recovery owner, transfer primary ownership, revoke access, or leave after transferring primary
+ownership. Revoking or leaving removes Firestore access but never deletes the corresponding financial profile.
+Keep at least two owners: if the sole owner becomes unavailable, the client cannot safely appoint a replacement.
 
 ## Data & Privacy
 
 - All financial and financial-adjacent app data is stored in Firestore for signed-in household
-  members: transactions, members, income portions and monthly confirmations, FX rates, accounts, fixed costs, rules, categories, counterparties,
+  members: transactions, member lifecycle dates, income portions and monthly confirmations, FX rates,
+  accounts and coverage confirmations, fixed costs, rules, categories, counterparties,
   CSV presets, shared efficiency decisions/outcomes, currency/locale, and target save rate.
 - Efficiency recommendations are deterministic and derived from current household data. No financial data is sent
   to an AI or market-comparison service, and estimated or observed reductions never change actual savings figures.

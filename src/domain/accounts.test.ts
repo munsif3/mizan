@@ -219,6 +219,19 @@ describe("one-member household beneficiary defaults", () => {
   });
 });
 
+describe("effective-dated accounts", () => {
+  it("uses the account definition active on the transaction date", () => {
+    const accounts: Account[] = [
+      { id: "old", label: "Family Card", owner: "sam", beneficiaryDefault: "owner", match: ["family"], inactiveFrom: "2026-07-15" },
+      { id: "new", label: "Family Card", owner: "alex", beneficiaryDefault: "owner", match: ["family"], activeFrom: "2026-07-15" },
+    ];
+    const before = { ...txn("family"), date: "2026-07-10", accountId: "old" };
+    const after = { ...txn("family"), date: "2026-07-20", accountId: "old", rawAccount: "family" };
+    expect(ownerOfTransaction(before, accounts)).toBe("sam");
+    expect(ownerOfTransaction(after, accounts)).toBe("alex");
+  });
+});
+
 describe("seeding", () => {
   it("guesses owner from a member name in the label, else joint", () => {
     expect(guessOwner("Alex Visa", MEMBERS)).toBe("alex");

@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { parseCsv } from "../import/csv";
 import { csvPresetSignature, headerSignature, inferMapping, mapCsvRows } from "../import/csvMap";
 import type { CsvMapping } from "../domain/types";
+import { AccountCoverageConfirm, type AccountCoverageConfirmation } from "./AccountCoverageConfirm";
 import { Button, Modal } from "./bits";
+import type { ImportResult } from "./ImportModal";
 
 export function CsvImportModal({
   file,
@@ -10,18 +12,21 @@ export function CsvImportModal({
   formatAmount = (transaction) => `${transaction.direction === "credit" ? "+" : ""}${transaction.amount}`,
   onImport,
   onSavePreset,
+  onConfirmCoverage = () => undefined,
   onClose,
 }: {
   file: File;
   presets: Record<string, CsvMapping>;
   formatAmount?: (transaction: ReturnType<typeof mapCsvRows>["transactions"][number]) => string;
-  onImport: (transactions: ReturnType<typeof mapCsvRows>["transactions"], skipped: number) => void;
+  onImport: (transactions: ReturnType<typeof mapCsvRows>["transactions"], skipped: number) => ImportResult | void;
   onSavePreset: (signature: string, mapping: CsvMapping) => void;
+  onConfirmCoverage?: (confirmations: AccountCoverageConfirmation[]) => void;
   onClose: () => void;
 }) {
   const [rows, setRows] = useState<string[][]>([]);
   const [error, setError] = useState("");
   const [mapping, setMapping] = useState<CsvMapping | null>(null);
+  const [result, setResult] = useState<ImportResult | null>(null);
   const defaultAccount = file.name.replace(/\.csv$/i, "");
 
   useEffect(() => {
@@ -60,8 +65,9 @@ export function CsvImportModal({
     const layout = { ...mapping };
     delete layout.accountLabel;
     onSavePreset(csvPresetSignature(rows, mapping.hasHeader), layout);
-    onImport(preview.transactions, preview.skipped.length);
-    onClose();
+    const next = onImport(preview.transactions, preview.skipped.length);
+    if (next) setResult(next);
+    else onClose();
   };
 
   const columnSelect = (value: number | undefined, onChange: (index: number) => void) => (
@@ -75,7 +81,7 @@ export function CsvImportModal({
   return (
     <Modal title="Import CSV" onClose={onClose} wide>
       {error && <p className="notice" role="alert">{error}</p>}
-      {mapping && rows.length > 0 && (
+      {mapping && rows.length > 0 && !result && (
         <>
           <p className="muted">Match your file's columns to Mizan's fields. The preview updates as you choose.</p>
 
@@ -172,6 +178,20 @@ export function CsvImportModal({
             </Button>
           </div>
         </>
+      )}
+      {result && (
+        <div className="import-flow">
+          <div className="import-result" role="status">
+            <strong>Imported {result.imported}; skipped {result.duplicates} duplicate{result.duplicates === 1 ? "" : "s"}.</strong>
+            {result.needsReview ? <span>{result.needsReview} need review.</span> : <span>No review items from this import.</span>}
+          </div>
+          {result.coverageCandidates?.length ? (
+            <AccountCoverageConfirm candidates={result.coverageCandidates} onConfirm={onConfirmCoverage} />
+          ) : null}
+          <div className="modal-actions">
+            <Button variant="primary" onClick={onClose}>Close</Button>
+          </div>
+        </div>
       )}
     </Modal>
   );

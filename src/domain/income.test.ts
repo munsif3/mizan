@@ -176,4 +176,16 @@ describe("income resolution and receipts", () => {
       { ...salary, month: "2026-06" },
     ], [bonus])).toThrow(/already linked/i);
   });
+
+  it("stops future expectations after departure but preserves confirmed receipts", () => {
+    const former: Member = {
+      ...members[0]!,
+      lifecycle: { inactiveFrom: "2026-08-01", inactiveReason: "left", awayPeriods: [] },
+    };
+    expect(resolveMonthIncome([former], [], "LKR", {}, "2026-08", new Date(2026, 7, 12)).total).toBe(0);
+    const receipt: IncomeReceipt = {
+      id: "receipt", month: "2026-08", memberId: former.id, portionId: "base", amount: 700,
+    };
+    expect(resolveMonthIncome([former], [receipt], "LKR", {}, "2026-08", new Date(2026, 7, 12)).total).toBe(700);
+  });
 });

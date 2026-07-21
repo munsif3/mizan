@@ -4,6 +4,7 @@ import { pruneSharedContributions } from "../domain/contributions";
 import { normalizeFxTransaction } from "../domain/fx";
 import { efficiencySubjectFingerprint } from "../domain/efficiency";
 import { stableId } from "../domain/ids";
+import { normalizedMemberLifecycle, validLifecycleDate } from "../domain/memberLifecycle";
 import { defaultIncomePortion, fxRateFor, receiptId } from "../domain/income";
 import { normalizeCurrency, resolveIncomeCurrency } from "../domain/money";
 import { MOVEMENT_OPTIONS } from "../domain/movements";
@@ -41,7 +42,7 @@ import type {
 } from "../domain/types";
 import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-const SCHEMA_VERSION = 15 as const;
+const SCHEMA_VERSION = 16 as const;
 
 const MOVEMENT_KINDS = new Set<MovementKind>(MOVEMENT_OPTIONS.map((option) => option.kind));
 
@@ -155,7 +156,9 @@ function asEfficiencyPlan(value: unknown): EfficiencyPlan | null {
     createdAt,
     updatedAt,
     ...(outcome ? { outcome } : {}),
-    ...(state === "closed" && raw.closedReason === "subject_removed" ? { closedReason: "subject_removed" as const } : {}),
+    ...(state === "closed" && (raw.closedReason === "subject_removed" || raw.closedReason === "subject_inactive")
+      ? { closedReason: raw.closedReason }
+      : {}),
   };
 }
 
@@ -313,12 +316,29 @@ function asAccount(value: unknown, index = 0): Account | null {
   const beneficiaryDefault = raw.beneficiaryDefault === "owner" || raw.beneficiaryDefault === "household"
     || raw.beneficiaryDefault === "review" ? raw.beneficiaryDefault : "review";
   const match = (Array.isArray(raw.match) ? raw.match : []).map((item) => String(item ?? "").trim()).filter(Boolean);
+  const activeFrom = validLifecycleDate(raw.activeFrom) ? raw.activeFrom : "";
+  const inactiveFrom = validLifecycleDate(raw.inactiveFrom) ? raw.inactiveFrom : "";
+  const coverageRaw = raw.coverage && typeof raw.coverage === "object" ? raw.coverage as Record<string, unknown> : null;
+  const throughDate = coverageRaw && validLifecycleDate(coverageRaw.throughDate) ? coverageRaw.throughDate : "";
+  const confirmedAt = String(coverageRaw?.confirmedAt ?? "").trim();
+  const confirmedByUid = String(coverageRaw?.confirmedByUid ?? "").trim();
+  const coverage = throughDate && confirmedAt && confirmedByUid
+    ? {
+        throughDate,
+        confirmedAt,
+        confirmedByUid,
+        source: coverageRaw?.source === "statement" ? "statement" as const : "manual" as const,
+      }
+    : undefined;
   return {
     id: String(raw.id ?? "") || stableId("acc", raw, index),
     label,
     currency: String(raw.currency ?? "").trim().toUpperCase(),
     owner,
     beneficiaryDefault,
+    ...(activeFrom ? { activeFrom } : {}),
+    ...(inactiveFrom && (!activeFrom || inactiveFrom > activeFrom) ? { inactiveFrom } : {}),
+    ...(coverage ? { coverage } : {}),
     match,
   };
 }
@@ -366,6 +386,7 @@ function asMember(value: unknown): Member | null {
   const id = String(raw.id ?? "").trim();
   const name = String(raw.name ?? "").trim();
   if (!id || !name || (RESERVED_IDS as readonly string[]).includes(id)) return null;
+  const lifecycle = normalizedMemberLifecycle(raw.lifecycle);
   return {
     id,
     name,
@@ -375,6 +396,7 @@ function asMember(value: unknown): Member | null {
       : Number(raw.income) > 0
         ? [defaultIncomePortion(id, Number(raw.income))]
         : [],
+    ...(lifecycle ? { lifecycle } : {}),
   };
 }
 

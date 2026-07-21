@@ -3,6 +3,7 @@ import {
   applyAccountBeneficiaryDefaults,
   applyAccounts,
 } from "./domain/accounts";
+import { importedAccountCoverageCandidates } from "./domain/accountCoverage";
 import {
   transitionAccounts,
   transitionCategorizeMerchant,
@@ -36,6 +37,7 @@ import {
 import { normalizeFxTransaction } from "./domain/fx";
 import { removeReceipt, unlinkTransaction, type PortionResolution } from "./domain/income";
 import type { IncomeCandidate } from "./domain/incomeMatch";
+import { validLifecycleDate } from "./domain/memberLifecycle";
 import { directionForKind } from "./domain/movements";
 import { applyRules } from "./domain/rules";
 import { needsClassificationReview } from "./domain/summary";
@@ -66,6 +68,7 @@ import { useAppDerivedState } from "./app/useAppDerivedState";
 import { EMPTY_LEDGER_FILTERS, useHouseholdSession } from "./app/useHouseholdSession";
 import { AppPresentation, type AppPresentationModel, type ModalKind } from "./app/AppPresentation";
 import type { ImportResult } from "./ui/ImportModal";
+import type { AccountCoverageConfirmation } from "./ui/AccountCoverageConfirm";
 import type { ManualEntry } from "./ui/ManualModal";
 
 export function importedMonthContext(transactions: Pick<Transaction, "date">[]): {
@@ -255,6 +258,8 @@ export default function App() {
     const fresh = filterNew(data.transactions, ruled);
     const needsReview = fresh.filter(needsClassificationReview).length;
     const importedMonths = importedMonthContext(fresh);
+    const today = isoDateOf(new Date());
+    const coverageCandidates = importedAccountCoverageCandidates(ruled, data.accounts, today);
     if (fresh.length) {
       setData((previous) => ({
         ...previous,
@@ -280,7 +285,40 @@ export default function App() {
       setLedgerFilters(EMPTY_LEDGER_FILTERS);
       setView("transactions");
     }
-    return { imported: fresh.length, duplicates: ruled.length - fresh.length, needsReview, failures };
+    return { imported: fresh.length, duplicates: ruled.length - fresh.length, needsReview, failures, coverageCandidates };
+  }
+
+  function confirmImportedAccountCoverage(confirmations: AccountCoverageConfirmation[]) {
+    if (session.auth.status !== "signed-in") {
+      setNotice("Sign in before confirming account coverage.");
+      return;
+    }
+    const confirmedByUid = session.auth.user.uid;
+    const today = isoDateOf(new Date());
+    const dates = new Map(confirmations
+      .filter((item) => validLifecycleDate(item.throughDate) && item.throughDate <= today)
+      .map((item) => [item.accountId, item.throughDate]));
+    if (!dates.size) {
+      setNotice("Choose at least one valid coverage date that is not in the future.");
+      return;
+    }
+    const confirmedAt = new Date().toISOString();
+    setData((previous) => ({
+      ...previous,
+      accounts: previous.accounts.map((account) => {
+        const throughDate = dates.get(account.id);
+        return throughDate ? {
+          ...account,
+          coverage: {
+            throughDate,
+            confirmedAt,
+            confirmedByUid,
+            source: "statement" as const,
+          },
+        } : account;
+      }),
+    }));
+    setNotice(`Coverage confirmed for ${dates.size} account${dates.size === 1 ? "" : "s"}.`);
   }
 
   async function importStatements(
@@ -536,6 +574,7 @@ export default function App() {
       addManual,
       importStatements,
       ingestTransactions,
+      confirmImportedAccountCoverage,
       setTransactionCategory,
       setTransactionBeneficiary,
       setTransactionKind,

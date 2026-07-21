@@ -10,7 +10,7 @@ export function ruleBeneficiaryValue(beneficiary: MerchantRule["beneficiary"] | 
   return beneficiary.type === "member" ? `member:${beneficiary.memberId}` : beneficiary.type;
 }
 
-export function ruleBeneficiaryFromValue(value: Exclude<RuleBeneficiaryValue, "unassigned">): MerchantRule["beneficiary"] {
+function ruleBeneficiaryFromValue(value: Exclude<RuleBeneficiaryValue, "unassigned">): MerchantRule["beneficiary"] {
   return value.startsWith("member:")
     ? { type: "member", memberId: value.slice("member:".length) }
     : { type: value as "account_default" | "household" };

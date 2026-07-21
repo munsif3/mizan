@@ -2,6 +2,7 @@ import { withAccountBeneficiaryDefault } from "./accounts";
 import { beneficiaryEquals } from "./beneficiaries";
 import type { Account, Member, MerchantRule, MerchantRules, Transaction } from "./types";
 import { isSpendKind, kindAllowedFor } from "./movements";
+import { memberParticipatesOn } from "./memberLifecycle";
 
 /** Normalize a merchant/description string for rule matching. */
 export function cleanMerchant(value: unknown): string {
@@ -58,7 +59,11 @@ export function applyRules(
     if (rule.beneficiary.type === "account_default") {
       next = withAccountBeneficiaryDefault(next, accounts, members);
     } else {
-      next.beneficiary = rule.beneficiary;
+      const memberId = rule.beneficiary.type === "member" ? rule.beneficiary.memberId : "";
+      next.beneficiary = memberId
+        && !members.some((member) => member.id === memberId && memberParticipatesOn(member, txn.date))
+        ? { type: "unassigned" }
+        : rule.beneficiary;
       delete next.beneficiarySource;
     }
     if (txn.direction === "credit" || !isSpendKind(rule.kind)) {
