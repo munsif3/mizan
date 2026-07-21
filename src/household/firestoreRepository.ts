@@ -36,6 +36,7 @@ import type {
   UserProfile,
 } from "./types";
 import { loadLegacyManifestlessHousehold } from "./legacyManifestlessFirestoreAdapter";
+import { reportDiagnostic } from "../platform/diagnostics";
 
 const META_DOC = "current";
 const SETTINGS_DOC = "current";
@@ -43,6 +44,25 @@ const SNAPSHOT_MANIFEST_DOC = "current";
 const PROFILE_DOC = "current";
 const ORDER_FIELD = "__order";
 const BATCH_LIMIT = 450;
+
+/** The per-revision snapshot subcollections, used when pruning a revision. */
+const SNAPSHOT_DATA_COLLECTIONS = [
+  "transactions",
+  "sharedContributions",
+  "accounts",
+  "fixedCosts",
+  "incomeReceipts",
+  "efficiencyPlans",
+  "members",
+  "customCategories",
+  "counterparties",
+  "merchantRules",
+  "csvPresets",
+] as const;
+
+// Obsolete revisions younger than this are left alone so cleanup never races an
+// in-flight publish from another device.
+const SNAPSHOT_RETENTION_GRACE_MS = 60 * 60 * 1000;
 
 type BatchJob = (batch: WriteBatch) => void;
 
@@ -80,6 +100,10 @@ function householdCollection(db: Firestore, householdId: string, name: string) {
 
 function snapshotCollection(db: Firestore, householdId: string, revision: string, name: string) {
   return collection(db, "households", householdId, "snapshots", revision, name);
+}
+
+function snapshotsRootCollection(db: Firestore, householdId: string) {
+  return collection(db, "households", householdId, "snapshots");
 }
 
 function makeRevision(): string {
@@ -446,6 +470,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
       });
     };
     const publishFullSnapshot = async () => {
+      const supersededRevision = this.activeRevision;
       const revision = makeRevision();
       const collectionFor = (name: string) => snapshotCollection(this.db, this.householdId, revision, name);
       const jobs: BatchJob[] = [
@@ -469,6 +494,10 @@ export class FirestoreHouseholdRepository implements DataRepository {
       });
       this.activeRevision = revision;
       this.loadedManifestVersion = manifest.versionToken;
+      // Best-effort GC of obsolete/abandoned revisions. Awaited so it is
+      // deterministic, but never allowed to fail the save.
+      await this.pruneStaleRevisions(new Set([revision, supersededRevision].filter(Boolean)))
+        .catch((error) => reportDiagnostic("snapshot-cleanup", error));
     };
 
     if (!this.activeRevision) {
@@ -503,6 +532,33 @@ export class FirestoreHouseholdRepository implements DataRepository {
       transaction.set(snapshotManifestRef(this.db, this.householdId), cleanForFirestore(manifest));
     });
     this.loadedManifestVersion = manifest.versionToken;
+  }
+
+  /** Delete every obsolete revision root and its subcollections, keeping `keep`. */
+  private async pruneStaleRevisions(keep: Set<string>): Promise<void> {
+    const cutoff = Date.now() - SNAPSHOT_RETENTION_GRACE_MS;
+    const roots = await getDocs(snapshotsRootCollection(this.db, this.householdId));
+    const staleRevisions = (roots?.docs ?? [])
+      .filter((docSnap) => {
+        if (keep.has(docSnap.id)) return false;
+        const updatedAt = Date.parse((docSnap.data() as Partial<CloudSettings>)?.updatedAt ?? "");
+        // Skip missing or unparseable timestamps to avoid deleting a revision a
+        // concurrent publish may still be assembling.
+        return Number.isFinite(updatedAt) && updatedAt < cutoff;
+      })
+      .map((docSnap) => docSnap.id);
+    for (const revision of staleRevisions) await this.deleteRevision(revision);
+  }
+
+  private async deleteRevision(revision: string): Promise<void> {
+    const jobs: BatchJob[] = [];
+    for (const name of SNAPSHOT_DATA_COLLECTIONS) {
+      const ref = snapshotCollection(this.db, this.householdId, revision, name);
+      const snapshot = await getDocs(ref);
+      for (const docSnapshot of snapshot?.docs ?? []) jobs.push((batch) => batch.delete(doc(ref, docSnapshot.id)));
+    }
+    jobs.push((batch) => batch.delete(snapshotRef(this.db, this.householdId, revision)));
+    await commitJobs(this.db, jobs);
   }
 
   subscribe(

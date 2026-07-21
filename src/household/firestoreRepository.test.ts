@@ -294,4 +294,36 @@ describe("Firestore household loading", () => {
     await expect(new FirestoreHouseholdRepository(db, "household-1", "user-1").save(data)).rejects.toThrow("batch failed");
     expect(firestore.transactionSet).not.toHaveBeenCalled();
   });
+
+  it("prunes obsolete snapshot revisions after a full publish, keeping recent ones", async () => {
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const recent = new Date().toISOString();
+    const deleted: string[] = [];
+    firestore.writeBatch.mockImplementation(() => ({
+      set: vi.fn(),
+      update: vi.fn(),
+      delete: (ref: { path: string }) => { deleted.push(ref.path); },
+      commit: vi.fn().mockResolvedValue(undefined),
+    }));
+    firestore.getDocs.mockImplementation((ref: { path: string }) => {
+      if (ref.path.endsWith("/snapshots")) {
+        return Promise.resolve(collectionSnapshot([
+          { id: "rev_stale", data: { updatedAt: stale } },
+          { id: "rev_recent", data: { updatedAt: recent } },
+        ]));
+      }
+      if (ref.path.includes("/snapshots/rev_stale/")) {
+        return Promise.resolve(collectionSnapshot([{ id: "doc_1", data: {} }]));
+      }
+      return Promise.resolve(collectionSnapshot());
+    });
+
+    // First save has no active revision, so it publishes a full snapshot and
+    // then prunes.
+    await new FirestoreHouseholdRepository(db, "household-1", "user-1").save(emptyData());
+
+    expect(deleted).toContain("households/household-1/snapshots/rev_stale/transactions/doc_1");
+    expect(deleted).toContain("households/household-1/snapshots/rev_stale");
+    expect(deleted.every((path) => !path.includes("rev_recent"))).toBe(true);
+  });
 });
