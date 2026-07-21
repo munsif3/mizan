@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { authErrorMessage, signInWithGoogle, signOutUser, useAuthState } from "../auth/authStore";
 import { categoryOptions } from "../domain/categories";
 import { clearTransactionHistory } from "../domain/dataCleanup";
@@ -25,6 +25,20 @@ import type { BeneficiaryFilter, LedgerFilters, PayerFilter } from "../ui/Transa
 
 export type View = "home" | "transactions" | "history";
 export type BootstrapPhase = "idle" | "loading-profile" | "loading-household" | "needs-household" | "ready" | "error";
+
+export type ConflictResolution = "keep-local" | "keep-remote";
+
+/**
+ * A save was rejected because the household changed on another device. Rather
+ * than silently discarding the unsaved edit, both versions are held so the user
+ * can choose which one wins.
+ */
+export interface HouseholdConflict {
+  /** The local edit whose save was rejected. */
+  local: AppData;
+  /** The newer cloud state that caused the rejection. */
+  remote: AppData;
+}
 
 export const EMPTY_LEDGER_FILTERS: LedgerFilters = {
   category: "all",
@@ -134,11 +148,17 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   const [bootstrapPhase, setBootstrapPhase] = useState<BootstrapPhase>("idle");
   const [bootstrapError, setBootstrapError] = useState("");
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const [conflict, setConflict] = useState<HouseholdConflict | null>(null);
+  const conflictRef = useRef<HouseholdConflict | null>(null);
   const authUid = auth.status === "signed-in" ? auth.user.uid : "";
 
   useEffect(() => {
     repositoryRef.current = repository;
   }, [repository]);
+
+  useEffect(() => {
+    conflictRef.current = conflict;
+  }, [conflict]);
 
   useEffect(() => {
     if (auth.status === "loading") {
@@ -156,6 +176,9 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       skipNextSave.current = false;
       return;
     }
+    // An unresolved conflict owns the cloud state until the user chooses; do not
+    // keep retrying the rejected edit underneath the recovery dialog.
+    if (conflictRef.current) return undefined;
     const version = ++saveVersion.current;
     const timer = window.setTimeout(() => {
       saveTimer.current = null;
@@ -172,12 +195,14 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
           const message = (error as Error).message;
           if (message.includes("changed on another device") && repositoryRef.current === repository) {
             try {
-              const nextData = await repository.load();
+              // Loading refreshes the repository's compare-and-swap revision to
+              // the newer cloud state, so a later "keep mine" save can win.
+              const remote = await repository.load();
               if (repositoryRef.current !== repository) return;
-              skipNextSave.current = true;
-              clearUndo();
-              setData(nextData);
-              setSyncStatus("Reloaded newer household changes");
+              const next = { local: data, remote };
+              conflictRef.current = next;
+              setConflict(next);
+              setSyncStatus("Your edit conflicts with a newer change");
               return;
             } catch {
               // Keep the original conflict message if recovery also fails.
@@ -199,6 +224,9 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     return repository.subscribe(
       (nextData) => {
         if (completedSaveVersion.current < saveVersion.current) return;
+        // A pending conflict already holds the newest cloud state for the user's
+        // decision; do not overwrite their unsaved edit from underneath.
+        if (conflictRef.current) return;
         skipNextSave.current = true;
         setData(nextData);
         clearUndo();
@@ -208,6 +236,54 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       { skipInitial: true },
     );
   }, [clearUndo, repository]);
+
+  const resolveConflict = useCallback((choice: ConflictResolution) => {
+    const current = conflictRef.current;
+    if (!current) return;
+    conflictRef.current = null;
+    setConflict(null);
+    if (choice === "keep-remote") {
+      // Discard the unsaved local edit and adopt the newer cloud state.
+      skipNextSave.current = true;
+      clearUndo();
+      setData(current.remote);
+      setSyncStatus("Synced to Firestore");
+      return;
+    }
+    // Keep the local edit: overwrite the newer cloud state. The failed save
+    // already reloaded the manifest, so this compare-and-swap now succeeds
+    // (or, if another device wrote again, re-enters the conflict flow). Data is
+    // unchanged, so saving explicitly here avoids relying on the autosave effect.
+    const repo = repositoryRef.current;
+    if (!repo) return;
+    setSyncStatus("Saving to Firestore");
+    const queued = saveQueue.current.catch(() => undefined).then(() => repo.save(current.local));
+    saveQueue.current = queued;
+    queued
+      .then(() => {
+        if (repositoryRef.current === repo) setSyncStatus("Synced to Firestore");
+      })
+      .catch(async (error) => {
+        if (repositoryRef.current !== repo) return;
+        const message = (error as Error).message;
+        // Another device wrote again while the dialog was open: reload and let
+        // the user decide once more rather than dead-ending on a failed save.
+        if (message.includes("changed on another device")) {
+          try {
+            const remote = await repo.load();
+            if (repositoryRef.current !== repo) return;
+            const next = { local: current.local, remote };
+            conflictRef.current = next;
+            setConflict(next);
+            setSyncStatus("Your edit conflicts with a newer change");
+            return;
+          } catch {
+            // Fall through to the generic failure message.
+          }
+        }
+        setSyncStatus(`Save failed: ${message}`);
+      });
+  }, [clearUndo]);
 
   useEffect(() => {
     writeLocalConvenience(PRIVACY_KEY, String(privacy));
@@ -242,6 +318,8 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     }
     let cancelled = false;
     profileLoaded.current = false;
+    conflictRef.current = null;
+    setConflict(null);
     setRepository(null);
     setHouseholdMeta(null);
     setData(emptyData());
@@ -620,6 +698,8 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     setLedgerFilters(EMPTY_LEDGER_FILTERS);
     clearUndo();
     resetTransientState();
+    conflictRef.current = null;
+    setConflict(null);
     profileLoaded.current = false;
     setBootstrapPhase("idle");
     setBootstrapError("");
@@ -650,6 +730,8 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     householdMeta,
     availableHouseholds,
     syncStatus,
+    conflict,
+    resolveConflict,
     bootstrapPhase,
     bootstrapError,
     retryBootstrap: () => setBootstrapAttempt((attempt) => attempt + 1),

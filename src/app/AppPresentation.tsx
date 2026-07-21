@@ -27,6 +27,7 @@ import type { ManualEntry } from "../ui/ManualModal";
 import { AuthGate } from "../ui/AuthGate";
 import { Alert, Button, ConfirmDialog, IconButton, PageHeader, Skeleton } from "../ui/bits";
 import { ClearTransactionsModal } from "../ui/ClearTransactionsModal";
+import { ConflictRecoveryDialog } from "../ui/ConflictRecoveryDialog";
 import { CsvImportModal } from "../ui/CsvImportModal";
 import { EfficiencyOutcomeModal, EfficiencyReviewModal } from "../ui/EfficiencyModal";
 import { HistoryView } from "../ui/HistoryView";
@@ -671,15 +672,24 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
 }
 
 export function AppPresentation({ model }: { model: AppPresentationModel }) {
-  const { auth, repository, data, notice, handleSignIn } = model.session;
-  if (auth.status !== "signed-in") return <AuthGate auth={auth} notice={notice} onSignIn={handleSignIn} />;
-  if (!repository) return <HouseholdGate model={model} />;
-  if (!data.settings.members.length) return <OnboardingPresentation model={model} />;
+  const { auth, repository, data, notice, handleSignIn, conflict, resolveConflict } = model.session;
+  const content = auth.status !== "signed-in"
+    ? <AuthGate auth={auth} notice={notice} onSignIn={handleSignIn} />
+    : !repository
+      ? <HouseholdGate model={model} />
+      : !data.settings.members.length
+        ? <OnboardingPresentation model={model} />
+        : (
+          <main className="app">
+            <WorkspaceContent model={model} />
+            <WorkspaceModals model={model} />
+            <SettingsOverlays model={model} />
+          </main>
+        );
   return (
-    <main className="app">
-      <WorkspaceContent model={model} />
-      <WorkspaceModals model={model} />
-      <SettingsOverlays model={model} />
-    </main>
+    <>
+      {content}
+      {conflict && <ConflictRecoveryDialog conflict={conflict} onResolve={resolveConflict} />}
+    </>
   );
 }
