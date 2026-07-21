@@ -17,9 +17,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:rules:emulator": "vitest run --config vitest.rules.config.ts",
-    "test:rules": "npx --yes firebase-tools@15.22.4 emulators:exec --only firestore --project demo-mizan \"npm run test:rules:emulator\"",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-mizan \"npm run test:rules:emulator\"",
     "typecheck": "tsc --noEmit",
-    "check:deadcode": "npx --yes knip@6.26.0",
+    "check:deadcode": "knip",
     "check": "npm run typecheck && npm run check:styles && npm test && vite build"
   },
   "dependencies": {
@@ -36,7 +36,9 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "crypto-js": "^4.2.0",
+    "firebase-tools": "15.22.4",
     "jsdom": "^29.1.1",
+    "knip": "6.26.0",
     "pdf-lib": "^1.17.1",
     "postcss": "^8.5.16",
     "typescript": "^5.9.3",
