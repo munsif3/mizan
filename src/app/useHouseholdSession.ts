@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { authErrorMessage, signInWithGoogle, signOutUser, useAuthState } from "../auth/authStore";
-import { categoryOptions } from "../domain/categories";
 import { clearTransactionHistory } from "../domain/dataCleanup";
 import type { AppData, CategoryKey } from "../domain/types";
 import { getFirebaseServices } from "../firebase/client";
@@ -16,13 +15,15 @@ import {
 } from "../household/firestoreRepository";
 import { hasLocalFinancialData } from "../household/households";
 import { sync, type SyncState } from "./syncState";
-import type { HouseholdMeta, ThemePreference, UserHouseholdLink } from "../household/types";
+import { readLocalConvenience, writeLocalConvenience } from "./localConvenience";
+import { EMPTY_LEDGER_FILTERS, useBrowserPreferences } from "./useBrowserPreferences";
+import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import { clearLegacyLocalData, hasLegacyLocalData, loadLegacyLocalData } from "../storage/legacyBrowserData";
 import { saveAuthoritativeData, type DataRepository } from "../storage/repository";
 import { emptyData } from "../storage/schema";
 import { CLEAR_TRANSACTIONS_CONFIRMATION } from "../ui/ClearTransactionsModal";
 import { RESET_CONFIRMATION } from "../ui/ResetHouseholdModal";
-import type { BeneficiaryFilter, LedgerFilters, PayerFilter } from "../ui/TransactionsView";
+import type { BeneficiaryFilter, PayerFilter } from "../ui/TransactionsView";
 
 export type View = "home" | "transactions" | "history";
 export type BootstrapPhase = "idle" | "loading-profile" | "loading-household" | "needs-household" | "ready" | "error";
@@ -41,15 +42,9 @@ export interface HouseholdConflict {
   remote: AppData;
 }
 
-export const EMPTY_LEDGER_FILTERS: LedgerFilters = {
-  category: "all",
-  beneficiary: "all",
-  payer: "all",
-};
+export { EMPTY_LEDGER_FILTERS };
 
 const ACTIVE_HOUSEHOLD_KEY = "mizan.activeHouseholdId";
-const PRIVACY_KEY = "mizan.privacy";
-const THEME_KEY = "mizan.theme";
 const STARTUP_MARKS = ["auth-start", "auth-ready", "profile-start", "profile-ready", "household-start", "meta-ready", "data-ready", "home-ready"] as const;
 
 interface SessionCallbacks {
@@ -69,26 +64,6 @@ function payerFilterValue(value: string | undefined): PayerFilter {
 
 function isView(value: string): value is View {
   return value === "home" || value === "transactions" || value === "history";
-}
-
-function readLocalConvenience(key: string): string {
-  return typeof localStorage === "undefined" ? "" : localStorage.getItem(key) ?? "";
-}
-
-function writeLocalConvenience(key: string, value: string): void {
-  if (typeof localStorage === "undefined") return;
-  if (value) localStorage.setItem(key, value);
-  else localStorage.removeItem(key);
-}
-
-function initialTheme(): ThemePreference {
-  const saved = readLocalConvenience(THEME_KEY);
-  if (saved === "light" || saved === "dark") return saved;
-  return typeof window !== "undefined"
-    && typeof window.matchMedia === "function"
-    && window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
 }
 
 function startupMark(name: (typeof STARTUP_MARKS)[number]) {
@@ -138,9 +113,6 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   const [legacyPresent, setLegacyPresent] = useState(() => hasLegacyLocalData());
   const [view, setView] = useState<View>("home");
   const [month, setMonth] = useState("");
-  const [privacy, setPrivacy] = useState(() => readLocalConvenience(PRIVACY_KEY) === "true");
-  const [theme, setTheme] = useState<ThemePreference>(initialTheme);
-  const [ledgerFilters, setLedgerFilters] = useState<LedgerFilters>(EMPTY_LEDGER_FILTERS);
   const [lastCheckInByHousehold, setLastCheckInByHousehold] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("");
   const [householdMeta, setHouseholdMeta] = useState<HouseholdMeta | null>(null);
@@ -153,6 +125,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   const conflictRef = useRef<HouseholdConflict | null>(null);
   const [householdDialog, setHouseholdDialog] = useState<"create" | "join" | null>(null);
   const authUid = auth.status === "signed-in" ? auth.user.uid : "";
+  const { privacy, setPrivacy, theme, setTheme, ledgerFilters, setLedgerFilters } = useBrowserPreferences(data, bootstrapPhase);
 
   useEffect(() => {
     repositoryRef.current = repository;
@@ -288,20 +261,6 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   }, [clearUndo]);
 
   useEffect(() => {
-    writeLocalConvenience(PRIVACY_KEY, String(privacy));
-  }, [privacy]);
-
-  useLayoutEffect(() => {
-    writeLocalConvenience(THEME_KEY, theme);
-    document.documentElement.dataset.theme = theme;
-    document.documentElement.style.colorScheme = theme;
-    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute(
-      "content",
-      theme === "dark" ? "#0f1713" : "#f1eee5",
-    );
-  }, [theme]);
-
-  useEffect(() => {
     if (!authUid || !services) {
       setAvailableHouseholds([]);
       return;
@@ -423,22 +382,6 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     startupMeasure("total", "auth-start", "home-ready");
     reportStartupTiming();
   }, [repository, bootstrapPhase]);
-
-  useEffect(() => {
-    if (bootstrapPhase !== "ready") return;
-    const validCategories = new Set(categoryOptions(data.settings.customCategories).map((option) => option.key));
-    const validMembers = new Set(data.settings.members.map((member) => member.id));
-    setLedgerFilters((current) => {
-      const category = current.category !== "all" && !validCategories.has(current.category) ? "all" : current.category;
-      const beneficiary = current.beneficiary.startsWith("member:")
-        && !validMembers.has(current.beneficiary.slice("member:".length)) ? "all" : current.beneficiary;
-      const payer = current.payer.startsWith("member:")
-        && !validMembers.has(current.payer.slice("member:".length)) ? "all" : current.payer;
-      return category === current.category && beneficiary === current.beneficiary && payer === current.payer
-        ? current
-        : { category, beneficiary, payer };
-    });
-  }, [bootstrapPhase, data.settings.members, data.settings.customCategories]);
 
   function cancelPendingAutosave() {
     if (saveTimer.current == null) return;
