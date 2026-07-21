@@ -33,6 +33,43 @@ service cloud.firestore {
       ];
     }
 
+    // Bound the number of top-level fields so a member cannot stuff a document
+    // with unbounded arbitrary keys. Real documents stay well under this.
+    function withinKeyBudget(data) {
+      return data.keys().size() <= 128;
+    }
+
+    // The cloud schema version the client currently writes. Keep this in step
+    // with CLOUD_HOUSEHOLD_SCHEMA_VERSION in src/household/types.ts. Capping it
+    // prevents a member from writing a poison-pill future version that would
+    // lock every other member's client out of the household.
+    function validVersionField(data) {
+      return !("schemaVersion" in data)
+        || (data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 8);
+    }
+
+    // The snapshot manifest is the compare-and-swap authority for the whole
+    // household, so its shape is pinned exactly and its author must be the
+    // writer. Other collections carry app-defined payloads and are only size and
+    // version bounded.
+    function validManifest(collectionId, data) {
+      return collectionId != "snapshotManifest"
+        || (
+          data.keys().hasOnly(["schemaVersion", "activeRevision", "versionToken", "updatedAt", "updatedBy"])
+          && data.schemaVersion == 1
+          && data.activeRevision is string
+          && data.versionToken is string && data.versionToken.size() > 0
+          && data.updatedAt is string
+          && data.updatedBy == request.auth.uid
+        );
+    }
+
+    function validHouseholdDoc(collectionId, data) {
+      return withinKeyBudget(data)
+        && validVersionField(data)
+        && validManifest(collectionId, data);
+    }
+
     function isMember(householdId) {
       return signedIn()
         && exists(metaPath(householdId))
@@ -93,12 +130,18 @@ service cloud.firestore {
 
     match /households/{householdId}/{collectionId}/{docId} {
       allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
-      allow write: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
+      allow create, update: if isHouseholdDataCollection(collectionId)
+        && isMemberAfter(householdId)
+        && validHouseholdDoc(collectionId, request.resource.data);
+      allow delete: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
     }
 
     match /households/{householdId}/snapshots/{revision}/{collectionId}/{docId} {
       allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
-      allow write: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
+      allow create, update: if isHouseholdDataCollection(collectionId)
+        && isMemberAfter(householdId)
+        && validHouseholdDoc(collectionId, request.resource.data);
+      allow delete: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
     }
 
     match /users/{uid}/households/{householdId} {

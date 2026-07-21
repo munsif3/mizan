@@ -6,6 +6,7 @@ import {
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
 import {
+  deleteDoc,
   doc,
   getDoc,
   serverTimestamp,
@@ -135,6 +136,48 @@ describe("Firestore household authorization", () => {
     });
     await assertFails(escalation.commit());
     await assertFails(updateDoc(doc(attacker, META_PATH), { name: "Hijacked" }));
+  });
+
+  it("pins the snapshot manifest shape and stamps the writer as author", async () => {
+    const owner = environment.authenticatedContext("owner").firestore();
+    const manifestRef = doc(owner, `households/${HOUSEHOLD_ID}/snapshotManifest/current`);
+    const wellFormed = {
+      schemaVersion: 1,
+      activeRevision: "rev_1",
+      versionToken: "token_1",
+      updatedAt: "2026-07-15T00:02:00.000Z",
+      updatedBy: "owner",
+    };
+
+    await assertSucceeds(setDoc(manifestRef, wellFormed));
+    // Forged author.
+    await assertFails(setDoc(manifestRef, { ...wellFormed, updatedBy: "someone-else" }));
+    // Wrong manifest version.
+    await assertFails(setDoc(manifestRef, { ...wellFormed, schemaVersion: 2 }));
+    // Empty compare-and-swap token.
+    await assertFails(setDoc(manifestRef, { ...wellFormed, versionToken: "" }));
+    // Unexpected extra field.
+    await assertFails(setDoc(manifestRef, { ...wellFormed, injected: true }));
+  });
+
+  it("rejects poison-pill schema versions and oversized documents", async () => {
+    const owner = environment.authenticatedContext("owner").firestore();
+
+    // A future version would lock every current client out of the household.
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settings/current`), { schemaVersion: 99 }));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`), { schemaVersion: 99 }));
+    // Within range stays allowed.
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settings/current`), { schemaVersion: 8 }));
+
+    const stuffed = Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`k${index}`, index]));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_big`), stuffed));
+  });
+
+  it("still lets members delete documents a delta save removes", async () => {
+    const owner = environment.authenticatedContext("owner").firestore();
+    const txnRef = doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`);
+    await assertSucceeds(setDoc(txnRef, { amount: 10 }));
+    await assertSucceeds(deleteDoc(txnRef));
   });
 
   it("allows profile access only to the profile owner", async () => {
