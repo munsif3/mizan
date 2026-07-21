@@ -2,7 +2,9 @@
 
 .icon-btn svg { display: block; }
 
-.danger-zone .modal-actions { justify-content: flex-start; flex-wrap: wrap; }
+.danger-zone .modal-actions { justify-content: flex-start; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+
+.danger-zone .modal-actions .button-secondary + .button-danger { margin-left: auto; }
 
 .icon-btn:hover { border-color: var(--ql-text); background: var(--ql-surface); }
 

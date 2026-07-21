@@ -54,6 +54,7 @@ describe("SettingsModal recurring commitments", () => {
           onUpdateFxRates={() => {}}
           onUpdateFixedCosts={(fixedCosts) => setData((value) => ({ ...value, fixedCosts }))}
           onUpdateAccounts={() => {}}
+          onUpsertRule={() => {}}
           onDeleteRule={() => {}}
           onUpdateCounterparties={() => {}}
           onUpdateCustomCategories={() => {}}
@@ -125,6 +126,7 @@ describe("SettingsModal recurring commitments", () => {
       onUpdateFxRates: () => {},
       onUpdateFixedCosts: () => {},
       onUpdateAccounts: () => {},
+      onUpsertRule: () => {},
       onDeleteRule: () => {},
       onUpdateCounterparties: () => {},
       onUpdateCustomCategories: () => {},
@@ -195,6 +197,86 @@ describe("SettingsModal recurring commitments", () => {
     expect(container.textContent).not.toContain("Reset household data");
   });
 
+  it("edits a merchant rule inline and re-normalizes on movement change", async () => {
+    const data = emptyData();
+    data.settings.members = [
+      { id: "owner", name: "Owner", color: "#5b8cff", portions: [] },
+      { id: "partner", name: "Partner", color: "#ff5b8c", portions: [] },
+    ];
+    data.settings.counterparties = [{ id: "sam", name: "Sam" }];
+    data.merchantRules = { KEELLS: { category: "food", beneficiary: { type: "household" }, kind: "expense" } };
+    const onUpsertRule = vi.fn();
+
+    const props: ComponentProps<typeof SettingsModal> = {
+      data,
+      onUpdateMembers: () => {},
+      onUpdateTarget: () => {},
+      onUpdateCurrency: () => {},
+      onUpdateFxRates: () => {},
+      onUpdateFixedCosts: () => {},
+      onUpdateAccounts: () => {},
+      onUpsertRule,
+      onDeleteRule: () => {},
+      onUpdateCounterparties: () => {},
+      onUpdateCustomCategories: () => {},
+      sync: { auth: { status: "signed-out", user: null, error: "" }, mode: "none", status: sync.idle(""), household: null, households: [] },
+      onSignIn: () => {},
+      onSignOut: () => {},
+      onCreateHousehold: () => {},
+      onJoinHousehold: () => {},
+      onSwitchHousehold: () => {},
+      onRotateInvite: () => {},
+      onExport: () => {},
+      onImportBackup: () => {},
+      hasLegacyBrowserData: false,
+      onClearData: () => {},
+      canClearTransactions: false,
+      hasTransactions: false,
+      onClearTransactions: () => {},
+      canResetHousehold: false,
+      hasResettableData: false,
+      onResetHousehold: () => {},
+      onClose: () => {},
+    };
+
+    await act(async () => root.render(<SettingsModal {...props} />));
+    await act(async () => button(container, "Accounts & rules").click());
+
+    const purpose = container.querySelector<HTMLSelectElement>('select[aria-label="Category for KEELLS"]')!;
+    await act(async () => {
+      purpose.value = "transport";
+      purpose.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onUpsertRule).toHaveBeenLastCalledWith("KEELLS", {
+      category: "transport",
+      beneficiary: { type: "household" },
+      kind: "expense",
+    });
+
+    const beneficiary = container.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary for KEELLS"]')!;
+    await act(async () => {
+      beneficiary.value = "member:partner";
+      beneficiary.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onUpsertRule).toHaveBeenLastCalledWith("KEELLS", {
+      category: "food",
+      beneficiary: { type: "member", memberId: "partner" },
+      kind: "expense",
+    });
+
+    // Switching to a kind that needs neither a purpose nor a beneficiary drops both.
+    const movement = container.querySelector<HTMLSelectElement>('select[aria-label="Movement for KEELLS"]')!;
+    await act(async () => {
+      movement.value = "internal_transfer";
+      movement.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onUpsertRule).toHaveBeenLastCalledWith("KEELLS", {
+      category: "uncategorized",
+      beneficiary: { type: "unassigned" },
+      kind: "internal_transfer",
+    });
+  });
+
   it("warns before deleting an income source with historical confirmations", async () => {
     const data = emptyData();
     data.settings.currency = "LKR";
@@ -216,6 +298,7 @@ describe("SettingsModal recurring commitments", () => {
         onUpdateFxRates={() => {}}
         onUpdateFixedCosts={() => {}}
         onUpdateAccounts={() => {}}
+        onUpsertRule={() => {}}
         onDeleteRule={() => {}}
         onUpdateCounterparties={() => {}}
         onUpdateCustomCategories={() => {}}

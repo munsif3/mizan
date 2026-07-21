@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, RotateCcw, Scissors, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { ownerOfTransaction } from "../domain/accounts";
-import { categoryOptions, spendingCategoryOptions } from "../domain/categories";
+import { categoryOptions } from "../domain/categories";
 import { contributionReferencesTransaction } from "../domain/contributions";
 import { monthLabel } from "../domain/dates";
 import { isSpendKind, kindAllowedFor, kindNeedsCategory, kindNeedsCounterparty, movementInfo, MOVEMENT_OPTIONS } from "../domain/movements";
@@ -10,6 +10,7 @@ import { isSpend, needsClassificationReview, netAmount, spendTotal, type MonthSu
 import type { TransferCandidate } from "../domain/transfers";
 import { defaultKind, type Account, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type SharedContribution, type SpendBeneficiary, type Transaction } from "../domain/types";
 import { Button, ConfirmDialog, EmptyState, IconButton, Modal, MoneyValue, StatusBadge } from "./bits";
+import { RuleFields, ruleBeneficiaryValue, ruleFromControls, type RuleBeneficiaryValue } from "./ruleFields";
 
 export type BeneficiaryFilter = "all" | "household" | "unassigned" | `member:${string}`;
 export type PayerFilter = "all" | "joint" | `member:${string}`;
@@ -33,19 +34,6 @@ function beneficiaryFromFilter(value: Exclude<BeneficiaryFilter, "all">): SpendB
   return value.startsWith("member:")
     ? { type: "member", memberId: value.slice("member:".length) }
     : { type: value as "household" | "unassigned" };
-}
-
-type RuleBeneficiaryValue = "unassigned" | "account_default" | "household" | `member:${string}`;
-
-function ruleBeneficiaryValue(beneficiary: MerchantRule["beneficiary"] | undefined): RuleBeneficiaryValue {
-  if (!beneficiary) return "unassigned";
-  return beneficiary.type === "member" ? `member:${beneficiary.memberId}` : beneficiary.type;
-}
-
-function ruleBeneficiaryFromValue(value: Exclude<RuleBeneficiaryValue, "unassigned">): MerchantRule["beneficiary"] {
-  return value.startsWith("member:")
-    ? { type: "member", memberId: value.slice("member:".length) }
-    : { type: value as "account_default" | "household" };
 }
 
 function useTransactionsViewModel({
@@ -733,7 +721,6 @@ function ReviewCard({
   financialValuesHidden: boolean;
   onCategorize: (merchant: string, rule: MerchantRule) => void;
 }) {
-  const spendingOptions = spendingCategoryOptions(customCategories);
   // A one-member household has no "for whom?" question: the account default
   // resolves to that member, so review only asks for purpose.
   const solo = members.length === 1;
@@ -743,22 +730,10 @@ function ReviewCard({
   const [beneficiary, setBeneficiary] = useState<RuleBeneficiaryValue>(
     ruleBeneficiaryValue(item.suggestedBeneficiary),
   );
-  const needsCategory = kindNeedsCategory(kind);
-  const needsCounterparty = kindNeedsCounterparty(kind);
   const spendKind = isSpendKind(kind);
-  const canApply = (!needsCategory || category !== "uncategorized") && (!spendKind || solo || beneficiary !== "unassigned");
+  const canApply = (!kindNeedsCategory(kind) || category !== "uncategorized") && (!spendKind || solo || beneficiary !== "unassigned");
 
-  const apply = () =>
-    onCategorize(item.merchant, {
-      category: needsCategory ? category : "uncategorized",
-      beneficiary: spendKind
-        ? solo
-          ? { type: "account_default" }
-          : ruleBeneficiaryFromValue(beneficiary as Exclude<RuleBeneficiaryValue, "unassigned">)
-        : { type: "unassigned" },
-      kind,
-      ...(needsCounterparty && counterpartyId ? { counterpartyId } : {}),
-    });
+  const apply = () => onCategorize(item.merchant, ruleFromControls(kind, category, beneficiary, counterpartyId, solo));
 
   const transactionLabel = `${item.count} transaction${item.count === 1 ? "" : "s"}`;
   const accountContextLabel = (context: ReviewItem["accountContexts"][number]) => {
@@ -782,47 +757,23 @@ function ReviewCard({
         </div>
       </div>
       <div className="review-fields">
-        <label className="review-field">
-          <span>Movement</span>
-          <select aria-label={`Movement for ${item.merchant}`} value={kind} onChange={(event) => setKind(event.target.value as MovementKind)}>
-            {MOVEMENT_OPTIONS.map((option) => (
-              <option key={option.kind} value={option.kind}>{option.label}</option>
-            ))}
-          </select>
-        </label>
-        {needsCategory && (
-          <label className="review-field">
-            <span>What was it?</span>
-            <select aria-label={`Category for ${item.merchant}`} value={category} onChange={(event) => setCategory(event.target.value as CategoryKey)}>
-              <option value="uncategorized" disabled>Choose purpose</option>
-              {spendingOptions.map((option) => (
-                <option key={option.key} value={option.key}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-        )}
-        {spendKind && !solo && (
-          <label className="review-field">
-            <span>Who was it for?</span>
-            <select aria-label={`Beneficiary for ${item.merchant}`} value={beneficiary} onChange={(event) => setBeneficiary(event.target.value as RuleBeneficiaryValue)}>
-              <option value="unassigned" disabled>Choose beneficiary</option>
-              <option value="account_default">Use account default</option>
-              <option value="household">Household</option>
-              {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
-            </select>
-          </label>
-        )}
-        {needsCounterparty && (
-          <label className="review-field">
-            <span>Other person</span>
-            <select aria-label={`Person for ${item.merchant}`} value={counterpartyId} onChange={(event) => setCounterpartyId(event.target.value)}>
-              <option value="">Optional</option>
-              {counterparties.map((cp) => (
-                <option key={cp.id} value={cp.id}>{cp.name}</option>
-              ))}
-            </select>
-          </label>
-        )}
+        <RuleFields
+          context={item.merchant}
+          kind={kind}
+          category={category}
+          beneficiary={beneficiary}
+          counterpartyId={counterpartyId}
+          members={members}
+          counterparties={counterparties}
+          customCategories={customCategories}
+          solo={solo}
+          categoryLabel="What was it?"
+          beneficiaryLabel="Who was it for?"
+          onKind={setKind}
+          onCategory={setCategory}
+          onBeneficiary={setBeneficiary}
+          onCounterparty={setCounterpartyId}
+        />
       </div>
       <button
         type="button"

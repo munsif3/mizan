@@ -303,6 +303,7 @@ describe("UI render smoke", () => {
         onUpdateFxRates={() => {}}
         onUpdateFixedCosts={() => {}}
         onUpdateAccounts={() => {}}
+        onUpsertRule={() => {}}
         onDeleteRule={() => {}}
         onUpdateCounterparties={() => {}}
         onUpdateCustomCategories={() => {}}

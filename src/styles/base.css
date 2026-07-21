@@ -67,15 +67,25 @@ input {
 
 select {
   font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
   border-radius: var(--ql-radius-control);
   width: 100%;
   min-height: 44px;
   border: 1px solid var(--ql-border);
-  background: var(--ql-surface);
+  background-color: var(--ql-surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235f6b64' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px;
   color: var(--ql-text);
-  padding: 8px 10px;
+  padding: 8px 34px 8px 10px;
   outline: none;
   border-color: var(--ql-border);
+}
+
+:root[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23b5bdb7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 textarea {

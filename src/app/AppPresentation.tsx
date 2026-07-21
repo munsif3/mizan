@@ -162,7 +162,7 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
   } = model.session;
   const { modal, setModal, pendingBackup, setPendingBackup } = model.ui;
   const {
-    updateMembers, updateAccounts, deleteRule, updateCounterparties, updateCustomCategories,
+    updateMembers, updateAccounts, categorizeMerchant, deleteRule, updateCounterparties, updateCustomCategories,
     exportBackup, importBackup, confirmBackupImport, clearAllData,
   } = model.actions;
   const canResetHousehold = auth.status === "signed-in"
@@ -179,6 +179,7 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
       setData((previous) => ({ ...previous, settings: { ...previous.settings, fxRates } })),
     onUpdateFixedCosts: (fixedCosts) => setData((previous) => ({ ...previous, fixedCosts })),
     onUpdateAccounts: updateAccounts,
+    onUpsertRule: categorizeMerchant,
     onDeleteRule: deleteRule,
     onUpdateCounterparties: updateCounterparties,
     onUpdateCustomCategories: updateCustomCategories,

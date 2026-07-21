@@ -164,7 +164,7 @@
   gap: 12px;
 }
 
-.rules-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-merchant { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
 
 .invite-box .soft-label { grid-column: 1 / -1; }
 
@@ -1236,9 +1236,9 @@ select:focus { border-color: var(--ql-brand); box-shadow: 0 0 0 3px var(--ql-foc
   font-weight: 700;
 }
 
-.toolbar-filters select { width: 180px; background: var(--ql-surface); }
+.toolbar-filters select { width: 180px; background-color: var(--ql-surface); }
 
-.movement-controls select { background: var(--ql-surface); }
+.movement-controls select { background-color: var(--ql-surface); }
 
 .ledger-table table { color: var(--ql-text); min-width: 1080px; table-layout: fixed; }
 
@@ -1792,17 +1792,20 @@ input[type="color"] { min-height: 42px; padding: 3px; }
 
 .fixed-purpose-guidance .link-button { flex: 0 0 auto; }
 
-.rules-list > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 36px;
+.rule-row {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
   padding: 8px 0;
   border-bottom: 1px solid var(--ql-border);
-  border-color: var(--ql-border);
 }
 
-.rules-list strong { color: var(--ql-brand); font-size: 12px; }
+.rule-row .rule-merchant { flex: 1 1 140px; min-width: 100px; }
+
+.rule-row .review-field { flex: 1 1 128px; }
+
+.rule-row .review-field select { min-height: 38px; }
 
 .sync-section { border-top: 0; padding-top: 24px; }
 
@@ -2344,6 +2347,8 @@ td small { display: block; margin-top: 4px; color: var(--ql-muted); }
 
 .settings-content .settings-section { padding-block: 20px; }
 
+.settings-content .settings-section.danger-zone { padding: 20px; }
+
 .settings-content .section-title h3 {
   font-family: inherit;
   font-size: 20px;
@@ -2357,36 +2362,42 @@ td small { display: block; margin-top: 4px; color: var(--ql-muted); }
 
 .settings-content .income-member { box-shadow: none; }
 
-.settings-content .income-member-header { gap: 14px; padding: 14px 16px; }
+.settings-content .income-member-header { gap: 14px; padding: 11px 16px; }
 
-.settings-content .income-member-title { grid-template-columns: 40px minmax(150px, 260px); gap: 10px; }
+.settings-content .income-member-title { grid-template-columns: 36px minmax(150px, 260px); gap: 10px; }
 
 .settings-content .income-member-avatar {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   font-family: inherit;
-  font-size: 17px;
+  font-size: 16px;
 }
 
-.settings-content .member-name-field input { font-family: inherit; font-size: 18px; font-weight: 700; }
+.settings-content .member-name-field input { font-family: inherit; font-size: 17px; font-weight: 700; }
 
 .settings-content .income-member-actions { flex-wrap: wrap; justify-content: flex-end; }
 
 .settings-content .income-member-actions button { padding-inline: 12px; font-size: 14px; }
 
-.settings-content .income-deposit-list { gap: 12px; padding: 14px 16px 16px; }
+.settings-content .income-deposit-list { gap: 10px; padding: 12px 16px 14px; }
 
 .settings-content .income-deposit-card { box-shadow: none; }
 
-.settings-content .income-deposit-header { padding: 11px 13px; }
+.settings-content .income-deposit-header { padding: 8px 13px; }
 
-.settings-content .deposit-name-field { padding: 13px; }
+.settings-content .income-deposit-header strong { font-size: 15px; }
 
-.settings-content .deposit-section { gap: 12px; padding: 14px; }
+.settings-content .deposit-name-field { gap: 4px; padding: 10px 13px; }
 
-.settings-content .income-schedule-choices { margin-top: 10px; }
+.settings-content .deposit-section { gap: 9px; padding: 12px; }
 
-.settings-content .income-schedule-choices button { padding: 8px 10px; }
+.settings-content .deposit-section-heading { gap: 8px; }
+
+.settings-content .deposit-section-heading > div { gap: 1px; }
+
+.settings-content .income-schedule-choices { margin-top: 8px; }
+
+.settings-content .income-schedule-choices button { padding: 6px 10px; }
 
 .financial-strip {
   display: grid;

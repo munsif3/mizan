@@ -2,15 +2,16 @@ import { useId, useRef, useState, type CSSProperties } from "react";
 import { Trash2 } from "lucide-react";
 import { syncBadgeLabel, syncBadgeTone, type SyncState } from "../app/syncState";
 import type { AuthState } from "../auth/authStore";
-import { categoryInfo, categoryOptions, nextMemberColor } from "../domain/categories";
+import { categoryOptions, nextMemberColor } from "../domain/categories";
 import { isoDateOf } from "../domain/dates";
-import { isSpendKind, movementInfo } from "../domain/movements";
-import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, FixedCost, FixedCostKind, IncomePortion, Member, MerchantRule, SpendBeneficiary } from "../domain/types";
+import { movementInfo } from "../domain/movements";
+import type { Account, AppData, CategoryKey, Counterparty, CustomCategory, FixedCost, FixedCostKind, IncomePortion, Member, MerchantRule, MovementKind, SpendBeneficiary } from "../domain/types";
 import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import type { RepositoryMode } from "../storage/repository";
 import { uid } from "../domain/types";
 import { Button, ConfirmDialog, IconButton, Modal, StatusBadge, Tabs } from "./bits";
 import { COMMON_CURRENCIES } from "./currencies";
+import { RuleFields, ruleBeneficiaryValue, ruleFromControls, type RuleBeneficiaryValue } from "./ruleFields";
 
 export interface SyncSettingsState {
   auth: AuthState;
@@ -38,6 +39,7 @@ type SettingsModalProps = {
   onUpdateFxRates: (fxRates: Record<string, number>) => void;
   onUpdateFixedCosts: (fixedCosts: FixedCost[]) => void;
   onUpdateAccounts: (accounts: Account[]) => void;
+  onUpsertRule: (merchant: string, rule: MerchantRule) => void;
   onDeleteRule: (merchant: string) => void;
   onUpdateCounterparties: (counterparties: Counterparty[]) => void;
   onUpdateCustomCategories: (customCategories: CustomCategory[]) => void;
@@ -70,13 +72,6 @@ function beneficiaryFromValue(value: string): SpendBeneficiary {
   return value === "household" ? { type: "household" } : { type: "unassigned" };
 }
 
-function beneficiaryLabel(beneficiary: MerchantRule["beneficiary"], members: Member[]): string {
-  if (beneficiary.type === "account_default") return "Account default";
-  if (beneficiary.type === "household") return "Household";
-  if (beneficiary.type === "unassigned") return "Unassigned";
-  return members.find((member) => member.id === beneficiary.memberId)?.name ?? "Former member";
-}
-
 function looksLikeLoanCommitment(label: string): boolean {
   return /\b(?:loan|mortgage|debt)\b/i.test(label);
 }
@@ -89,6 +84,7 @@ function useSettingsModel({
   onUpdateFxRates,
   onUpdateFixedCosts,
   onUpdateAccounts,
+  onUpsertRule,
   onDeleteRule,
   onUpdateCounterparties,
   onUpdateCustomCategories,
@@ -179,7 +175,7 @@ function useSettingsModel({
 
   return {
     data, onUpdateMembers, onUpdateTarget, onUpdateCurrency, onUpdateFxRates,
-    onUpdateFixedCosts, onUpdateAccounts, onDeleteRule, onUpdateCounterparties,
+    onUpdateFixedCosts, onUpdateAccounts, onUpsertRule, onDeleteRule, onUpdateCounterparties,
     onUpdateCustomCategories, sync, onSignIn, onSignOut, onCreateHousehold,
     onJoinHousehold, onSwitchHousehold, onRotateInvite, onExport, onImportBackup,
     hasLegacyBrowserData, onClearData, canClearTransactions, hasTransactions,
@@ -624,9 +620,10 @@ function CategoryPeopleSettings({ model }: { model: SettingsModel }) {
 
 function AccountRuleSettings({ model }: { model: SettingsModel }) {
   const {
-    activeTab, data, patchAccount, onUpdateAccounts, members, requestDelete, onDeleteRule,
-    currency, counterparties, customCategories,
+    activeTab, data, patchAccount, onUpdateAccounts, members, requestDelete,
+    onUpsertRule, onDeleteRule, currency, counterparties, customCategories,
   } = model;
+  const solo = members.length === 1;
   return (
     <>
       {activeTab === "accounts" && (
@@ -713,17 +710,37 @@ function AccountRuleSettings({ model }: { model: SettingsModel }) {
 
           <div className="settings-section">
             <h3>Merchant rules</h3>
-            <p className="muted">Deleting a rule returns the transactions it controlled to the review queue (or to the next matching fallback rule).</p>
+            <p className="muted">Edit how a merchant is classified and it re-applies to every unlocked transaction. Deleting a rule returns the transactions it controlled to the review queue (or to the next matching fallback rule).</p>
             <div className="rules-list">
               {Object.entries(data.merchantRules).map(([merchant, rule]) => {
-                const person = rule.counterpartyId ? counterparties.find((cp) => cp.id === rule.counterpartyId)?.name : "";
-                const label = isSpendKind(rule.kind)
-                  ? `${rule.kind === "expense" ? "" : `${movementInfo(rule.kind).label} · `}${categoryInfo(rule.category, customCategories).label} · ${beneficiaryLabel(rule.beneficiary, members)}`
-                  : `${movementInfo(rule.kind).label}${person ? ` · ${person}` : ""}`;
+                const emit = (patch: Partial<{ kind: MovementKind; category: CategoryKey; beneficiary: RuleBeneficiaryValue; counterpartyId: string }>) =>
+                  onUpsertRule(merchant, ruleFromControls(
+                    patch.kind ?? rule.kind,
+                    patch.category ?? rule.category,
+                    patch.beneficiary ?? ruleBeneficiaryValue(rule.beneficiary),
+                    patch.counterpartyId ?? rule.counterpartyId ?? "",
+                    solo,
+                  ));
                 return (
-                  <div key={merchant}>
-                    <span>{merchant}</span>
-                    <strong>{label}</strong>
+                  <div className="rule-row" key={merchant}>
+                    <span className="rule-merchant" title={merchant}>{merchant}</span>
+                    <RuleFields
+                      context={merchant}
+                      kind={rule.kind}
+                      category={rule.category}
+                      beneficiary={ruleBeneficiaryValue(rule.beneficiary)}
+                      counterpartyId={rule.counterpartyId ?? ""}
+                      members={members}
+                      counterparties={counterparties}
+                      customCategories={customCategories}
+                      solo={solo}
+                      categoryLabel="Purpose"
+                      beneficiaryLabel="For whom"
+                      onKind={(kind) => emit({ kind })}
+                      onCategory={(category) => emit({ category })}
+                      onBeneficiary={(beneficiary) => emit({ beneficiary })}
+                      onCounterparty={(counterpartyId) => emit({ counterpartyId })}
+                    />
                     <IconButton
                       label={`Delete merchant rule for ${merchant}`}
                       icon={Trash2}
