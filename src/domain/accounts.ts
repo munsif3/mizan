@@ -69,6 +69,20 @@ export function applyAccounts(transactions: Transaction[], accounts: Account[]):
 
 /** Resolve one account's configured beneficiary without guessing for joint/invalid owners. */
 export function beneficiaryForAccount(account: Account | undefined, members: Member[]): SpendBeneficiary {
+  const configured = configuredBeneficiaryForAccount(account, members);
+  // A one-member household has no "for whom?" question: every spend is that
+  // member's. Fill only the lowest (account-default) tier, so an explicit
+  // Household or account-owner policy still wins, and the value stays inferred
+  // (`account_default` provenance) so it recalculates cleanly if a second member
+  // is ever added.
+  if (configured.type === "unassigned" && members.length === 1) {
+    return { type: "member", memberId: members[0]!.id };
+  }
+  return configured;
+}
+
+/** The account's literally configured beneficiary, ignoring household size. */
+function configuredBeneficiaryForAccount(account: Account | undefined, members: Member[]): SpendBeneficiary {
   if (!account || account.beneficiaryDefault === "review") return UNASSIGNED_BENEFICIARY;
   if (account.beneficiaryDefault === "household") return { type: "household" };
   if (account.owner !== "joint" && members.some((member) => member.id === account.owner)) {
@@ -128,6 +142,22 @@ export function applyAccountBeneficiaryDefaults(
     if (!inferred && !unresolved) return txn;
     return withAccountBeneficiaryDefault(txn, accounts, members);
   });
+}
+
+/**
+ * Fill the account-default beneficiary for unlocked, still-unassigned spend in a
+ * one-member household, where every spend belongs to that member. A no-op for
+ * households with two or more members, so the "for whom?" axis stays real there.
+ * Runs the standard fill, whose per-account resolution already returns the sole
+ * member via `beneficiaryForAccount`.
+ */
+export function applySoloBeneficiaryDefaults(
+  transactions: Transaction[],
+  accounts: Account[],
+  members: Member[],
+): Transaction[] {
+  if (members.length !== 1) return transactions;
+  return applyAccountBeneficiaryDefaults(transactions, accounts, members, { fillUnassigned: true });
 }
 
 /** Explicitly bind a row to a registered account without losing its import provenance. */

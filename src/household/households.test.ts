@@ -116,7 +116,12 @@ describe("household helpers", () => {
         updatedAt: "2026-07-01T00:00:00.000Z",
         updatedBy: "user_1",
       },
-      members: [{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }],
+      // Two members keeps this a test of the v4 pre-beneficiary distinction, not
+      // of the one-member beneficiary backfill.
+      members: [
+        { id: "sara", name: "Sara", color: "#5b8cff", portions: [] },
+        { id: "nina", name: "Nina", color: "#ff80b5", portions: [] },
+      ],
       accounts: [{ id: "card", label: "Sara Card", owner: "sara", match: [] } as never],
       transactions: [{
         id: "unknown", date: "2026-07-01", description: "UNKNOWN", amount: 100,

@@ -174,8 +174,9 @@ describe("migrate (v5 passthrough and fresh data)", () => {
     const data = migrate(v5);
     expect(data.settings.members).toEqual([{ id: "kai", name: "Kai", color: "#5b8cff", portions: [{ id: "por_kai", label: "Monthly income", amount: 1000, currency: "EUR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }] }]);
     expect(data.settings.currency).toBe("EUR");
-    // The amount stays, while an unknown former member becomes an honest unresolved beneficiary.
-    expect(data.transactions[0]).toMatchObject({ category: "uncategorized", beneficiary: { type: "unassigned" } });
+    // The amount stays and the unknown former member is dropped; in a one-member
+    // household the sole member then becomes the beneficiary.
+    expect(data.transactions[0]).toMatchObject({ category: "uncategorized", beneficiary: { type: "member", memberId: "kai" } });
   });
 
   it("yields an empty member list (triggers onboarding) for data with no legacy member markers", () => {
@@ -413,7 +414,12 @@ describe("migrate (v11 -> v12 purpose and beneficiary classification)", () => {
     accounts: [{ id: "cash", label: "Cash", owner: "sam", match: [] }],
     settings: {
       currency: "LKR",
-      members: [{ id: "sam", name: "Sam", color: "#5b8cff", portions: [] }],
+      // Two members isolates the v11->v12 separation logic from the one-member
+      // beneficiary backfill (covered separately below).
+      members: [
+        { id: "sam", name: "Sam", color: "#5b8cff", portions: [] },
+        { id: "kai", name: "Kai", color: "#ff80b5", portions: [] },
+      ],
     },
   };
 
@@ -603,6 +609,44 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
       { expenseTransactionId: "loan", amount: 75000 },
       { expenseTransactionId: "loan-2", amount: 50000 },
     ]);
+  });
+});
+
+describe("one-member household beneficiary backfill", () => {
+  const soloSource = {
+    schemaVersion: 15,
+    transactions: [
+      { id: "groceries", date: "2026-07-02", description: "KEELLS", amount: 5000, category: "food", account: "Kai Card", accountId: "card" },
+      { id: "locked", date: "2026-07-03", description: "MANUAL", amount: 1000, category: "food", account: "Kai Card", accountId: "card", classificationLocked: true },
+    ],
+    accounts: [{ id: "card", label: "Kai Card", owner: "kai", beneficiaryDefault: "review", match: [] }],
+    settings: {
+      currency: "LKR",
+      members: [{ id: "kai", name: "Kai", color: "#5b8cff", portions: [] }],
+    },
+  };
+
+  it("assigns the sole member to unresolved spend but leaves locked rows for review", () => {
+    const data = migrate(soloSource);
+    expect(data.transactions.find((txn) => txn.id === "groceries")).toMatchObject({
+      beneficiary: { type: "member", memberId: "kai" },
+      beneficiarySource: "account_default",
+    });
+    expect(data.transactions.find((txn) => txn.id === "locked")?.beneficiary).toEqual({ type: "unassigned" });
+  });
+
+  it("does not backfill once a household has two members", () => {
+    const data = migrate({
+      ...soloSource,
+      settings: {
+        ...soloSource.settings,
+        members: [
+          { id: "kai", name: "Kai", color: "#5b8cff", portions: [] },
+          { id: "sam", name: "Sam", color: "#ff80b5", portions: [] },
+        ],
+      },
+    });
+    expect(data.transactions.find((txn) => txn.id === "groceries")?.beneficiary).toEqual({ type: "unassigned" });
   });
 });
 

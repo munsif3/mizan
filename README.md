@@ -13,6 +13,8 @@ Firestore household before any financial data screen is available.
   always produces the same result.
 - **Multi-member settlement.** Add anyone who shares the budget. Mizan splits shared spending fairly
   and shows the minimal set of payments that settles everyone up.
+- **Works solo, too.** A one-member household automatically drops settlement, the member split, and the
+  "for whom" question, so an individual gets a clean single-person view without the shared-budget machinery.
 - **Bring your own bank.** Import a plain CSV export from any bank with an interactive column mapper,
   use a built-in statement parser, or enter transactions by hand.
 - **Household sync.** Sign in with Google to create or join a household so multiple people can share

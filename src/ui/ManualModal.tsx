@@ -43,6 +43,9 @@ export function ManualModal({
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState<CategoryKey>("food");
   const configuredAccounts = accounts.filter((account) => account.label.trim());
+  // A one-member household resolves the beneficiary to that member, so the
+  // "for whom?" question is dropped and left to the account default.
+  const solo = members.length === 1;
   const initialAccount = configuredAccounts[0];
   const initialBeneficiary = beneficiaryForAccount(initialAccount, members);
   const beneficiaryValue = (value: SpendBeneficiary) => value.type === "member" ? `member:${value.memberId}` : value.type;
@@ -73,7 +76,7 @@ export function ManualModal({
       setError("Enter an amount greater than zero.");
       return;
     }
-    if (isSpendKind(kind) && beneficiary === "unassigned") {
+    if (isSpendKind(kind) && !solo && beneficiary === "unassigned") {
       setError("Choose who this spending was for.");
       return;
     }
@@ -146,7 +149,7 @@ export function ManualModal({
           </div>
         )}
       </div>
-      {isSpendKind(kind) && (
+      {isSpendKind(kind) && !solo && (
         <label className="field">
           <span>Who was it for?</span>
           <select aria-label="Beneficiary" value={beneficiary} onChange={(event) => {

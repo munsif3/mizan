@@ -137,14 +137,17 @@ function PurposeMatrix({
   attribution,
   money,
   onOpenTransactions,
+  solo,
 }: {
   attribution: Attribution;
   money: (value: number) => string;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
+  solo: boolean;
 }) {
   const [expanded, setExpanded] = useState<Set<CategoryKey>>(() => new Set());
   const members = attribution.memberRows.map((row) => row.member);
-  const columns = members.length + 3;
+  // A one-member household has no beneficiary split, so the matrix is purpose x total.
+  const columns = solo ? 1 : members.length + 3;
   const matrixStyle = { "--who-columns": columns } as CSSProperties;
 
   const toggle = (key: CategoryKey) => {
@@ -187,9 +190,9 @@ function PurposeMatrix({
     <div className="spending-matrix" role="table" aria-label="Spending by purpose and beneficiary" style={matrixStyle}>
       <div className="who-matrix-header" role="row">
         <span role="columnheader">What for</span>
-        <span role="columnheader">Household</span>
-        {members.map((member) => <span role="columnheader" key={member.id}>{member.name}</span>)}
-        <span role="columnheader">Unassigned</span>
+        {!solo && <span role="columnheader">Household</span>}
+        {!solo && members.map((member) => <span role="columnheader" key={member.id}>{member.name}</span>)}
+        {!solo && <span role="columnheader">Unassigned</span>}
         <span role="columnheader">Total</span>
       </div>
 
@@ -215,8 +218,8 @@ function PurposeMatrix({
                   <ChevronDown size={18} strokeWidth={2} aria-hidden="true" />
                 </button>
               </div>
-              {amountCell(row, row.household, "Household", { beneficiary: "household" })}
-              {members.map((member) => (
+              {!solo && amountCell(row, row.household, "Household", { beneficiary: "household" })}
+              {!solo && members.map((member) => (
                 <div className={`who-matrix-cell ${(row.byMember[member.id] ?? 0) === 0 ? "is-zero" : ""}`} role="cell" data-label={member.name} key={member.id}>
                   <DrilldownAmount
                     value={row.byMember[member.id] ?? 0}
@@ -226,7 +229,7 @@ function PurposeMatrix({
                   />
                 </div>
               ))}
-              {amountCell(row, row.unassigned, "Unassigned", { beneficiary: "unassigned" })}
+              {!solo && amountCell(row, row.unassigned, "Unassigned", { beneficiary: "unassigned" })}
               {amountCell(row, row.total, "Total", {}, false)}
             </div>
 
@@ -236,15 +239,15 @@ function PurposeMatrix({
                 {row.merchants.slice(0, 4).map((merchant) => (
                   <div className="purpose-driver-row" style={matrixStyle} key={merchant.merchant}>
                     <span>{merchant.merchant}</span>
-                    <span className={`purpose-driver-amount ${merchant.household === 0 ? "is-zero" : ""}`} data-label="Household">
+                    {!solo && <span className={`purpose-driver-amount ${merchant.household === 0 ? "is-zero" : ""}`} data-label="Household">
                       <DrilldownAmount
                         value={merchant.household}
                         money={money}
                         label={`${merchant.merchant}, ${row.name}, Household`}
                         onClick={openTarget(onOpenTransactions, { category: row.key, beneficiary: "household", merchant: merchant.merchant })}
                       />
-                    </span>
-                    {members.map((member) => (
+                    </span>}
+                    {!solo && members.map((member) => (
                       <span className={`purpose-driver-amount ${(merchant.byMember[member.id] ?? 0) === 0 ? "is-zero" : ""}`} data-label={member.name} key={member.id}>
                         <DrilldownAmount
                           value={merchant.byMember[member.id] ?? 0}
@@ -254,14 +257,14 @@ function PurposeMatrix({
                         />
                       </span>
                     ))}
-                    <span className={`purpose-driver-amount ${merchant.unassigned === 0 ? "is-zero" : ""}`} data-label="Unassigned">
+                    {!solo && <span className={`purpose-driver-amount ${merchant.unassigned === 0 ? "is-zero" : ""}`} data-label="Unassigned">
                       <DrilldownAmount
                         value={merchant.unassigned}
                         money={money}
                         label={`${merchant.merchant}, ${row.name}, Unassigned`}
                         onClick={openTarget(onOpenTransactions, { category: row.key, beneficiary: "unassigned", merchant: merchant.merchant })}
                       />
-                    </span>
+                    </span>}
                     <span className="purpose-driver-amount" data-label="Total">
                       <DrilldownAmount
                         value={merchant.total}
@@ -384,6 +387,7 @@ interface HomeDetailModel {
   money: (value: number) => string;
   percent: (value: number, digits?: number) => string;
   financialValuesHidden: boolean;
+  solo: boolean;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
   efficiency?: EfficiencySnapshot;
   onReviewEfficiency?: (opportunity: EfficiencyOpportunity) => void;
@@ -398,7 +402,7 @@ interface HomeDetailModel {
 
 function HomeDetailSections({ model }: { model: HomeDetailModel }) {
   const {
-    summary: s, money, percent, financialValuesHidden, onOpenTransactions, efficiency,
+    summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency,
     onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
     onOpenSettings, freshnessLabel, checkInDays, movementRows,
   } = model;
@@ -423,14 +427,16 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
 
       {hasActivity ? (
         <Disclosure
-          title="Spending and settlement"
-          summary={`${money(s.attribution.recordedSpend)} recorded across purpose, responsibility, and payer`}
+          title={solo ? "Spending" : "Spending and settlement"}
+          summary={solo
+            ? `${money(s.attribution.recordedSpend)} recorded by purpose`
+            : `${money(s.attribution.recordedSpend)} recorded across purpose, responsibility, and payer`}
         >
       <section className="friendly-section attribution-section">
         <div className="friendly-heading attribution-heading">
           <div>
-            <span className="soft-label">Who spent what</span>
-            <h3>Purpose, responsibility, and who paid</h3>
+            <span className="soft-label">{solo ? "Where the money went" : "Who spent what"}</span>
+            <h3>{solo ? "By purpose" : "Purpose, responsibility, and who paid"}</h3>
           </div>
           <p>Recorded activity: {money(s.attribution.recordedSpend)}</p>
         </div>
@@ -439,8 +445,10 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
           attribution={s.attribution}
           money={money}
           onOpenTransactions={onOpenTransactions}
+          solo={solo}
         />
 
+        {!solo && (<>
         <div className="funding-reconciliation" aria-label="Recorded activity reconciliation">
           <div>
             <span>
@@ -519,6 +527,7 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
             />
           ))}
         </div>
+        </>)}
       </section>
 
       <section className="home-grid plan-grid overview-grid">
@@ -664,6 +673,8 @@ function useHomeViewModel({
   const householdMembers = members ?? [];
   const onTrack = s.projectedSaveRate >= s.targetSaveRate;
   const hasActivity = s.monthTransactions.length > 0 || s.totalSpend > 0;
+  // One-member households have no beneficiary split or settlement to show.
+  const solo = s.attribution.memberRows.length === 1;
   const movementRows = s.movementRows.filter((row) => row.value > 0 || row.delta !== 0);
   const dataNeedsUpdate =
     s.isCurrentMonth && (s.dataAgeDays === null ? s.dayNumber > 3 : s.dataAgeDays >= 7);
@@ -777,7 +788,7 @@ function useHomeViewModel({
 
   return {
     s, onTrack, forecastReady, onOpenImport, onOpenSettings, onReviewQueue,
-    checkInDays, money, moneyIn, percent,
+    checkInDays, money, moneyIn, percent, solo,
     financialValuesHidden, onConfirmIncome, candidates, onAddOneOffIncome, attentionItems,
     visibleAttentionItems, showAllActions, setShowAllActions, onOpenTransactions, efficiency, onReviewEfficiency,
     onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows,
@@ -789,7 +800,7 @@ type HomeViewModel = ReturnType<typeof useHomeViewModel>;
 function HomeHeroSummary({ model }: { model: HomeViewModel }) {
   const {
     s, onTrack, forecastReady, onOpenImport, onReviewQueue, onOpenSettings,
-    money, financialValuesHidden, percent,
+    money, financialValuesHidden, percent, solo,
   } = model;
   return (
     <>
@@ -805,12 +816,12 @@ function HomeHeroSummary({ model }: { model: HomeViewModel }) {
           </h2>
           {forecastReady ? (
             <p>
-              At the current pace, you are projected to save <b><MoneyValue formatted={money(s.projectedSaved)} hidden={financialValuesHidden} /></b>. The shared target
+              At the current pace, you are projected to save <b><MoneyValue formatted={money(s.projectedSaved)} hidden={financialValuesHidden} /></b>. {solo ? "Your" : "The shared"} target
               is a <MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
             </p>
           ) : (
             <p>
-              The forecast is paused until this month has current transactions. Your shared target remains a
+              The forecast is paused until this month has current transactions. Your {solo ? "" : "shared "}target remains a
               {" "}<MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
             </p>
           )}
@@ -977,7 +988,7 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
 
 function HomeOverview({ model }: { model: HomeViewModel }) {
   const {
-    s, onOpenSettings, checkInDays, money, percent, financialValuesHidden,
+    s, onOpenSettings, checkInDays, money, percent, financialValuesHidden, solo,
     onOpenTransactions, efficiency, onReviewEfficiency,
     onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows,
   } = model;
@@ -1005,7 +1016,7 @@ function HomeOverview({ model }: { model: HomeViewModel }) {
       <HomeIncomeSection model={model} />
       <HomeAttentionSection model={model} />
       <HomeDetailSections model={{
-        summary: s, money, percent, financialValuesHidden, onOpenTransactions, efficiency,
+        summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency,
         onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
         onOpenSettings, freshnessLabel, checkInDays, movementRows,
       }} />

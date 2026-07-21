@@ -77,6 +77,34 @@ function fixture(): AppData {
   return data;
 }
 
+function soloFixture(): AppData {
+  const data = emptyData();
+  data.settings.currency = "LKR";
+  data.settings.locale = "en-LK";
+  data.settings.members = [{
+    id: "kai",
+    name: "Kai",
+    color: "#5b8cff",
+    portions: [{ id: "kai-income", label: "Monthly income", amount: 300_000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" }],
+  }];
+  data.accounts = [{ id: "kai-card", label: "Kai Card", owner: "kai", beneficiaryDefault: "owner", match: [] }];
+  data.transactions = [{
+    id: "groceries",
+    date: "2026-07-10",
+    description: "KEELLS",
+    amount: 20_000,
+    category: "food",
+    beneficiary: { type: "member", memberId: "kai" },
+    account: "Kai Card",
+    accountId: "kai-card",
+    note: "",
+    source: "imported",
+    direction: "debit",
+    kind: "expense",
+  }];
+  return data;
+}
+
 describe("HomeView spending attribution", () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -222,6 +250,47 @@ describe("HomeView spending attribution", () => {
     const evidence = [...container.querySelectorAll("button")].find((item) => item.textContent === "Open evidence");
     await act(async () => evidence?.click());
     expect(onOpenTransactions).toHaveBeenCalledWith({ category: "dining", beneficiary: "household", merchant: "MERCHANT 1" });
+  });
+
+  it("hides settlement, member statements, and beneficiary columns for a one-member household", async () => {
+    const summary = computeMonthSummary(soloFixture(), "2026-07", new Date(2026, 6, 15));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <HomeView
+          summary={summary}
+          money={() => "Hidden"}
+          lastCheckInAt=""
+          onOpenSettings={() => {}}
+          onOpenImport={() => {}}
+          onReviewQueue={() => {}}
+          onCompleteCheckIn={() => {}}
+          onConfirmIncome={() => {}}
+        />,
+      );
+    });
+
+    // Hero copy drops the shared-household framing.
+    expect(container.textContent).toContain("Your target");
+    expect(container.textContent).not.toContain("shared target");
+
+    const spendingDetails = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("Spending"));
+    await act(async () => spendingDetails?.click());
+
+    expect(container.textContent).toContain("Where the money went");
+    expect(container.textContent).toContain("By purpose");
+    expect(container.textContent).not.toContain("Who spent what");
+    expect(container.textContent).not.toContain("Member statements");
+    expect(container.textContent).not.toContain("Recorded responsibility");
+    expect(container.textContent).not.toContain("Joint or unregistered funding");
+
+    // The purpose matrix collapses to purpose x total, with no beneficiary columns.
+    const headers = [...container.querySelectorAll('.who-matrix-header [role="columnheader"]')].map((cell) => cell.textContent);
+    expect(headers).toEqual(["What for", "Total"]);
   });
 
   it("masks amounts, percentages, chart magnitudes, and accessible values in privacy mode", async () => {

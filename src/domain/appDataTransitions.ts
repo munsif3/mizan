@@ -1,6 +1,7 @@
 import {
   applyAccountBeneficiaryDefaults,
   applyAccounts,
+  applySoloBeneficiaryDefaults,
   assignAccount,
   withAccountBeneficiaryDefault,
 } from "./accounts";
@@ -152,11 +153,16 @@ export function transitionMembers(
     .filter((member) => !members.some((next) => next.id === member.id))
     .map((member) => member.id);
   if (!removedMemberIds.length) {
+    // Adding/editing members never re-defaults existing rows, except that a
+    // household now down to (or still at) one member backfills the sole
+    // beneficiary; a no-op above one member.
+    const transactions = applySoloBeneficiaryDefaults(data.transactions, data.accounts, members);
     return {
       removedMemberIds,
       data: {
         ...data,
-        sharedContributions: pruneSharedContributions(data.sharedContributions, data.transactions, data.accounts, members),
+        transactions,
+        sharedContributions: pruneSharedContributions(data.sharedContributions, transactions, data.accounts, members),
         incomeReceipts: pruneReceipts(data.incomeReceipts, members),
         settings: { ...data.settings, members },
       },
@@ -187,11 +193,10 @@ export function transitionMembers(
   const accounts = data.accounts.map((account) =>
     removedMemberIds.includes(account.owner) ? { ...account, owner: "joint" } : account,
   );
-  const defaultedTransactions = applyAccountBeneficiaryDefaults(
-    transactions,
+  const defaultedTransactions = applySoloBeneficiaryDefaults(
+    applyAccountBeneficiaryDefaults(transactions, accounts, members, { fillUnassigned: false }),
     accounts,
     members,
-    { fillUnassigned: false },
   );
   return {
     removedMemberIds,

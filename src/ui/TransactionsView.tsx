@@ -122,6 +122,8 @@ function useTransactionsViewModel({
   const contributionTransactions = allTransactions ?? summary.monthTransactions;
   const allOptions = categoryOptions(customCategories);
   const configuredAccounts = accounts.filter((account) => account.label.trim());
+  // One-member households have no "for whom?" axis: it resolves to that member.
+  const solo = members.length === 1;
   const [accountFilter, setAccountFilter] = useState("all");
   const [movementFilter, setMovementFilter] = useState<MovementKind | "all">("all");
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -246,7 +248,7 @@ function useTransactionsViewModel({
           ))}
         </select>
       )}
-      {isSpend(txn) && (
+      {isSpend(txn) && !solo && (
         <span className="beneficiary-control">
           <select
             aria-label={`Beneficiary for ${txn.description}`}
@@ -336,7 +338,7 @@ function useTransactionsViewModel({
 
   return {
     summary, members, accounts, customCategories, counterparties, queue, transferCandidates,
-    undoLabel, filters, onFiltersChange, money, transactionMoney, financialValuesHidden,
+    undoLabel, filters, onFiltersChange, money, transactionMoney, financialValuesHidden, solo,
     onCategorizeMerchant, onUndo, onResetClassification, onConfirmTransfer, onDismissTransfer,
     onSplit, onRemove, onOpenImport, onAddTransaction, linkedIncome,
     allOptions, accountFilter, setAccountFilter, movementFilter, setMovementFilter,
@@ -444,7 +446,7 @@ function TransactionFilterBar({ model }: { model: TransactionsViewModel }) {
     filters, onFiltersChange, filtersOpen, setFiltersOpen, filterCount, summary, monthEnd,
     allOptions, members, movementFilter, setMovementFilter, accountFilter, setAccountFilter,
     accountsInMonth, hasFilters, categoryLabel, beneficiaryFilterLabel, payerFilterLabel,
-    clearAllFilters,
+    clearAllFilters, solo,
   } = model;
   return (
     <>
@@ -478,16 +480,16 @@ function TransactionFilterBar({ model }: { model: TransactionsViewModel }) {
               <option value="all">All purposes</option>
               {allOptions.map((option) => <option value={option.key} key={option.key}>{option.label}</option>)}
             </select></label>
-            <label><span>Beneficiary</span><select aria-label="For whom" value={filters.beneficiary} onChange={(event) => onFiltersChange({ ...filters, beneficiary: event.target.value as BeneficiaryFilter })}>
+            {!solo && <label><span>Beneficiary</span><select aria-label="For whom" value={filters.beneficiary} onChange={(event) => onFiltersChange({ ...filters, beneficiary: event.target.value as BeneficiaryFilter })}>
               <option value="all">Everyone</option><option value="household">Household</option>
               {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
               <option value="unassigned">Unassigned</option>
-            </select></label>
-            <label><span>Payer</span><select aria-label="Paid from" value={filters.payer} onChange={(event) => onFiltersChange({ ...filters, payer: event.target.value as PayerFilter })}>
+            </select></label>}
+            {!solo && <label><span>Payer</span><select aria-label="Paid from" value={filters.payer} onChange={(event) => onFiltersChange({ ...filters, payer: event.target.value as PayerFilter })}>
               <option value="all">All payers</option>
               {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
               <option value="joint">Joint / unregistered</option>
-            </select></label>
+            </select></label>}
             <label><span>Movement</span><select aria-label="Movement" value={movementFilter} onChange={(event) => setMovementFilter(event.target.value as MovementKind | "all")}>
               <option value="all">All movements</option>
               {MOVEMENT_OPTIONS.map((option) => <option value={option.kind} key={option.kind}>{option.label}</option>)}
@@ -732,6 +734,9 @@ function ReviewCard({
   onCategorize: (merchant: string, rule: MerchantRule) => void;
 }) {
   const spendingOptions = spendingCategoryOptions(customCategories);
+  // A one-member household has no "for whom?" question: the account default
+  // resolves to that member, so review only asks for purpose.
+  const solo = members.length === 1;
   const [kind, setKind] = useState<MovementKind>(item.suggestedKind ?? "expense");
   const [counterpartyId, setCounterpartyId] = useState(item.suggestedCounterpartyId ?? "");
   const [category, setCategory] = useState<CategoryKey>(item.suggestedCategory ?? "uncategorized");
@@ -741,13 +746,15 @@ function ReviewCard({
   const needsCategory = kindNeedsCategory(kind);
   const needsCounterparty = kindNeedsCounterparty(kind);
   const spendKind = isSpendKind(kind);
-  const canApply = (!needsCategory || category !== "uncategorized") && (!spendKind || beneficiary !== "unassigned");
+  const canApply = (!needsCategory || category !== "uncategorized") && (!spendKind || solo || beneficiary !== "unassigned");
 
   const apply = () =>
     onCategorize(item.merchant, {
       category: needsCategory ? category : "uncategorized",
       beneficiary: spendKind
-        ? ruleBeneficiaryFromValue(beneficiary as Exclude<RuleBeneficiaryValue, "unassigned">)
+        ? solo
+          ? { type: "account_default" }
+          : ruleBeneficiaryFromValue(beneficiary as Exclude<RuleBeneficiaryValue, "unassigned">)
         : { type: "unassigned" },
       kind,
       ...(needsCounterparty && counterpartyId ? { counterpartyId } : {}),
@@ -794,7 +801,7 @@ function ReviewCard({
             </select>
           </label>
         )}
-        {spendKind && (
+        {spendKind && !solo && (
           <label className="review-field">
             <span>Who was it for?</span>
             <select aria-label={`Beneficiary for ${item.merchant}`} value={beneficiary} onChange={(event) => setBeneficiary(event.target.value as RuleBeneficiaryValue)}>

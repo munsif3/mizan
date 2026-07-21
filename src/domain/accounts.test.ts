@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyAccountBeneficiaryDefaults,
   applyAccounts,
+  applySoloBeneficiaryDefaults,
   assignAccount,
   guessOwner,
   ownerOfTransaction,
@@ -166,6 +167,55 @@ describe("account beneficiary defaults", () => {
       { type: "household" },
       { type: "unassigned" },
     ]);
+  });
+});
+
+describe("one-member household beneficiary defaults", () => {
+  const solo: Member[] = [{ id: "kai", name: "Kai", color: "#5b8cff", portions: [] }];
+  const soloAccounts: Account[] = [
+    { id: "review", label: "Kai Review", owner: "kai", beneficiaryDefault: "review", match: ["1111"] },
+    { id: "joint", label: "Shared", owner: "joint", beneficiaryDefault: "review", match: ["2222"] },
+    { id: "home", label: "Home", owner: "kai", beneficiaryDefault: "household", match: ["3333"] },
+  ];
+
+  it("assigns the sole member to unresolved spend, including review and joint accounts", () => {
+    const rows = applySoloBeneficiaryDefaults([
+      { ...txn("Kai Review"), accountId: "review", beneficiary: { type: "unassigned" } },
+      { ...txn("Shared"), accountId: "joint", beneficiary: { type: "unassigned" } },
+      { ...txn("Cash"), beneficiary: { type: "unassigned" } },
+    ], soloAccounts, solo);
+    expect(rows.map((row) => row.beneficiary)).toEqual([
+      { type: "member", memberId: "kai" },
+      { type: "member", memberId: "kai" },
+      { type: "member", memberId: "kai" },
+    ]);
+    // Inferred provenance keeps it recalculable if a second member is later added.
+    expect(rows.every((row) => row.beneficiarySource === "account_default")).toBe(true);
+  });
+
+  it("never overrides an explicit account policy, an explicit row, or a locked row", () => {
+    const rows = applySoloBeneficiaryDefaults([
+      { ...txn("Home"), accountId: "home", beneficiary: { type: "unassigned" } },
+      { ...txn("Kai Review"), accountId: "review", beneficiary: { type: "household" } },
+      { ...txn("Kai Review"), accountId: "review", beneficiary: { type: "unassigned" }, classificationLocked: true },
+    ], soloAccounts, solo);
+    expect(rows.map((row) => row.beneficiary)).toEqual([
+      { type: "household" },
+      { type: "household" },
+      { type: "unassigned" },
+    ]);
+  });
+
+  it("leaves non-spend rows unresolved", () => {
+    const rows = applySoloBeneficiaryDefaults([
+      { ...txn("Kai Review"), accountId: "review", beneficiary: { type: "unassigned" }, kind: "internal_transfer" },
+    ], soloAccounts, solo);
+    expect(rows[0]!.beneficiary).toEqual({ type: "unassigned" });
+  });
+
+  it("is a no-op for households with two or more members", () => {
+    const input = [{ ...txn("Kai Review"), accountId: "review", beneficiary: { type: "unassigned" as const } }];
+    expect(applySoloBeneficiaryDefaults(input, soloAccounts, MEMBERS)).toBe(input);
   });
 });
 

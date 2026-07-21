@@ -78,7 +78,7 @@ describe("ManualModal beneficiary classification", () => {
     await act(async () => root?.render(
       <ManualModal
         accounts={[{ id: "sara-card", label: "Sara Card", owner: "sara", beneficiaryDefault: "owner", match: [] }]}
-        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }]}
+        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }, { id: "sam", name: "Sam", color: "#ff80b5", portions: [] }]}
         customCategories={[]}
         counterparties={[]}
         onAdd={onAdd}
@@ -117,7 +117,7 @@ describe("ManualModal beneficiary classification", () => {
           { id: "sara-card", label: "Sara Card", owner: "sara", beneficiaryDefault: "owner", match: [] },
           { id: "home-card", label: "Home Card", owner: "sara", beneficiaryDefault: "household", match: [] },
         ]}
-        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }]}
+        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }, { id: "sam", name: "Sam", color: "#ff80b5", portions: [] }]}
         customCategories={[]}
         counterparties={[]}
         onAdd={onAdd}
@@ -202,6 +202,39 @@ describe("ManualModal beneficiary classification", () => {
     expect(entry).not.toHaveProperty("beneficiarySource");
   });
 
+  it("hides the beneficiary picker and adopts the sole member in a one-member household", async () => {
+    const onAdd = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <ManualModal
+        accounts={[{ id: "kai-card", label: "Kai Card", owner: "kai", beneficiaryDefault: "review", match: [] }]}
+        members={[{ id: "kai", name: "Kai", color: "#5b8cff", portions: [] }]}
+        customCategories={[]}
+        counterparties={[]}
+        onAdd={onAdd}
+        onClose={() => {}}
+      />,
+    ));
+
+    expect(container?.querySelector('select[aria-label="Beneficiary"]')).toBeNull();
+    const setInput = async (label: string, value: string) => {
+      const field = container?.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+        field?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setInput("Amount", "1200");
+    await setInput("Description", "KEELLS");
+    await act(async () => container?.querySelector<HTMLFormElement>("form")?.requestSubmit());
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({
+      beneficiary: { type: "member", memberId: "kai" },
+      beneficiarySource: "account_default",
+    }));
+  });
+
   it("supports an unregistered Cash account when no accounts are configured", async () => {
     const onAdd = vi.fn();
     container = document.createElement("div");
@@ -210,7 +243,7 @@ describe("ManualModal beneficiary classification", () => {
     await act(async () => root?.render(
       <ManualModal
         accounts={[]}
-        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }]}
+        members={[{ id: "sara", name: "Sara", color: "#5b8cff", portions: [] }, { id: "sam", name: "Sam", color: "#ff80b5", portions: [] }]}
         customCategories={[]}
         counterparties={[]}
         onAdd={onAdd}

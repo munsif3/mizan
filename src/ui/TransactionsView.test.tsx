@@ -309,6 +309,43 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     });
   });
 
+  it("drops the beneficiary axis from review in a one-member household", async () => {
+    const onCategorize = vi.fn();
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      onCategorize,
+      vi.fn(),
+      (data) => {
+        data.settings.members = [{ id: "alex", name: "Alex", color: "#5b8cff", portions: [] }];
+        data.transactions = [{
+          id: "solo-unknown", date: "2026-07-12", description: "UNKNOWN SHOP", amount: 2_000,
+          category: "uncategorized", beneficiary: { type: "member", memberId: "alex" }, beneficiarySource: "account_default",
+          account: "Alex Card", accountId: "alex-card", note: "", source: "imported", direction: "debit", kind: "expense",
+        }];
+      },
+    );
+
+    // The "for whom?" field is gone; review asks only for purpose.
+    expect(container?.querySelector('select[aria-label="Beneficiary for UNKNOWN SHOP"]')).toBeNull();
+    expect(container?.textContent).not.toContain("Who was it for?");
+
+    const category = container?.querySelector<HTMLSelectElement>('select[aria-label="Category for UNKNOWN SHOP"]');
+    const apply = container?.querySelector<HTMLButtonElement>('button[aria-label="Save merchant default for UNKNOWN SHOP"]');
+    await act(async () => {
+      if (!category) return;
+      category.value = "dining";
+      category.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(apply?.disabled).toBe(false);
+    await act(async () => apply?.click());
+    // The sole member is filled through the account default, keeping the rule recalculable.
+    expect(onCategorize).toHaveBeenCalledWith("UNKNOWN SHOP", {
+      category: "dining",
+      beneficiary: { type: "account_default" },
+      kind: "expense",
+    });
+  });
+
   it("searches across ledger context and opens editing in a focused drawer", async () => {
     await mount({ category: "all", beneficiary: "all", payer: "all" });
     const search = container?.querySelector<HTMLInputElement>('input[aria-label="Search transactions"]');

@@ -1,4 +1,4 @@
-import { applyAccountBeneficiaryDefaults, seedAccounts, transactionDisplayCurrency } from "../domain/accounts";
+import { applyAccountBeneficiaryDefaults, applySoloBeneficiaryDefaults, seedAccounts, transactionDisplayCurrency } from "../domain/accounts";
 import { isCategoryKey } from "../domain/categories";
 import { pruneSharedContributions } from "../domain/contributions";
 import { normalizeFxTransaction } from "../domain/fx";
@@ -661,11 +661,13 @@ export function migrate(raw: unknown): AppData {
   }));
   const portionOwners = new Set(members.flatMap((member) => member.portions.map((portion) => `${member.id}\u0000${portion.id}`)));
   const fxNormalizedTransactions = transactions.map((txn) => normalizeFxTransaction(txn, currency));
-  const normalizedTransactions = applyAccountBeneficiaryDefaults(
-    fxNormalizedTransactions,
+  // Account-derived beneficiaries only recompute inferred rows here (unassigned
+  // rows keep their review state for multi-member households). A one-member
+  // household is the exception: every spend is that member's, so backfill it.
+  const normalizedTransactions = applySoloBeneficiaryDefaults(
+    applyAccountBeneficiaryDefaults(fxNormalizedTransactions, accounts, members, { fillUnassigned: false }),
     accounts,
     members,
-    { fillUnassigned: false },
   );
   const fxRates = asFxRates(settingsRaw.fxRates);
   const transactionIds = new Set(normalizedTransactions.map((txn) => txn.id));
