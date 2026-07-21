@@ -28,6 +28,7 @@ import { AuthGate } from "../ui/AuthGate";
 import { Alert, Button, ConfirmDialog, IconButton, PageHeader, Skeleton } from "../ui/bits";
 import { ClearTransactionsModal } from "../ui/ClearTransactionsModal";
 import { ConflictRecoveryDialog } from "../ui/ConflictRecoveryDialog";
+import { CreateHouseholdDialog, JoinHouseholdDialog } from "../ui/HouseholdDialogs";
 import { isSyncProblem, syncChipLabel } from "./syncState";
 import { CsvImportModal } from "../ui/CsvImportModal";
 import { EfficiencyOutcomeModal, EfficiencyReviewModal } from "../ui/EfficiencyModal";
@@ -150,7 +151,7 @@ const NAV_ITEMS = [
 function SettingsOverlays({ model }: { model: AppPresentationModel }) {
   const {
     auth, repository, data, setData, legacyPresent, householdMeta, availableHouseholds, syncStatus,
-    clearActiveHouseholdTransactions, resetActiveHousehold, createHousehold, joinHousehold,
+    clearActiveHouseholdTransactions, resetActiveHousehold, setHouseholdDialog,
     switchHousehold, rotateInvite, handleSignIn, handleSignOut,
   } = model.session;
   const { modal, setModal, pendingBackup, setPendingBackup } = model.ui;
@@ -184,8 +185,8 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
     },
     onSignIn: handleSignIn,
     onSignOut: handleSignOut,
-    onCreateHousehold: createHousehold,
-    onJoinHousehold: joinHousehold,
+    onCreateHousehold: () => setHouseholdDialog("create"),
+    onJoinHousehold: () => setHouseholdDialog("join"),
     onSwitchHousehold: switchHousehold,
     onRotateInvite: rotateInvite,
     onExport: exportBackup,
@@ -244,7 +245,7 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
 function HouseholdGate({ model }: { model: AppPresentationModel }) {
   const {
     legacyPresent, notice, availableHouseholds, syncStatus, bootstrapPhase, bootstrapError,
-    retryBootstrap, createHousehold, joinHousehold, switchHousehold, handleSignOut,
+    retryBootstrap, setHouseholdDialog, switchHousehold, handleSignOut,
   } = model.session;
   const loadingProfile = bootstrapPhase === "idle" || bootstrapPhase === "loading-profile";
   const loadingHousehold = bootstrapPhase === "loading-household";
@@ -288,15 +289,15 @@ function HouseholdGate({ model }: { model: AppPresentationModel }) {
           )}
           {needsHousehold && (
             <div className="sync-actions sync-main-actions">
-              <Button variant="primary" onClick={createHousehold}>Create household</Button>
-              <Button variant="secondary" onClick={joinHousehold}>Join with invite</Button>
+              <Button variant="primary" onClick={() => setHouseholdDialog("create")}>Create household</Button>
+              <Button variant="secondary" onClick={() => setHouseholdDialog("join")}>Join with invite</Button>
             </div>
           )}
           {failedBootstrap && (
             <div className="sync-actions sync-main-actions">
               <Button variant="primary" onClick={retryBootstrap}>Retry household load</Button>
-              <Button variant="secondary" onClick={createHousehold}>Create household</Button>
-              <Button variant="secondary" onClick={joinHousehold}>Join with invite</Button>
+              <Button variant="secondary" onClick={() => setHouseholdDialog("create")}>Create household</Button>
+              <Button variant="secondary" onClick={() => setHouseholdDialog("join")}>Join with invite</Button>
               <Button variant="secondary" onClick={handleSignOut}>Sign out</Button>
             </div>
           )}
@@ -669,7 +670,11 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
 }
 
 export function AppPresentation({ model }: { model: AppPresentationModel }) {
-  const { auth, repository, data, notice, handleSignIn, conflict, resolveConflict } = model.session;
+  const {
+    auth, repository, data, notice, handleSignIn, conflict, resolveConflict,
+    householdDialog, setHouseholdDialog, createHousehold, joinHousehold,
+    willMigrateLegacyData, householdNameSuggestion,
+  } = model.session;
   const content = auth.status !== "signed-in"
     ? <AuthGate auth={auth} notice={notice} onSignIn={handleSignIn} />
     : !repository
@@ -687,6 +692,17 @@ export function AppPresentation({ model }: { model: AppPresentationModel }) {
     <>
       {content}
       {conflict && <ConflictRecoveryDialog conflict={conflict} onResolve={resolveConflict} />}
+      {householdDialog === "create" && (
+        <CreateHouseholdDialog
+          suggestion={householdNameSuggestion}
+          willMigrateLegacyData={willMigrateLegacyData}
+          onCreate={createHousehold}
+          onClose={() => setHouseholdDialog(null)}
+        />
+      )}
+      {householdDialog === "join" && (
+        <JoinHouseholdDialog onJoin={joinHousehold} onClose={() => setHouseholdDialog(null)} />
+      )}
     </>
   );
 }

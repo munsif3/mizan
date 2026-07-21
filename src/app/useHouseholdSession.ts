@@ -151,6 +151,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [conflict, setConflict] = useState<HouseholdConflict | null>(null);
   const conflictRef = useRef<HouseholdConflict | null>(null);
+  const [householdDialog, setHouseholdDialog] = useState<"create" | "join" | null>(null);
   const authUid = auth.status === "signed-in" ? auth.user.uid : "";
 
   useEffect(() => {
@@ -321,6 +322,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     profileLoaded.current = false;
     conflictRef.current = null;
     setConflict(null);
+    setHouseholdDialog(null);
     setRepository(null);
     setHouseholdMeta(null);
     setData(emptyData());
@@ -599,51 +601,41 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     }
   }
 
-  async function createHousehold() {
+  // Whether creating a household will migrate this browser's legacy Mizan data,
+  // and a suggested name — both surfaced in the create dialog so the user makes
+  // an informed choice instead of confirming a native prompt.
+  const willMigrateLegacyData = Boolean(legacyData && hasLocalFinancialData(legacyData));
+  const householdNameSuggestion =
+    (willMigrateLegacyData ? legacyData!.settings.members.map((member) => member.name).join(" + ") : "") || "Household";
+
+  // Errors propagate so the dialog can show them inline and stay open; the
+  // caller closes the dialog only on success.
+  async function createHousehold(name: string) {
     if (auth.status !== "signed-in" || !services) {
-      setNotice("Sign in with Google before creating a household.");
-      return;
+      throw new Error("Sign in with Google before creating a household.");
     }
-    const migratingLegacy = Boolean(legacyData && hasLocalFinancialData(legacyData));
-    const initialData = migratingLegacy ? legacyData! : emptyData();
-    const prompt = migratingLegacy
-      ? "Create a Firestore household and migrate this browser's old Mizan data?"
-      : "Create a Firestore household for Mizan data?";
-    if (!window.confirm(prompt)) return;
-    const name = window.prompt("Household name", initialData.settings.members.map((member) => member.name).join(" + ") || "Household");
-    if (name === null) return;
+    const initialData = willMigrateLegacyData ? legacyData! : emptyData();
     const activation = ++activationVersion.current;
-    try {
-      await flushPendingAutosave();
-      const meta = await createFirestoreHousehold(services.db, auth.user, name, initialData);
-      const repo = new FirestoreHouseholdRepository(services.db, meta.id, auth.user.uid);
-      if (activation !== activationVersion.current) return;
-      const activated = await activateHousehold(meta, { activation }, { repo, cloudData: initialData });
-      if (activated && migratingLegacy) finishLegacyMigration();
-      void loadUserHouseholds(services.db, auth.user.uid).then(setAvailableHouseholds).catch(() => undefined);
-      setNotice(`Household created. Invite code: ${meta.inviteCode}`);
-    } catch (error) {
-      setNotice((error as Error).message);
-    }
+    await flushPendingAutosave();
+    const meta = await createFirestoreHousehold(services.db, auth.user, name, initialData);
+    const repo = new FirestoreHouseholdRepository(services.db, meta.id, auth.user.uid);
+    if (activation !== activationVersion.current) return;
+    const activated = await activateHousehold(meta, { activation }, { repo, cloudData: initialData });
+    if (activated && willMigrateLegacyData) finishLegacyMigration();
+    void loadUserHouseholds(services.db, auth.user.uid).then(setAvailableHouseholds).catch(() => undefined);
+    setNotice(`Household created. Invite code: ${meta.inviteCode}`);
   }
 
-  async function joinHousehold() {
+  async function joinHousehold(inviteCode: string) {
     if (auth.status !== "signed-in" || !services) {
-      setNotice("Sign in with Google before joining a household.");
-      return;
+      throw new Error("Sign in with Google before joining a household.");
     }
-    const inviteCode = window.prompt("Paste the household invite code");
-    if (!inviteCode) return;
     const activation = ++activationVersion.current;
-    try {
-      await flushPendingAutosave();
-      const meta = await joinFirestoreHousehold(services.db, auth.user, inviteCode);
-      if (activation !== activationVersion.current) return;
-      await activateHousehold(meta, { activation });
-      void loadUserHouseholds(services.db, auth.user.uid).then(setAvailableHouseholds).catch(() => undefined);
-    } catch (error) {
-      setNotice((error as Error).message);
-    }
+    await flushPendingAutosave();
+    const meta = await joinFirestoreHousehold(services.db, auth.user, inviteCode);
+    if (activation !== activationVersion.current) return;
+    await activateHousehold(meta, { activation });
+    void loadUserHouseholds(services.db, auth.user.uid).then(setAvailableHouseholds).catch(() => undefined);
   }
 
   async function switchHousehold(householdId: string) {
@@ -701,6 +693,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     resetTransientState();
     conflictRef.current = null;
     setConflict(null);
+    setHouseholdDialog(null);
     profileLoaded.current = false;
     setBootstrapPhase("idle");
     setBootstrapError("");
@@ -741,6 +734,10 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     resetActiveHousehold,
     createHousehold,
     joinHousehold,
+    householdDialog,
+    setHouseholdDialog,
+    willMigrateLegacyData,
+    householdNameSuggestion,
     switchHousehold,
     rotateInvite,
     handleSignIn,
