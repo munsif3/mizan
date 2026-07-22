@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { parseCsv } from "../import/csv";
 import { csvPresetSignature, headerSignature, inferMapping, mapCsvRows } from "../import/csvMap";
 import type { CsvMapping } from "../domain/types";
+import { assertCsvFile } from "../security/resourceLimits";
 import { AccountCoverageConfirm, type AccountCoverageConfirmation } from "./AccountCoverageConfirm";
 import { Button, Modal } from "./bits";
 import type { ImportResult } from "./ImportModal";
@@ -30,6 +31,12 @@ export function CsvImportModal({
   const defaultAccount = file.name.replace(/\.csv$/i, "");
 
   useEffect(() => {
+    try {
+      assertCsvFile(file);
+    } catch (fileError) {
+      setError((fileError as Error).message);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       try {

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { FileSpreadsheet, Landmark } from "lucide-react";
 import { parsersFor } from "../import/registry";
 import type { StatementParser } from "../import/types";
+import { assertCsvFile, assertStatementFiles } from "../security/resourceLimits";
 import {
   AccountCoverageConfirm,
   type AccountCoverageCandidate,
@@ -41,15 +42,27 @@ export function ImportModal({
   const [passwords, setPasswords] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [selectionError, setSelectionError] = useState("");
 
   function chooseFiles(selected: File[]) {
     setResult(null);
-    if (mode === "csv") {
-      const csv = selected.find((file) => /\.csv$/i.test(file.name));
-      if (csv) onCsv(csv);
-      return;
+    setSelectionError("");
+    try {
+      if (mode === "csv") {
+        const csv = selected.find((file) => /\.csv$/i.test(file.name));
+        if (csv) {
+          assertCsvFile(csv);
+          onCsv(csv);
+        }
+        return;
+      }
+      const statements = selected.filter((file) => /\.(html?|pdf)$/i.test(file.name));
+      assertStatementFiles(statements);
+      setFiles(statements);
+    } catch (error) {
+      setFiles([]);
+      setSelectionError((error as Error).message);
     }
-    setFiles(selected.filter((file) => /\.(html?|pdf)$/i.test(file.name)));
   }
 
   const neededParsers = useMemo(() => {
@@ -96,6 +109,7 @@ export function ImportModal({
             setMode(nextMode);
             setFiles([]);
             setResult(null);
+            setSelectionError("");
           }}
         />
 
@@ -123,6 +137,8 @@ export function ImportModal({
               (mode === "csv" ? "CSV opens a column-mapping step next." : "Duplicates are skipped by date, merchant, amount, and account.")}
           </span>
         </label>
+
+        {selectionError && <p className="notice" role="alert">{selectionError}</p>}
 
         {neededParsers.map((parser) => (
           <label className="field" key={parser.id}>

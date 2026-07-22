@@ -374,7 +374,7 @@ describe("UI render smoke", () => {
     );
     expect(html).toContain("This permanently clears");
     expect(html).toContain("Shared budget");
-    expect(html).toContain("Export JSON");
+    expect(html).toContain("Export encrypted backup");
     expect(html).toContain("Type");
     expect(html).toContain("RESET");
     expect(html).toContain("Budget members");
@@ -416,7 +416,7 @@ describe("UI render smoke", () => {
     expect(html).toContain("Transactions removed");
     expect(html).toContain("Contribution links removed");
     expect(html).toContain("Income links detached");
-    expect(html).toContain("Export JSON");
+    expect(html).toContain("Export encrypted backup");
     expect(html).toContain("disabled=\"\"");
     expect(isClearTransactionsConfirmation("CLEAR")).toBe(true);
     expect(isClearTransactionsConfirmation("clear")).toBe(false);

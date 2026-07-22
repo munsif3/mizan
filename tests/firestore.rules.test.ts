@@ -43,6 +43,40 @@ function householdMeta() {
   };
 }
 
+function signedIn(uid: string, displayName: string, email: string) {
+  return environment.authenticatedContext(uid, {
+    name: displayName,
+    email,
+    email_verified: true,
+  }).firestore();
+}
+
+function cloudSettings(updatedBy: string, schemaVersion = 9) {
+  return {
+    schemaVersion,
+    targetSaveRate: 25,
+    currency: "LKR",
+    locale: "en-LK",
+    fxRates: {},
+    updatedAt: "2026-07-15T00:02:00.000Z",
+    updatedBy,
+  };
+}
+
+function transactionDoc(id: string) {
+  return { id, amount: 10 };
+}
+
+function manifest(updatedBy: string, versionToken = "token_1") {
+  return {
+    schemaVersion: 1,
+    activeRevision: "rev_1",
+    versionToken,
+    updatedAt: "2026-07-15T00:02:00.000Z",
+    updatedBy,
+  };
+}
+
 beforeAll(async () => {
   environment = await initializeTestEnvironment({
     projectId: PROJECT_ID,
@@ -72,13 +106,13 @@ describe("Firestore household authorization", () => {
     await assertFails(getDoc(doc(outsider, `households/${HOUSEHOLD_ID}/snapshots/rev_1`)));
     await assertFails(getDoc(doc(outsider, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`)));
     await assertSucceeds(getDoc(doc(owner, META_PATH)));
-    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`), { schemaVersion: 5 }));
-    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`), { amount: 10 }));
-    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`), { action: "reduce" }));
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`), cloudSettings("owner")));
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`), transactionDoc("txn_1")));
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`), { id: "plan_1", action: "reduce" }));
   });
 
   it("permits only the invite-proven user to add itself as a regular member", async () => {
-    const joiner = environment.authenticatedContext("joiner", { email: "joiner@example.com" }).firestore();
+    const joiner = signedIn("joiner", "Joiner", "joiner@example.com");
     const batch = writeBatch(joiner);
     batch.set(doc(joiner, `households/${HOUSEHOLD_ID}/joinRequests/joiner`), {
       uid: "joiner",
@@ -97,12 +131,12 @@ describe("Firestore household authorization", () => {
 
     await assertSucceeds(batch.commit());
     await assertSucceeds(getDoc(doc(joiner, META_PATH)));
-    await assertSucceeds(setDoc(doc(joiner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`), { amount: 10 }));
-    await assertSucceeds(setDoc(doc(joiner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`), { action: "keep" }));
+    await assertSucceeds(setDoc(doc(joiner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`), transactionDoc("txn_1")));
+    await assertSucceeds(setDoc(doc(joiner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`), { id: "plan_1", action: "keep" }));
   });
 
   it("rejects a wrong invite, privilege escalation, and metadata tampering", async () => {
-    const attacker = environment.authenticatedContext("attacker").firestore();
+    const attacker = signedIn("attacker", "Attacker", "attacker@example.com");
     const wrongInvite = writeBatch(attacker);
     wrongInvite.set(doc(attacker, `households/${HOUSEHOLD_ID}/joinRequests/attacker`), {
       uid: "attacker",
@@ -139,6 +173,84 @@ describe("Firestore household authorization", () => {
     await assertFails(updateDoc(doc(attacker, META_PATH), { name: "Hijacked" }));
   });
 
+  it("binds self-join identity to verified auth claims and rejects existing-member self-overwrites", async () => {
+    const joiner = signedIn("joiner", "Joiner", "joiner@example.com");
+    const spoofedJoin = writeBatch(joiner);
+    spoofedJoin.set(doc(joiner, `households/${HOUSEHOLD_ID}/joinRequests/joiner`), {
+      uid: "joiner",
+      inviteCode: INVITE_CODE,
+      createdAt: serverTimestamp(),
+    });
+    spoofedJoin.update(doc(joiner, META_PATH), {
+      "membersByUid.joiner": {
+        role: "member",
+        displayName: "Victim",
+        email: "victim@example.com",
+        joinedAt: "2026-07-15T00:01:00.000Z",
+      },
+      updatedAt: "2026-07-15T00:01:00.000Z",
+    });
+    await assertFails(spoofedJoin.commit());
+
+    const owner = signedIn("owner", "Owner", "owner@example.com");
+    const selfDemotion = writeBatch(owner);
+    selfDemotion.set(doc(owner, `households/${HOUSEHOLD_ID}/joinRequests/owner`), {
+      uid: "owner",
+      inviteCode: INVITE_CODE,
+      createdAt: serverTimestamp(),
+    });
+    selfDemotion.update(doc(owner, META_PATH), {
+      "membersByUid.owner": {
+        role: "member",
+        displayName: "Owner",
+        email: "owner@example.com",
+        joinedAt: "2026-07-15T00:00:00.000Z",
+      },
+      updatedAt: "2026-07-15T00:01:00.000Z",
+    });
+    await assertFails(selfDemotion.commit());
+  });
+
+  it("allows a verified creator to make only its own matching discovery link", async () => {
+    const creator = signedIn("creator", "Creator", "creator@example.com");
+    const newHouseholdId = "hh_created123";
+    const createdAt = "2026-07-15T00:00:00.000Z";
+    const batch = writeBatch(creator);
+    batch.set(doc(creator, `households/${newHouseholdId}/meta/current`), {
+      id: newHouseholdId,
+      name: "Created household",
+      ownerUid: "creator",
+      membersByUid: {
+        creator: {
+          role: "owner",
+          displayName: "Creator",
+          email: "creator@example.com",
+          joinedAt: createdAt,
+        },
+      },
+      inviteCode: `${newHouseholdId}_invite123`,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    batch.set(doc(creator, `users/creator/households/${newHouseholdId}`), {
+      householdId: newHouseholdId,
+      name: "Created household",
+      role: "owner",
+      joinedAt: createdAt,
+      updatedAt: createdAt,
+    });
+    await assertSucceeds(batch.commit());
+
+    const owner = environment.authenticatedContext("owner").firestore();
+    await assertFails(setDoc(doc(owner, `users/victim/households/${HOUSEHOLD_ID}`), {
+      householdId: HOUSEHOLD_ID,
+      name: "Rules household",
+      role: "member",
+      joinedAt: createdAt,
+      updatedAt: createdAt,
+    }));
+  });
+
   it("lets an owner promote a recovery owner and transfer primary ownership", async () => {
     await environment.withSecurityRulesDisabled(async (context) => {
       const meta = householdMeta();
@@ -154,11 +266,20 @@ describe("Firestore household authorization", () => {
     const owner = environment.authenticatedContext("owner").firestore();
     const outsider = environment.authenticatedContext("outsider").firestore();
 
-    await assertSucceeds(updateDoc(doc(owner, META_PATH), {
+    const promotion = writeBatch(owner);
+    promotion.update(doc(owner, META_PATH), {
       "membersByUid.member.role": "owner",
       ownerUid: "member",
       updatedAt: "2026-07-15T00:02:00.000Z",
-    }));
+    });
+    promotion.set(doc(owner, `users/member/households/${HOUSEHOLD_ID}`), {
+      householdId: HOUSEHOLD_ID,
+      name: "Rules household",
+      role: "owner",
+      joinedAt: "2026-07-15T00:01:00.000Z",
+      updatedAt: "2026-07-15T00:02:00.000Z",
+    });
+    await assertSucceeds(promotion.commit());
     await assertFails(updateDoc(doc(outsider, META_PATH), { name: "Hijacked" }));
   });
 
@@ -222,13 +343,7 @@ describe("Firestore household authorization", () => {
   it("pins the snapshot manifest shape and stamps the writer as author", async () => {
     const owner = environment.authenticatedContext("owner").firestore();
     const manifestRef = doc(owner, `households/${HOUSEHOLD_ID}/snapshotManifest/current`);
-    const wellFormed = {
-      schemaVersion: 1,
-      activeRevision: "rev_1",
-      versionToken: "token_1",
-      updatedAt: "2026-07-15T00:02:00.000Z",
-      updatedBy: "owner",
-    };
+    const wellFormed = manifest("owner");
 
     await assertSucceeds(setDoc(manifestRef, wellFormed));
     // Forged author.
@@ -245,20 +360,44 @@ describe("Firestore household authorization", () => {
     const owner = environment.authenticatedContext("owner").firestore();
 
     // A future version would lock every current client out of the household.
-    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settings/current`), { schemaVersion: 99 }));
-    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`), { schemaVersion: 99 }));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settings/current`), cloudSettings("owner", 99)));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`), cloudSettings("owner", 99)));
     // Within range stays allowed.
-    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settings/current`), { schemaVersion: 9 }));
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settings/current`), cloudSettings("owner")));
 
-    const stuffed = Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`k${index}`, index]));
+    const stuffed = { id: "txn_big", ...Object.fromEntries(Array.from({ length: 128 }, (_, index) => [`k${index}`, index])) };
     await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_big`), stuffed));
   });
 
-  it("still lets members delete documents a delta save removes", async () => {
+  it("requires active-revision deletes to advance the manifest and never permits manifest deletion", async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const meta = householdMeta();
+      await setDoc(doc(context.firestore(), META_PATH), {
+        ...meta,
+        membersByUid: {
+          ...meta.membersByUid,
+          member: { role: "member", displayName: "Member", email: "member@example.com", joinedAt: "2026-07-15T00:01:00.000Z" },
+        },
+      });
+    });
     const owner = environment.authenticatedContext("owner").firestore();
+    const manifestRef = doc(owner, `households/${HOUSEHOLD_ID}/snapshotManifest/current`);
     const txnRef = doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`);
-    await assertSucceeds(setDoc(txnRef, { amount: 10 }));
-    await assertSucceeds(deleteDoc(txnRef));
+    const rootRef = doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`);
+    await assertSucceeds(setDoc(manifestRef, manifest("owner")));
+    await assertSucceeds(setDoc(rootRef, cloudSettings("owner")));
+    await assertSucceeds(setDoc(txnRef, transactionDoc("txn_1")));
+
+    const member = environment.authenticatedContext("member").firestore();
+    await assertFails(deleteDoc(doc(member, txnRef.path)));
+    await assertFails(deleteDoc(doc(member, rootRef.path)));
+    await assertFails(deleteDoc(doc(member, manifestRef.path)));
+    await assertFails(deleteDoc(manifestRef));
+
+    const deltaSave = writeBatch(member);
+    deltaSave.delete(doc(member, txnRef.path));
+    deltaSave.set(doc(member, manifestRef.path), manifest("member", "token_2"));
+    await assertSucceeds(deltaSave.commit());
   });
 
   it("allows profile access only to the profile owner", async () => {

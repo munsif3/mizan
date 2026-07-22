@@ -61,7 +61,14 @@ VITE_FIREBASE_API_KEY=...
 VITE_FIREBASE_AUTH_DOMAIN=...
 VITE_FIREBASE_PROJECT_ID=...
 VITE_FIREBASE_APP_ID=...
+VITE_FIREBASE_APPCHECK_SITE_KEY=...
 ```
+
+Production builds initialize Firebase App Check with a score-based reCAPTCHA
+Enterprise key before Authentication or Firestore. For local development,
+create and register a Firebase App Check debug token, then set
+`VITE_FIREBASE_APPCHECK_DEBUG_TOKEN` only in your ignored `.env.local`; never
+commit or ship that debug token.
 
 After sign-in, create a household or join one with an invite code. If old browser-local Mizan data is
 found, only creating a new household migrates it; joining or switching cannot overwrite an existing
@@ -122,9 +129,10 @@ Keep at least two owners: if the sole owner becomes unavailable, the client cann
 - Browser storage may keep non-financial convenience state such as the last active household and
   privacy toggle; the user profile stores a cloud counterpart for cross-device continuity.
 - Raw statement files and passwords are not uploaded by Mizan.
-- Back up and restore via Settings -> Export / Import JSON. Backups have an explicit product/version
-  envelope; import validates the file and previews record counts before asking to replace the active
-  Firestore household.
+- Back up and restore via Settings -> Export encrypted backup / Import backup. New `.mizan` exports
+  use PBKDF2-SHA-256 plus AES-256-GCM in the browser and require a 12+ character password. Import
+  validates the file and previews record counts before asking to replace the active Firestore household;
+  older plaintext Mizan/Trackr JSON remains importable for migration compatibility.
 - During setup/testing, the household owner can use Settings -> Sync & backup -> Reset household
   data. The typed-confirmation reset clears all AppData and returns to onboarding while preserving
   the Firestore household, invite, and Google access.

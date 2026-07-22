@@ -1736,13 +1736,32 @@ input[type="color"] { min-height: 42px; padding: 3px; }
 
 .account-row {
   display: grid;
-  grid-template-columns: 1.1fr 0.75fr 0.8fr 0.45fr 1.2fr 0.75fr 36px;
+  grid-template-columns:
+    minmax(50px, 0.7fr)
+    minmax(45px, 0.7fr)
+    minmax(40px, 0.7fr)
+    70px
+    115px
+    minmax(40px, 0.7fr)
+    50px;
   gap: 8px;
   margin-bottom: 8px;
   padding: 10px 0;
   margin: 0;
   border-bottom: 1px solid var(--ql-border);
 }
+
+.account-table {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-color: var(--ql-border) transparent;
+}
+
+.account-table:focus-visible { outline: 3px solid var(--ql-focus-ring); outline-offset: 2px; }
+
+.account-table .account-row { min-width: 892px; }
+
+.account-table select { padding-right: 28px; background-position: right 8px center; }
 
 .onboard-member {
   display: grid;
@@ -2890,6 +2909,16 @@ td small { display: block; margin-top: 4px; color: var(--ql-muted); }
 
 .history-bar.negative .history-bar-value { background: var(--ql-danger); }
 
+@media (max-width: 1240px) {
+  .settings-layout { display: block; }
+
+  .settings-mobile-select { display: grid; gap: 6px; margin-bottom: 14px; }
+
+  .settings-mobile-select span { color: var(--ql-muted); font-size: 12px; font-weight: 700; }
+
+  .settings-layout .settings-tabs { display: none; }
+}
+
 @media (max-width: 1080px) {
   .ledger-table { display: none; }
 
@@ -2988,16 +3017,6 @@ td small { display: block; margin-top: 4px; color: var(--ql-muted); }
   }
 
   .filter-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-}
-
-@media (max-width: 960px) {
-  .settings-layout { display: block; }
-
-  .settings-mobile-select { display: grid; gap: 6px; margin-bottom: 14px; }
-
-  .settings-mobile-select span { color: var(--ql-muted); font-size: 12px; font-weight: 700; }
-
-  .settings-layout .settings-tabs { display: none; }
 }
 
 @media (max-width: 720px) {
@@ -3271,6 +3290,10 @@ td small { display: block; margin-top: 4px; color: var(--ql-muted); }
   .member-row { grid-template-columns: 1fr; }
 
   .account-row { grid-template-columns: 1fr; }
+
+  .account-table { overflow-x: visible; }
+
+  .account-table .account-row { min-width: 0; }
 
   .access-row { grid-template-columns: 1fr; }
 

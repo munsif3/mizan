@@ -62,7 +62,8 @@ import {
   type Transaction,
 } from "./domain/types";
 import { parsersFor } from "./import/registry";
-import { parseBackup, serializeBackup } from "./storage/backup";
+import { backupRequiresPassword, parseBackup, parseEncryptedBackup, serializeBackup } from "./storage/backup";
+import { assertBackupFile, assertStatementFiles } from "./security/resourceLimits";
 import { hasLegacyLocalData } from "./storage/legacyBrowserData";
 import { useAppDerivedState } from "./app/useAppDerivedState";
 import { EMPTY_LEDGER_FILTERS, useHouseholdSession } from "./app/useHouseholdSession";
@@ -101,6 +102,9 @@ export default function App() {
   const [undoChange, setUndoChange] = useState<UndoChange | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [pendingBackup, setPendingBackup] = useState<AppData | null>(null);
+  const [backupPasswordRequest, setBackupPasswordRequest] = useState<
+    { mode: "export" } | { mode: "import"; encryptedText: string } | null
+  >(null);
   const [splitTxn, setSplitTxn] = useState<Transaction | null>(null);
   const [incomeConfirm, setIncomeConfirm] = useState<{ item: PortionResolution; candidate?: IncomeCandidate } | null>(null);
   const [contributionConfirm, setContributionConfirm] = useState<{
@@ -117,6 +121,7 @@ export default function App() {
   const resetTransientState = useCallback(() => {
     setModal(null);
     setPendingBackup(null);
+    setBackupPasswordRequest(null);
     setSplitTxn(null);
     setIncomeConfirm(null);
     setContributionConfirm(null);
@@ -328,6 +333,11 @@ export default function App() {
   ): Promise<ImportResult> {
     const parsed: Transaction[] = [];
     const failures: string[] = [];
+    try {
+      assertStatementFiles(files);
+    } catch (error) {
+      return ingestTransactions([], [(error as Error).message]);
+    }
     for (const file of files) {
       try {
         const [parser] = parsersFor(file);
@@ -449,13 +459,27 @@ export default function App() {
   }
 
   function exportBackup() {
-    const blob = new Blob([serializeBackup(data)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `mizan-backup-${isoDateOf(new Date())}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    setBackupPasswordRequest({ mode: "export" });
+  }
+
+  async function completeBackupPassword(password: string) {
+    if (!backupPasswordRequest) return;
+    if (backupPasswordRequest.mode === "export") {
+      const encrypted = await serializeBackup(data, password);
+      const blob = new Blob([encrypted], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `mizan-backup-${isoDateOf(new Date())}.mizan`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setBackupPasswordRequest(null);
+      setNotice("Encrypted backup downloaded. Keep its password separately; Mizan cannot recover it.");
+      return;
+    }
+    const nextData = await parseEncryptedBackup(backupPasswordRequest.encryptedText, password);
+    setPendingBackup(nextData);
+    setBackupPasswordRequest(null);
   }
 
   function importBackup(file: File) {
@@ -463,15 +487,27 @@ export default function App() {
       setNotice("Create or join a Firestore household before importing a backup.");
       return;
     }
+    try {
+      assertBackupFile(file);
+    } catch (error) {
+      setNotice(`That backup file could not be imported: ${(error as Error).message}`);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const nextData = parseBackup(String(reader.result));
+        const backupText = String(reader.result);
+        if (backupRequiresPassword(backupText)) {
+          setBackupPasswordRequest({ mode: "import", encryptedText: backupText });
+          return;
+        }
+        const nextData = parseBackup(backupText);
         setPendingBackup(nextData);
       } catch (error) {
         setNotice(`That backup file could not be imported: ${(error as Error).message}`);
       }
     };
+    reader.onerror = () => setNotice("That backup file could not be read.");
     reader.readAsText(file);
   }
 
@@ -546,6 +582,8 @@ export default function App() {
       setModal,
       pendingBackup,
       setPendingBackup,
+      backupPasswordRequest,
+      setBackupPasswordRequest,
       splitTxn,
       setSplitTxn,
       incomeConfirm,
@@ -568,6 +606,7 @@ export default function App() {
       updateCounterparties,
       updateCustomCategories,
       exportBackup,
+      completeBackupPassword,
       importBackup,
       confirmBackupImport,
       clearAllData,

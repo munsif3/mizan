@@ -14,6 +14,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/households/$(householdId)/joinRequests/$(uid);
     }
 
+    function manifestPath(householdId) {
+      return /databases/$(database)/documents/households/$(householdId)/snapshotManifest/current;
+    }
+
     function isHouseholdDataCollection(collectionId) {
       return collectionId in [
         "settings",
@@ -64,10 +68,95 @@ service cloud.firestore {
         );
     }
 
-    function validHouseholdDoc(collectionId, data) {
+    function collectionUsesDocumentId(collectionId) {
+      return collectionId in [
+        "transactions",
+        "sharedContributions",
+        "accounts",
+        "fixedCosts",
+        "incomeReceipts",
+        "efficiencyPlans",
+        "members",
+        "customCategories",
+        "counterparties"
+      ];
+    }
+
+    function validDocumentIdentity(collectionId, docId, data) {
+      return !collectionUsesDocumentId(collectionId)
+        || (
+          data.id is string
+          && data.id == docId
+          && data.id.size() > 0
+          && data.id.size() <= 160
+        );
+    }
+
+    function validCloudSettings(collectionId, data) {
+      return !(collectionId in ["settings", "snapshots"])
+        || (
+          data.keys().hasOnly(["schemaVersion", "targetSaveRate", "currency", "locale", "fxRates", "updatedAt", "updatedBy"])
+          && data.schemaVersion == 9
+          && data.targetSaveRate is number
+          && data.currency is string && data.currency.size() <= 16
+          && data.locale is string && data.locale.size() <= 32
+          && data.fxRates is map
+          && data.updatedAt is string
+          && data.updatedBy == request.auth.uid
+        );
+    }
+
+    function validKeyedDocument(collectionId, data) {
+      return !(
+        collectionId in ["merchantRules", "csvPresets"]
+      ) || (
+        collectionId == "merchantRules"
+        && data.keys().hasOnly(["key", "rule", "updatedAt", "updatedBy"])
+        && data.key is string && data.key.size() > 0 && data.key.size() <= 512
+        && data.rule is map
+        && data.updatedAt is string
+        && data.updatedBy == request.auth.uid
+      ) || (
+        collectionId == "csvPresets"
+        && data.keys().hasOnly(["signature", "mapping", "updatedAt", "updatedBy"])
+        && data.signature is string && data.signature.size() > 0 && data.signature.size() <= 512
+        && data.mapping is map
+        && data.updatedAt is string
+        && data.updatedBy == request.auth.uid
+      );
+    }
+
+    function validHouseholdDoc(collectionId, docId, data) {
       return withinKeyBudget(data)
         && validVersionField(data)
-        && validManifest(collectionId, data);
+        && validManifest(collectionId, data)
+        && validDocumentIdentity(collectionId, docId, data)
+        && validCloudSettings(collectionId, data)
+        && validKeyedDocument(collectionId, data);
+    }
+
+    function hasVerifiedGoogleIdentity() {
+      return "email" in request.auth.token
+        && request.auth.token.email is string
+        && request.auth.token.email.size() > 0
+        && request.auth.token.email_verified == true;
+    }
+
+    function validSelfAccessIdentity(access) {
+      return hasVerifiedGoogleIdentity()
+        && access.email == request.auth.token.email
+        && (
+          (
+            "name" in request.auth.token
+            && request.auth.token.name is string
+            && request.auth.token.name.size() > 0
+            && access.displayName == request.auth.token.name
+          )
+          || (
+            !("name" in request.auth.token)
+            && access.displayName == request.auth.token.email
+          )
+        );
     }
 
     function isMember(householdId) {
@@ -102,6 +191,7 @@ service cloud.firestore {
 
     function isSelfInviteJoin(householdId) {
       return signedIn()
+        && !(request.auth.uid in resource.data.membersByUid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["membersByUid", "updatedAt"])
         && request.resource.data.membersByUid.diff(resource.data.membersByUid).affectedKeys().hasOnly([request.auth.uid])
         && request.resource.data.membersByUid[request.auth.uid].keys().hasOnly(["role", "displayName", "email", "joinedAt", "memberId"])
@@ -112,7 +202,9 @@ service cloud.firestore {
         && existsAfter(joinRequestPath(householdId, request.auth.uid))
         && getAfter(joinRequestPath(householdId, request.auth.uid)).data.uid == request.auth.uid
         && getAfter(joinRequestPath(householdId, request.auth.uid)).data.inviteCode == resource.data.inviteCode
-        && getAfter(joinRequestPath(householdId, request.auth.uid)).data.createdAt == request.time;
+        && getAfter(joinRequestPath(householdId, request.auth.uid)).data.createdAt == request.time
+        && validSelfAccessIdentity(request.resource.data.membersByUid[request.auth.uid])
+        && validMetaAfter(householdId);
     }
 
     function isSelfLeave(householdId) {
@@ -134,7 +226,8 @@ service cloud.firestore {
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.membersByUid.keys().hasOnly([request.auth.uid])
         && request.resource.data.membersByUid[request.auth.uid].keys().hasOnly(["role", "displayName", "email", "joinedAt"])
-        && request.resource.data.membersByUid[request.auth.uid].role == "owner";
+        && request.resource.data.membersByUid[request.auth.uid].role == "owner"
+        && validSelfAccessIdentity(request.resource.data.membersByUid[request.auth.uid]);
       allow update: if (isOwner(householdId) && validMetaAfter(householdId))
         || isSelfInviteJoin(householdId)
         || isSelfLeave(householdId);
@@ -156,21 +249,75 @@ service cloud.firestore {
       allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
       allow create, update: if isHouseholdDataCollection(collectionId)
         && isMemberAfter(householdId)
-        && validHouseholdDoc(collectionId, request.resource.data);
-      allow delete: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
+        && validHouseholdDoc(collectionId, docId, request.resource.data);
+      allow delete: if isHouseholdDataCollection(collectionId)
+        && collectionId != "snapshotManifest"
+        && isMemberAfter(householdId)
+        && (
+          collectionId != "snapshots"
+          || (
+            exists(manifestPath(householdId))
+            && get(manifestPath(householdId)).data.activeRevision != docId
+          )
+        );
     }
 
     match /households/{householdId}/snapshots/{revision}/{collectionId}/{docId} {
       allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
       allow create, update: if isHouseholdDataCollection(collectionId)
         && isMemberAfter(householdId)
-        && validHouseholdDoc(collectionId, request.resource.data);
-      allow delete: if isHouseholdDataCollection(collectionId) && isMemberAfter(householdId);
+        && validHouseholdDoc(collectionId, docId, request.resource.data);
+      allow delete: if isHouseholdDataCollection(collectionId)
+        && isMemberAfter(householdId)
+        && (
+          (
+            exists(manifestPath(householdId))
+            && get(manifestPath(householdId)).data.activeRevision != revision
+          )
+          || (
+            exists(manifestPath(householdId))
+            && existsAfter(manifestPath(householdId))
+            && get(manifestPath(householdId)).data.activeRevision == revision
+            && getAfter(manifestPath(householdId)).data.activeRevision == revision
+            && getAfter(manifestPath(householdId)).data.versionToken != get(manifestPath(householdId)).data.versionToken
+            && getAfter(manifestPath(householdId)).data.updatedBy == request.auth.uid
+          )
+        );
     }
 
     match /users/{uid}/households/{householdId} {
-      allow read, create, update: if signedIn() && (request.auth.uid == uid || isOwner(householdId));
-      allow delete: if signedIn() && (request.auth.uid == uid || isOwner(householdId));
+      function validLinkAfter() {
+        return existsAfter(metaPath(householdId))
+          && uid in getAfter(metaPath(householdId)).data.membersByUid
+          && request.resource.data.keys().hasOnly(["householdId", "name", "role", "joinedAt", "updatedAt"])
+          && request.resource.data.householdId == householdId
+          && request.resource.data.name == getAfter(metaPath(householdId)).data.name
+          && request.resource.data.role == getAfter(metaPath(householdId)).data.membersByUid[uid].role
+          && request.resource.data.joinedAt == getAfter(metaPath(householdId)).data.membersByUid[uid].joinedAt
+          && request.resource.data.updatedAt is string;
+      }
+
+      allow read: if signedIn() && (request.auth.uid == uid || isOwner(householdId));
+      allow create: if signedIn() && request.auth.uid == uid && validLinkAfter();
+      allow update: if signedIn()
+        && validLinkAfter()
+        && (
+          request.auth.uid == uid
+          || (
+            isOwner(householdId)
+            && uid in get(metaPath(householdId)).data.membersByUid
+          )
+        );
+      allow delete: if signedIn()
+        && (
+          request.auth.uid == uid
+          || (
+            isOwner(householdId)
+            && uid in get(metaPath(householdId)).data.membersByUid
+            && existsAfter(metaPath(householdId))
+            && !(uid in getAfter(metaPath(householdId)).data.membersByUid)
+          )
+        );
     }
 
     match /users/{uid}/profile/current {

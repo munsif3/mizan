@@ -1,3 +1,5 @@
+import { assertCsvRowCount } from "../security/resourceLimits";
+
 /**
  * Parse CSV text into a grid of string cells (RFC 4180): handles quoted fields,
  * escaped quotes (""), embedded commas/newlines inside quotes, and CRLF or LF
@@ -19,6 +21,7 @@ export function parseCsv(text: string): string[][] {
   const pushRow = () => {
     pushField();
     rows.push(row);
+    assertCsvRowCount(rows.length);
     row = [];
   };
 

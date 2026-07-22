@@ -292,8 +292,10 @@
 
 .sync-chip.sync-error::before { background: var(--ql-danger); }
 
+.modal-backdrop:has(.settings-layout) { padding: 16px; }
+
 .modal.wide:has(.settings-layout) {
-  width: min(1040px, calc(100vw - 48px));
+  width: min(1240px, calc(100vw - 32px));
   max-height: calc(100dvh - 48px);
   padding: 24px;
 }
@@ -387,7 +389,7 @@
 .split-income-toggle { margin-block: 4px; }
 
 @media (max-width: 960px) {
-  .modal.wide:has(.settings-layout) { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); }
+  .modal.wide:has(.settings-layout) { max-height: calc(100dvh - 32px); }
 }
 
 @media (max-width: 720px) {
@@ -428,6 +430,16 @@
   }
 
   .modal.wide {
+    width: 100%;
+    max-height: 94dvh;
+    padding: 22px 18px calc(22px + env(safe-area-inset-bottom));
+    border-width: 1px 0 0;
+    border-radius: 12px 12px 0 0;
+  }
+
+  .modal-backdrop:has(.settings-layout) { padding: 0; }
+
+  .modal.wide:has(.settings-layout) {
     width: 100%;
     max-height: 94dvh;
     padding: 22px 18px calc(22px + env(safe-area-inset-bottom));

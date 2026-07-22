@@ -5,7 +5,7 @@ import {
   loadLegacyLocalData,
   STORAGE_KEY,
 } from "./legacyBrowserData";
-import { parseBackup, serializeBackup } from "./backup";
+import { parseBackup, parseEncryptedBackup, serializeBackup } from "./backup";
 import { emptyData } from "./schema";
 import { saveAuthoritativeData, type DataRepository } from "./repository";
 
@@ -27,10 +27,11 @@ describe("legacy local data migration helpers", () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
-  it("round-trips versioned backups and keeps recognizing prior raw exports", () => {
+  it("round-trips encrypted backups and keeps recognizing prior raw exports", async () => {
     const data = emptyData();
     data.settings.currency = "LKR";
-    expect(parseBackup(serializeBackup(data))).toEqual(data);
+    const encrypted = await serializeBackup(data, "correct horse battery staple");
+    expect(await parseEncryptedBackup(encrypted, "correct horse battery staple")).toEqual(data);
     expect(parseBackup(JSON.stringify(data))).toEqual(data);
   });
 

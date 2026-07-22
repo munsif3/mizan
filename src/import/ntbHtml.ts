@@ -3,6 +3,7 @@ import { decryptAesCbcPbkdf2 } from "./ntbCrypto";
 import { parseCardStatement } from "./ntbAmexHtml";
 import { parseDepositStatement } from "./ntbSavingsHtml";
 import type { StatementParser } from "./types";
+import { assertStatementFiles } from "../security/resourceLimits";
 
 export interface EncryptedParts {
   salt: string;
@@ -70,6 +71,7 @@ export async function decryptNTBStatement(html: string, dob: string): Promise<st
  * none did, every sub-parser's error is surfaced together.
  */
 async function parse(file: File, dob: string): Promise<Transaction[]> {
+  assertStatementFiles([file]);
   const raw = await file.text();
   const html = /CryptoJS|encrypted|ciphertext|embedded/i.test(raw) ? await decryptNTBStatement(raw, dob) : raw;
   const fallbackAccount = file.name.replace(/\.[^.]+$/, "");

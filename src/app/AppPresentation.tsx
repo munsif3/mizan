@@ -55,6 +55,7 @@ const SharedContributionModal = lazy(() => import("../ui/SharedContributionModal
 const SplitModal = lazy(() => import("../ui/SplitModal").then((m) => ({ default: m.SplitModal })));
 const EfficiencyOutcomeModal = lazy(() => import("../ui/EfficiencyModal").then((m) => ({ default: m.EfficiencyOutcomeModal })));
 const EfficiencyReviewModal = lazy(() => import("../ui/EfficiencyModal").then((m) => ({ default: m.EfficiencyReviewModal })));
+const BackupPasswordDialog = lazy(() => import("../ui/BackupPasswordDialog").then((m) => ({ default: m.BackupPasswordDialog })));
 
 export type ModalKind = null | "import" | "manual" | "settings" | "one-off-income" | "clear-transactions" | "reset";
 
@@ -69,6 +70,10 @@ interface PresentationUiState {
   setModal: Dispatch<SetStateAction<ModalKind>>;
   pendingBackup: AppData | null;
   setPendingBackup: Dispatch<SetStateAction<AppData | null>>;
+  backupPasswordRequest: { mode: "export" } | { mode: "import"; encryptedText: string } | null;
+  setBackupPasswordRequest: Dispatch<SetStateAction<
+    { mode: "export" } | { mode: "import"; encryptedText: string } | null
+  >>;
   splitTxn: Transaction | null;
   setSplitTxn: Dispatch<SetStateAction<Transaction | null>>;
   incomeConfirm: { item: ComponentProps<typeof IncomeConfirmModal>["item"]; candidate?: IncomeCandidate } | null;
@@ -100,6 +105,7 @@ interface PresentationActions {
   updateCounterparties: (counterparties: Counterparty[]) => void;
   updateCustomCategories: (categories: CustomCategory[]) => void;
   exportBackup: () => void;
+  completeBackupPassword: (password: string) => Promise<void>;
   importBackup: (file: File) => void;
   confirmBackupImport: () => Promise<void>;
   clearAllData: () => void;
@@ -163,10 +169,13 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
     switchHousehold, rotateInvite, linkAccessMember, promoteOwner, revokeAccess, leaveHousehold,
     handleSignIn, handleSignOut,
   } = model.session;
-  const { modal, setModal, pendingBackup, setPendingBackup } = model.ui;
+  const {
+    modal, setModal, pendingBackup, setPendingBackup,
+    backupPasswordRequest, setBackupPasswordRequest,
+  } = model.ui;
   const {
     updateMembers, updateAccounts, categorizeMerchant, deleteRule, updateCounterparties, updateCustomCategories,
-    exportBackup, importBackup, confirmBackupImport, clearAllData,
+    exportBackup, completeBackupPassword, importBackup, confirmBackupImport, clearAllData,
   } = model.actions;
   const canResetHousehold = auth.status === "signed-in"
     && Boolean(householdMeta)
@@ -251,6 +260,13 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
           </p>
           <p>Export the current household first if you may need to restore it.</p>
         </ConfirmDialog>
+      )}
+      {backupPasswordRequest && (
+        <BackupPasswordDialog
+          mode={backupPasswordRequest.mode}
+          onClose={() => setBackupPasswordRequest(null)}
+          onSubmit={completeBackupPassword}
+        />
       )}
     </Suspense>
   );

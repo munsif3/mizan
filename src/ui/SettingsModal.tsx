@@ -801,80 +801,82 @@ function AccountRuleSettings({ model }: { model: SettingsModel }) {
               </Button>
             </div>
             {data.accounts.length > 0 && (
-              <div className="account-row account-row-headings" aria-hidden="true">
-                <span>Account</span>
-                <span>Paid/funded by</span>
-                <span>Usually for</span>
-                <span>Currency</span>
-                <span>Statement match</span>
-                <span>Updated through</span>
-                <span />
+              <div className="account-table" role="region" aria-label="Accounts table" tabIndex={0}>
+                <div className="account-row account-row-headings" aria-hidden="true">
+                  <span>Account</span>
+                  <span>Paid/funded by</span>
+                  <span>Usually for</span>
+                  <span>Currency</span>
+                  <span>Statement match</span>
+                  <span>Updated through</span>
+                  <span />
+                </div>
+                {data.accounts.map((account) => (
+                  <div className="account-row" key={account.id}>
+                    <input aria-label={`${account.label || "Account"} label`} value={account.label} placeholder="Account label" onChange={(event) => patchAccount(account.id, { label: event.target.value })} />
+                    <select
+                      aria-label={`${account.label || "Account"} paid or funded by`}
+                      value={account.owner}
+                      onChange={(event) => patchAccount(account.id, { owner: event.target.value })}
+                    >
+                      {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                      <option value="joint">Joint / unknown</option>
+                    </select>
+                    <select
+                      aria-label={`${account.label || "Account"} usually for`}
+                      value={account.beneficiaryDefault}
+                      onChange={(event) => patchAccount(account.id, { beneficiaryDefault: event.target.value as Account["beneficiaryDefault"] })}
+                    >
+                      <option value="owner" disabled={account.owner === "joint"}>Account owner</option>
+                      <option value="household">Household</option>
+                      <option value="review">Always review</option>
+                    </select>
+                    <input
+                      aria-label={`${account.label || "Account"} currency`}
+                      list="account-currencies"
+                      value={account.currency || currency}
+                      placeholder={currency || "Currency"}
+                      onChange={(event) => patchAccount(account.id, { currency: event.target.value.toUpperCase().trim() })}
+                    />
+                    <input
+                      aria-label={`${account.label || "Account"} statement match text`}
+                      value={account.match.join(", ")}
+                      placeholder="match: 37xx 1234, amex"
+                      onChange={(event) =>
+                        patchAccount(account.id, { match: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })
+                      }
+                    />
+                    <input
+                      aria-label={`${account.label || "Account"} updated through`}
+                      type="date"
+                      max={isoDateOf(new Date())}
+                      value={account.coverage?.throughDate ?? ""}
+                      onChange={(event) => patchAccount(account.id, {
+                        coverage: event.target.value && model.sync.auth.status === "signed-in"
+                          ? {
+                              throughDate: event.target.value,
+                              confirmedAt: new Date().toISOString(),
+                              confirmedByUid: model.sync.auth.user.uid,
+                              source: "manual",
+                            }
+                          : undefined,
+                      })}
+                    />
+                    <IconButton
+                      label={`Delete ${account.label}`}
+                      icon={Trash2}
+                      danger
+                      onClick={() => requestDelete(
+                        "Delete account?",
+                        `${account.label || "This account"} will be removed from account matching and future classification. Existing transactions remain in the ledger.`,
+                        "Delete account",
+                        () => onUpdateAccounts(data.accounts.filter((item) => item.id !== account.id)),
+                      )}
+                    />
+                  </div>
+                ))}
               </div>
             )}
-            {data.accounts.map((account) => (
-              <div className="account-row" key={account.id}>
-                <input aria-label={`${account.label || "Account"} label`} value={account.label} placeholder="Account label" onChange={(event) => patchAccount(account.id, { label: event.target.value })} />
-                <select
-                  aria-label={`${account.label || "Account"} paid or funded by`}
-                  value={account.owner}
-                  onChange={(event) => patchAccount(account.id, { owner: event.target.value })}
-                >
-                  {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-                  <option value="joint">Joint / unknown</option>
-                </select>
-                <select
-                  aria-label={`${account.label || "Account"} usually for`}
-                  value={account.beneficiaryDefault}
-                  onChange={(event) => patchAccount(account.id, { beneficiaryDefault: event.target.value as Account["beneficiaryDefault"] })}
-                >
-                  <option value="owner" disabled={account.owner === "joint"}>Account owner</option>
-                  <option value="household">Household</option>
-                  <option value="review">Always review</option>
-                </select>
-                <input
-                  aria-label={`${account.label || "Account"} currency`}
-                  list="account-currencies"
-                  value={account.currency || currency}
-                  placeholder={currency || "Currency"}
-                  onChange={(event) => patchAccount(account.id, { currency: event.target.value.toUpperCase().trim() })}
-                />
-                <input
-                  aria-label={`${account.label || "Account"} statement match text`}
-                  value={account.match.join(", ")}
-                  placeholder="match: 37xx 1234, amex"
-                  onChange={(event) =>
-                    patchAccount(account.id, { match: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })
-                  }
-                />
-                <input
-                  aria-label={`${account.label || "Account"} updated through`}
-                  type="date"
-                  max={isoDateOf(new Date())}
-                  value={account.coverage?.throughDate ?? ""}
-                  onChange={(event) => patchAccount(account.id, {
-                    coverage: event.target.value && model.sync.auth.status === "signed-in"
-                      ? {
-                          throughDate: event.target.value,
-                          confirmedAt: new Date().toISOString(),
-                          confirmedByUid: model.sync.auth.user.uid,
-                          source: "manual",
-                        }
-                      : undefined,
-                  })}
-                />
-                <IconButton
-                  label={`Delete ${account.label}`}
-                  icon={Trash2}
-                  danger
-                  onClick={() => requestDelete(
-                    "Delete account?",
-                    `${account.label || "This account"} will be removed from account matching and future classification. Existing transactions remain in the ledger.`,
-                    "Delete account",
-                    () => onUpdateAccounts(data.accounts.filter((item) => item.id !== account.id)),
-                  )}
-                />
-              </div>
-            ))}
             <datalist id="account-currencies">{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
             {!data.accounts.length && <p className="muted">No accounts yet. They also appear automatically when you import data.</p>}
           </div>
@@ -1073,11 +1075,11 @@ function SyncBackupSettings({ model }: { model: SettingsModel }) {
           <div className="settings-section danger-zone">
             <div>
               <h3>Backup & danger area</h3>
-              <p className="muted">Export before destructive changes. Import replaces the active Firestore household data.</p>
+              <p className="muted">Encrypted export is the recovery copy before destructive changes. Import replaces the active Firestore household data.</p>
             </div>
             <div className="modal-actions">
-              <Button variant="secondary" onClick={onExport}>Export JSON</Button>
-              <Button variant="secondary" onClick={() => importRef.current?.click()}>Import JSON</Button>
+              <Button variant="secondary" onClick={onExport}>Export encrypted backup</Button>
+              <Button variant="secondary" onClick={() => importRef.current?.click()}>Import backup</Button>
               {hasLegacyBrowserData && (
                 <Button
                   variant="danger"
@@ -1101,7 +1103,7 @@ function SyncBackupSettings({ model }: { model: SettingsModel }) {
                 ref={importRef}
                 hidden
                 type="file"
-                accept=".json"
+                accept=".mizan,.json,application/json"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   if (file) onImportBackup(file);

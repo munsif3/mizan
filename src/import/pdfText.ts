@@ -9,6 +9,7 @@ interface PositionedTextItem {
   transform: number[];
 }
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
+import { assertPdfPageCount, assertStatementFiles } from "../security/resourceLimits";
 
 // Only point at the bundled worker when a real Worker is available (the browser
 // build/runtime). Under Vitest/jsdom there is no Worker, and pdf.js's own
@@ -46,6 +47,7 @@ export async function withPdf<T>(
   password: string,
   useDocument: (doc: PDFDocumentProxy) => Promise<T>,
 ): Promise<T> {
+  assertStatementFiles([file]);
   let data: ArrayBuffer;
   try {
     data = await file.arrayBuffer();
@@ -64,6 +66,7 @@ export async function withPdf<T>(
   let doc: PDFDocumentProxy;
   try {
     doc = await loadingTask.promise;
+    assertPdfPageCount(doc.numPages);
   } catch (error) {
     await destroyLoadingTask(loadingTask);
     throw new Error(`Could not open PDF: ${errorMessage(error)}`);

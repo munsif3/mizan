@@ -66,7 +66,7 @@ export function ClearTransactionsModal({
         </p>
 
         <Button type="button" variant="secondary" disabled={busy} onClick={onExport}>
-          Export JSON
+          Export encrypted backup
         </Button>
 
         <label className="field">
