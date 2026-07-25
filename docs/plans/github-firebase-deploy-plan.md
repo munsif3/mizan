@@ -95,6 +95,12 @@ Both modified files carry unrelated changes and must **not** be copied wholesale
    (see Verified findings below) with the Firebase Console procedure:
    **Hosting → release history → ⋮ → Rollback**. Keep the Firestore-rules-revert
    paragraph; that part is accurate.
+4. **Fix the HSTS header check — this is a hard blocker, see below.** Change
+   `verifyHeaders` in `scripts/verify-production.mjs` to treat
+   `strict-transport-security` as "present, and `max-age` at least the configured
+   value" rather than exact string equality. Do **not** "fix" this by editing
+   `firebase.json` to match what Firebase serves — the config value is still the
+   one that applies if a custom domain is ever attached.
 
 ### 5. Local gates
 
@@ -145,6 +151,27 @@ pushed and reviewed before then.
 ---
 
 ## Verified findings (2026-07-25) — evidence, so this isn't re-litigated
+
+**BLOCKER — `verify:production` would fail on every deploy.** Checked the live
+site against `firebase.json` using the verifier's own
+`expectedHeadersFromConfig` + `verifyHeaders`. Five of six configured headers
+match exactly, including the full CSP. The sixth does not:
+
+```
+strict-transport-security
+  firebase.json: max-age=31536000; includeSubDomains
+  live:          max-age=31556926; includeSubDomains; preload
+```
+
+Firebase Hosting forces its own HSTS header on `*.web.app` domains, overriding
+the configured value. Since `verifyHeaders` compares exact strings, the verify
+step would fail on every release and turn the first deploy red — after the
+deploy had already succeeded. → Fixed by step 4.4.
+
+**Live site state as of 2026-07-25.** `https://mizan-the-balance.web.app`
+returns HTTP 200, `Last-Modified: Wed, 22 Jul 2026 17:15:59 GMT` — a manual
+`firebase deploy`, predating any CI involvement. No CI deploy has ever run.
+
 
 **Confirmed bug in the draft docs.** `firebase hosting:rollback` and
 `firebase hosting:releases:list` **do not exist**. Running each against the
