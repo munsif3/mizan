@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,3 +25,89 @@ jobs:
       - run: npm run check
       - run: npm run check:deadcode
       - run: npm run test:rules
+
+  deploy:
+    needs: check
+    # Production releases only ever come from main, via a push or a manual rerun.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://mizan-the-balance.web.app
+    # Keyless auth: no long-lived service-account JSON. id-token mints the OIDC
+    # token that Workload Identity Federation exchanges for short-lived creds.
+    permissions:
+      contents: read
+      id-token: write
+    # Serialize releases; never cancel a Firebase deploy that is mid-flight.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip stale commits
+        id: staleness
+        # If main has already moved past this commit, a newer run will (or did)
+        # deploy the newer tree. Don't publish an older one on top of it.
+        run: |
+          latest="$(git ls-remote origin -h refs/heads/main | cut -f1)"
+          if [ -n "$latest" ] && [ "$latest" != "$GITHUB_SHA" ]; then
+            echo "main is now at $latest; skipping stale deploy of $GITHUB_SHA."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.staleness.outputs.skip != 'true'
+        with:
+          node-version: 22.13.1
+          cache: npm
+
+      - name: Install locked dependencies
+        if: steps.staleness.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Validate production build variables
+        if: steps.staleness.outputs.skip != 'true'
+        run: npm run check:deploy-env
+        env:
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_APPCHECK_SITE_KEY: ${{ vars.VITE_FIREBASE_APPCHECK_SITE_KEY }}
+
+      - name: Build production bundle
+        if: steps.staleness.outputs.skip != 'true'
+        run: npm run build
+        env:
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_APPCHECK_SITE_KEY: ${{ vars.VITE_FIREBASE_APPCHECK_SITE_KEY }}
+
+      - name: Authenticate to Google Cloud
+        if: steps.staleness.outputs.skip != 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy Firestore rules and Hosting
+        if: steps.staleness.outputs.skip != 'true'
+        run: >-
+          npx --no-install firebase deploy
+          --only firestore:rules,hosting
+          --project mizan-the-balance
+          --non-interactive
+
+      - name: Verify production release
+        if: steps.staleness.outputs.skip != 'true'
+        run: npm run verify:production
+        env:
+          PRODUCTION_BASE_URL: https://mizan-the-balance.web.app

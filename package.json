@@ -20,6 +20,8 @@
     "test:rules": "firebase emulators:exec --only firestore --project demo-mizan \"npm run test:rules:emulator\"",
     "typecheck": "tsc --noEmit",
     "check:deadcode": "knip",
+    "check:deploy-env": "node scripts/check-deploy-env.mjs",
+    "verify:production": "node scripts/verify-production.mjs",
     "check": "npm run typecheck && npm run check:styles && npm test && vite build"
   },
   "dependencies": {
