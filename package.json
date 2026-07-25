@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "dev:emulator": "vite --mode emulator --port 5173 --strictPort",
+    "dev:emulator": "vite --mode emulator --port 5273 --strictPort",
     "emulators": "firebase emulators:start --only auth,firestore --project demo-mizan",
     "build": "tsc --noEmit && vite build",
     "check:styles": "vitest run scripts/style-system.test.mjs",

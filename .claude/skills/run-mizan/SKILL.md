@@ -8,17 +8,42 @@ description: Launch Mizan in a real browser and drive it, including past Google 
 Everything below was executed successfully on Windows 11 on 2026-07-26.
 Do not substitute steps — the flags matter, and the failure modes are noted.
 
+## Normal development is `npm run dev`
+
+**If a human is going to use the app, this is the command.** Real Google SSO,
+real Firestore, nothing fake:
+
+```bash
+npm run dev      # http://localhost:5173
+```
+
+`.env.local` already carries the real config plus a **registered App Check debug
+token** — that token is what makes reCAPTCHA Enterprise accept `localhost`.
+Sign in with your actual Google account and everything behaves as in production.
+
+> **`npm run dev` talks to `mizan-the-balance` — the production project.** There
+> is no separate dev Firebase project, so a test import, a household reset, or a
+> cleared transaction list hits real data. Use emulator mode for anything
+> destructive.
+
 ## Which mode do you need?
 
-| Goal | Mode | Auth |
-| --- | --- | --- |
-| Check a screen renders, catch console/CSP errors | **unauthenticated** | none |
-| Anything past the sign-in gate — cloud sync, households, transactions | **emulator** | fake Google identity |
-| Confirm what production is serving | **production** | none |
+| Goal | Command | Port | Auth |
+| --- | --- | --- | --- |
+| Normal development, real data | `npm run dev` | 5173 | **your real Google account** |
+| Destructive testing, or driving headlessly | `npm run dev:emulator` | **5273** | fake Google identity |
+| Check a built bundle renders | `vite preview` | 4173 | none |
+| Confirm what production serves | — | — | none |
 
-The app gates *everything* behind Google sign-in. If the change you are
-validating lives past that gate, you need emulator mode — an unauthenticated
-screenshot will not exercise it.
+**The port tells you the mode. 5173 is real, 5273 is emulated.** They are
+deliberately far apart: vite auto-increments off a busy port, so two servers
+sharing 5173 would silently swap and there is no visible difference between a
+real and an emulated session until you inspect the API key in a sign-in popup
+URL (`demo-api-key` means emulator).
+
+The app gates *everything* behind Google sign-in. If what you are validating
+lives past that gate and you cannot click a popup, you need emulator mode — an
+unauthenticated screenshot will not exercise it.
 
 ## Unauthenticated: build, serve, screenshot
 
@@ -38,20 +63,20 @@ Two background processes, then the driver. Both must be up first.
 
 ```bash
 npm run emulators      # background — auth :9099, firestore :8080, UI :4000
-npm run dev:emulator   # background — vite on :5173, loads .env.emulator
+npm run dev:emulator   # background — vite on :5273, loads .env.emulator
 ```
 
 Wait for both to answer before driving; they take a second or two:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9099/   # expect 200
-curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/   # expect 200
+curl -s -o /dev/null -w "%{http_code}" http://localhost:5273/   # expect 200
 ```
 
 Then sign in and drive:
 
 ```bash
-node scripts/drive-app.mjs --url http://localhost:5173 \
+node scripts/drive-app.mjs --url http://localhost:5273 \
   --sign-in tester@example.com \
   --expect "Choose a Firestore household" \
   --screenshot /tmp/signedin.png
@@ -142,17 +167,24 @@ errors or uncaught exceptions.
   `!.env.emulator` exception. The `demo-` project prefix makes the emulator
   refuse to contact production, so a misconfigured run fails closed rather than
   touching `mizan-the-balance`.
+- **Sign-in popup shows `ERR_CONNECTION_REFUSED` on `127.0.0.1:9099`** — the
+  Auth emulator is not running. `npm run dev:emulator` starts vite *only*;
+  `npm run emulators` is a separate process and sign-in needs it. Check the URL
+  in the popup: `apiKey=demo-api-key` confirms you are in emulator mode, and if
+  you meant to use your real Google account you want `npm run dev` on 5173
+  instead.
+
 - **Killing the npm parent does not reap its children.** This bites twice: the
   Firestore emulator's Java child keeps holding 8080, and vite's node child
-  keeps holding 5173. Both then serve a **zombie that answers HTTP 200**, so a
-  port check alone will tell you things are fine while you drive a stale
-  server. `npm run dev:emulator` failing with `Port 5173 is already in use`
-  while `curl localhost:5173` returns 200 is exactly this.
+  keeps holding its port. Both then serve a **zombie that answers HTTP 200**, so
+  a port check alone will tell you things are fine while you drive a stale
+  server. `npm run dev:emulator` failing with `Port ... is already in use` while
+  `curl` on that port returns 200 is exactly this.
 
   Always reap by port, and confirm the port is free before restarting:
 
   ```powershell
-  foreach ($p in 5173,8080,9099,4000,4400,4500) {
+  foreach ($p in 5173,5273,8080,9099,4000,4400,4500) {
     Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue |
       ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
   }
