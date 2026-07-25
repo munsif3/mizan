@@ -142,18 +142,24 @@ errors or uncaught exceptions.
   `!.env.emulator` exception. The `demo-` project prefix makes the emulator
   refuse to contact production, so a misconfigured run fails closed rather than
   touching `mizan-the-balance`.
-- **Stop the background processes when done, and verify the ports actually
-  freed.** Killing the `emulators:start` parent does **not** reap the Firestore
-  emulator's Java child — it keeps holding 8080, and the next
-  `npm run test:rules` dies with `Could not start Firestore Emulator, port
-  taken`. On Windows:
+- **Killing the npm parent does not reap its children.** This bites twice: the
+  Firestore emulator's Java child keeps holding 8080, and vite's node child
+  keeps holding 5173. Both then serve a **zombie that answers HTTP 200**, so a
+  port check alone will tell you things are fine while you drive a stale
+  server. `npm run dev:emulator` failing with `Port 5173 is already in use`
+  while `curl localhost:5173` returns 200 is exactly this.
+
+  Always reap by port, and confirm the port is free before restarting:
 
   ```powershell
-  foreach ($p in 8080,9099,4000,4400,4500) {
+  foreach ($p in 5173,8080,9099,4000,4400,4500) {
     Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue |
       ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
   }
   ```
+
+  Confirm vite is really fresh by looking for the `emulator` mode badge in its
+  startup banner, not by probing the port.
 
 - **`npm run test:rules` cannot share the emulator suite** — it starts its own.
   Shut the interactive emulators down first.
