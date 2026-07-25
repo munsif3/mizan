@@ -23,7 +23,8 @@ import { readLocalConvenience, writeLocalConvenience } from "./localConvenience"
 import { EMPTY_LEDGER_FILTERS, useBrowserPreferences } from "./useBrowserPreferences";
 import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import { clearLegacyLocalData, hasLegacyLocalData, loadLegacyLocalData } from "../storage/legacyBrowserData";
-import { saveAuthoritativeData, type DataRepository } from "../storage/repository";
+import type { DataRepository } from "../storage/repository";
+import { useCloudSync } from "./useCloudSync";
 import { emptyData } from "../storage/schema";
 import { CLEAR_TRANSACTIONS_CONFIRMATION } from "../ui/ClearTransactionsModal";
 import { RESET_CONFIRMATION } from "../ui/ResetHouseholdModal";
@@ -32,19 +33,7 @@ import type { BeneficiaryFilter, PayerFilter } from "../ui/TransactionsView";
 export type View = "home" | "transactions" | "history";
 export type BootstrapPhase = "idle" | "loading-profile" | "loading-household" | "needs-household" | "ready" | "error";
 
-export type ConflictResolution = "keep-local" | "keep-remote";
-
-/**
- * A save was rejected because the household changed on another device. Rather
- * than silently discarding the unsaved edit, both versions are held so the user
- * can choose which one wins.
- */
-export interface HouseholdConflict {
-  /** The local edit whose save was rejected. */
-  local: AppData;
-  /** The newer cloud state that caused the rejection. */
-  remote: AppData;
-}
+export type { ConflictResolution, HouseholdConflict } from "./useCloudSync";
 
 export { EMPTY_LEDGER_FILTERS };
 
@@ -103,13 +92,7 @@ function reportStartupTiming() {
 export function useHouseholdSession({ clearUndo, resetTransientState }: SessionCallbacks) {
   const auth = useAuthState();
   const services = useMemo(() => getFirebaseServices(), []);
-  const skipNextSave = useRef(false);
-  const saveTimer = useRef<number | null>(null);
-  const saveQueue = useRef<Promise<void>>(Promise.resolve());
-  const saveVersion = useRef(0);
-  const completedSaveVersion = useRef(0);
   const activationVersion = useRef(0);
-  const repositoryRef = useRef<DataRepository | null>(null);
   const profileLoaded = useRef(false);
   const [repository, setRepository] = useState<DataRepository | null>(null);
   const [data, setData] = useState<AppData>(() => emptyData());
@@ -125,19 +108,29 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   const [bootstrapPhase, setBootstrapPhase] = useState<BootstrapPhase>("idle");
   const [bootstrapError, setBootstrapError] = useState("");
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
-  const [conflict, setConflict] = useState<HouseholdConflict | null>(null);
-  const conflictRef = useRef<HouseholdConflict | null>(null);
   const [householdDialog, setHouseholdDialog] = useState<"create" | "join" | null>(null);
   const authUid = auth.status === "signed-in" ? auth.user.uid : "";
   const { privacy, setPrivacy, theme, setTheme, ledgerFilters, setLedgerFilters } = useBrowserPreferences(data, bootstrapPhase);
 
-  useEffect(() => {
-    repositoryRef.current = repository;
-  }, [repository]);
+  const onAccessRemoved = useCallback(() => {
+    const removedId = householdMeta?.id ?? "";
+    setRepository(null);
+    setHouseholdMeta(null);
+    setData(emptyData());
+    writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, "");
+    setAvailableHouseholds((current) => current.filter((item) => item.householdId !== removedId));
+    setBootstrapPhase("needs-household");
+    setNotice("Your access to this household was removed.");
+  }, [householdMeta?.id]);
 
-  useEffect(() => {
-    conflictRef.current = conflict;
-  }, [conflict]);
+  const {
+    conflict,
+    resolveConflict,
+    resetConflict,
+    adoptLoadedData,
+    flushPendingAutosave,
+    saveAuthoritativeSnapshot,
+  } = useCloudSync({ repository, data, setData, clearUndo, setSyncStatus, onAccessRemoved });
 
   useEffect(() => {
     if (auth.status === "loading") {
@@ -148,135 +141,6 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     startupMark("auth-ready");
     startupMeasure("auth", "auth-start", "auth-ready");
   }, [auth.status]);
-
-  useEffect(() => {
-    if (!repository) return undefined;
-    if (skipNextSave.current) {
-      skipNextSave.current = false;
-      return;
-    }
-    // An unresolved conflict owns the cloud state until the user chooses; do not
-    // keep retrying the rejected edit underneath the recovery dialog.
-    if (conflictRef.current) return undefined;
-    const version = ++saveVersion.current;
-    const timer = window.setTimeout(() => {
-      saveTimer.current = null;
-      setSyncStatus(sync.syncing("Saving to Firestore"));
-      const queued = saveQueue.current.catch(() => undefined).then(() => repository.save(data));
-      saveQueue.current = queued;
-      queued
-        .then(() => {
-          completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
-          if (version === saveVersion.current) setSyncStatus(sync.synced("Synced to Firestore"));
-        })
-        .catch(async (error) => {
-          completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
-          const message = (error as Error).message;
-          if (message.includes("changed on another device") && repositoryRef.current === repository) {
-            try {
-              // Loading refreshes the repository's compare-and-swap revision to
-              // the newer cloud state, so a later "keep mine" save can win.
-              const remote = await repository.load();
-              if (repositoryRef.current !== repository) return;
-              const next = { local: data, remote };
-              conflictRef.current = next;
-              setConflict(next);
-              setSyncStatus(sync.conflict("Your edit conflicts with a newer change"));
-              return;
-            } catch {
-              // Keep the original conflict message if recovery also fails.
-            }
-          }
-          if (version === saveVersion.current) setSyncStatus(sync.error(`Save failed: ${message}`));
-        });
-    }, 250);
-    saveTimer.current = timer;
-    return () => {
-      window.clearTimeout(timer);
-      if (saveTimer.current === timer) saveTimer.current = null;
-    };
-  }, [clearUndo, data, repository]);
-
-  useEffect(() => {
-    if (!repository?.subscribe) return undefined;
-    setSyncStatus(sync.synced("Listening for household changes"));
-    return repository.subscribe(
-      (nextData) => {
-        if (completedSaveVersion.current < saveVersion.current) return;
-        // A pending conflict already holds the newest cloud state for the user's
-        // decision; do not overwrite their unsaved edit from underneath.
-        if (conflictRef.current) return;
-        skipNextSave.current = true;
-        setData(nextData);
-        clearUndo();
-        setSyncStatus(sync.synced("Synced to Firestore"));
-      },
-      (message) => {
-        if (/permission|insufficient|access/i.test(message)) {
-          const removedId = householdMeta?.id ?? "";
-          setRepository(null);
-          setHouseholdMeta(null);
-          setData(emptyData());
-          writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, "");
-          setAvailableHouseholds((current) => current.filter((item) => item.householdId !== removedId));
-          setBootstrapPhase("needs-household");
-          setNotice("Your access to this household was removed.");
-          setSyncStatus(sync.error("Household access removed"));
-          return;
-        }
-        setSyncStatus(sync.error(`Sync failed: ${message}`));
-      },
-      { skipInitial: true },
-    );
-  }, [clearUndo, householdMeta?.id, repository]);
-
-  const resolveConflict = useCallback((choice: ConflictResolution) => {
-    const current = conflictRef.current;
-    if (!current) return;
-    conflictRef.current = null;
-    setConflict(null);
-    if (choice === "keep-remote") {
-      // Discard the unsaved local edit and adopt the newer cloud state.
-      skipNextSave.current = true;
-      clearUndo();
-      setData(current.remote);
-      setSyncStatus(sync.synced("Synced to Firestore"));
-      return;
-    }
-    // Keep the local edit: overwrite the newer cloud state. The failed save
-    // already reloaded the manifest, so this compare-and-swap now succeeds
-    // (or, if another device wrote again, re-enters the conflict flow). Data is
-    // unchanged, so saving explicitly here avoids relying on the autosave effect.
-    const repo = repositoryRef.current;
-    if (!repo) return;
-    setSyncStatus(sync.syncing("Saving to Firestore"));
-    const queued = saveQueue.current.catch(() => undefined).then(() => repo.save(current.local));
-    saveQueue.current = queued;
-    queued
-      .then(() => {
-        if (repositoryRef.current === repo) setSyncStatus(sync.synced("Synced to Firestore"));
-      })
-      .catch(async (error) => {
-        if (repositoryRef.current !== repo) return;
-        const message = (error as Error).message;
-        // Another device wrote again while the dialog was open: reload and let
-        // the user decide once more rather than dead-ending on a failed save.
-        if (message.includes("changed on another device")) {
-          try {
-            const remote = await repo.load();
-            if (repositoryRef.current !== repo) return;
-            const next = { local: current.local, remote };
-            conflictRef.current = next;
-            setConflict(next);
-            setSyncStatus(sync.conflict("Your edit conflicts with a newer change"));
-            return;
-          } catch {
-            // Fall through to the generic failure message.
-          }
-        }
-        setSyncStatus(sync.error(`Save failed: ${message}`));
-      });
-  }, [clearUndo]);
 
   useEffect(() => {
     if (!authUid || !services) {
@@ -297,8 +161,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     }
     let cancelled = false;
     profileLoaded.current = false;
-    conflictRef.current = null;
-    setConflict(null);
+    resetConflict();
     setHouseholdDialog(null);
     setRepository(null);
     setHouseholdMeta(null);
@@ -401,54 +264,6 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     reportStartupTiming();
   }, [repository, bootstrapPhase]);
 
-  function cancelPendingAutosave() {
-    if (saveTimer.current == null) return;
-    window.clearTimeout(saveTimer.current);
-    saveTimer.current = null;
-  }
-
-  async function flushPendingAutosave(): Promise<void> {
-    if (!repository) return;
-    if (saveTimer.current != null) {
-      window.clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-      const snapshot = data;
-      const activeRepository = repository;
-      const version = saveVersion.current;
-      const queued = saveQueue.current.catch(() => undefined).then(() => activeRepository.save(snapshot));
-      saveQueue.current = queued;
-      try {
-        await queued;
-        completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
-      } catch (error) {
-        completedSaveVersion.current = Math.max(completedSaveVersion.current, version);
-        throw error;
-      }
-      return;
-    }
-    await saveQueue.current;
-  }
-
-  function acceptAuthoritativeSnapshot(nextData: AppData) {
-    skipNextSave.current = true;
-    const version = ++saveVersion.current;
-    completedSaveVersion.current = version;
-    saveQueue.current = Promise.resolve();
-    setData(nextData);
-  }
-
-  async function saveAuthoritativeSnapshot(activeRepository: DataRepository, nextData: AppData): Promise<void> {
-    if (repositoryRef.current !== activeRepository) {
-      throw new Error("The active household changed before this operation could start. Nothing was replaced.");
-    }
-    cancelPendingAutosave();
-    const operation = saveAuthoritativeData(activeRepository, saveQueue.current, nextData, (snapshot) => {
-      if (repositoryRef.current === activeRepository) acceptAuthoritativeSnapshot(snapshot);
-    });
-    saveQueue.current = operation;
-    await operation;
-  }
-
   function finishLegacyMigration() {
     clearLegacyLocalData();
     setLegacyData(null);
@@ -533,10 +348,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       const repo = prepared?.repo ?? new FirestoreHouseholdRepository(services.db, meta.id, auth.user.uid);
       const cloudData = prepared?.cloudData ?? await repo.load();
       if (isCancelled()) return false;
-      skipNextSave.current = true;
-      saveVersion.current += 1;
-      completedSaveVersion.current = saveVersion.current;
-      setData(cloudData);
+      adoptLoadedData(cloudData);
       clearUndo();
       resetTransientState();
       if (!options.preserveViewState) {
@@ -707,8 +519,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     setLedgerFilters(EMPTY_LEDGER_FILTERS);
     clearUndo();
     resetTransientState();
-    conflictRef.current = null;
-    setConflict(null);
+    resetConflict();
     setHouseholdDialog(null);
     profileLoaded.current = false;
     setBootstrapPhase("idle");
