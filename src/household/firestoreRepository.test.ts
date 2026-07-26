@@ -107,7 +107,7 @@ describe("Firestore household loading", () => {
     });
 
     const load = new FirestoreHouseholdRepository(db, "household-1", "user-1").load();
-    await vi.waitFor(() => expect(firestore.getDocs).toHaveBeenCalledTimes(11));
+    await vi.waitFor(() => expect(firestore.getDocs).toHaveBeenCalledTimes(12));
 
     const early: Transaction = {
       id: "early",
@@ -148,7 +148,7 @@ describe("Firestore household loading", () => {
     const data = await new FirestoreHouseholdRepository(db, "household-1", "user-1").load();
 
     expect(data.settings.currency).toBe("LKR");
-    expect(firestore.getDocs).toHaveBeenCalledTimes(11);
+    expect(firestore.getDocs).toHaveBeenCalledTimes(12);
   });
 
   it("loads independent beneficiary and payer filters from the user profile", async () => {
@@ -199,7 +199,7 @@ describe("Firestore household loading", () => {
 
     await expect(new FirestoreHouseholdRepository(db, "household-1", "user-1").load())
       .rejects.toThrow("accounts unavailable");
-    expect(firestore.getDocs).toHaveBeenCalledTimes(11);
+    expect(firestore.getDocs).toHaveBeenCalledTimes(12);
   });
 
   it("skips only the listener snapshot represented by the completed initial load", async () => {
@@ -226,7 +226,7 @@ describe("Firestore household loading", () => {
 
     snapshotListener?.(docSnapshot({ ...manifest, updatedAt: "2026-07-12T01:00:00.000Z" }));
     await vi.waitFor(() => expect(onData).toHaveBeenCalledTimes(1));
-    expect(firestore.getDocs).toHaveBeenCalledTimes(readsAfterLoad + 11);
+    expect(firestore.getDocs).toHaveBeenCalledTimes(readsAfterLoad + 12);
   });
 
   it("rejects a stale save instead of overwriting a newer household revision", async () => {

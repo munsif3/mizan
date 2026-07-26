@@ -229,9 +229,71 @@ describe("HomeView spending attribution", () => {
     expect(container.textContent).toContain("Update Sam Card");
     expect(container.textContent).not.toContain("Bring transactions up to date");
     const review = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.trim() === "Review account coverage");
+      .find((button) => button.textContent?.trim() === "Review account");
     await act(async () => review?.click());
-    expect(onOpenSettings).toHaveBeenCalledOnce();
+    expect(onOpenSettings).toHaveBeenCalledWith({
+      tab: "accounts",
+      section: "accounts",
+      itemId: "sam-card",
+    });
+  });
+
+  it("aggregates stale accounts and keeps forecast blockers ahead of the weekly check-in", async () => {
+    const data = fixture();
+    const today = new Date();
+    const todayDate = isoDateOf(today);
+    data.transactions = data.transactions.map((transaction, index) => ({
+      ...transaction,
+      date: todayDate,
+      accountId: index === 1 ? "alex-card" : "sam-card",
+    }));
+    const summary = computeMonthSummary(data, monthOf(todayDate), today);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => root?.render(
+      <HomeView
+        summary={summary}
+        accounts={data.accounts}
+        members={data.settings.members}
+        money={() => "Hidden"}
+        lastCheckInAt=""
+        onOpenSettings={() => {}}
+        onOpenImport={() => {}}
+        onReviewQueue={() => {}}
+        onCompleteCheckIn={() => {}}
+        onConfirmIncome={() => {}}
+      />,
+    ));
+
+    const coverageCards = container.querySelectorAll('[data-action-family="account_coverage"]');
+    expect(coverageCards).toHaveLength(1);
+    expect(coverageCards[0]?.getAttribute("data-action-count")).toBe("2");
+    expect(coverageCards[0]?.textContent).toContain("Update 2 accounts");
+    expect(coverageCards[0]?.textContent).toContain("Alex Card (Alex): not confirmed");
+    expect(coverageCards[0]?.textContent).toContain("Sam Card (Sam): not confirmed");
+    expect(container.textContent).not.toContain("Update Alex Card");
+    expect(container.textContent).not.toContain("Update Sam Card");
+
+    const defaultTasks = [...container.querySelectorAll<HTMLElement>("[data-action-family]")];
+    expect(defaultTasks).toHaveLength(3);
+    expect(defaultTasks.map((item) => item.dataset.actionFamily)).toEqual([
+      "account_coverage",
+      "classification",
+      "weekly_check_in",
+    ]);
+    expect(container.querySelectorAll('.attention-card[data-action-rank="primary"]')).toHaveLength(1);
+    expect(container.querySelectorAll('.attention-card[data-action-rank="secondary"]')).toHaveLength(2);
+    expect(container.querySelector(".home-hero button")).toBeNull();
+
+    const expand = container.querySelector<HTMLButtonElement>(".action-queue-toggle");
+    expect(expand?.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => expand?.click());
+    expect(container.querySelectorAll("[data-action-family]").length).toBeGreaterThan(3);
+    expect(container.querySelectorAll('[data-action-rank="secondary"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-action-rank="backlog"]').length).toBeGreaterThan(0);
+    expect(expand?.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("shows the top three efficiency opportunities and expands the same-screen backlog", async () => {
@@ -300,6 +362,91 @@ describe("HomeView spending attribution", () => {
     const evidence = [...container.querySelectorAll("button")].find((item) => item.textContent === "Open evidence");
     await act(async () => evidence?.click());
     expect(onOpenTransactions).toHaveBeenCalledWith({ category: "dining", beneficiary: "household", merchant: "MERCHANT 1" });
+  });
+
+  it("hides empty optional sections but keeps an active efficiency plan reachable", async () => {
+    const summary = computeMonthSummary(fixture(), "2026-07", new Date(2026, 6, 15));
+    const efficiency: EfficiencySnapshot = {
+      readiness: "ready",
+      readinessReason: "Based on 3 completed months of classified recorded spending.",
+      baselineMonths: ["2026-04", "2026-05", "2026-06"],
+      targetGap: 0,
+      opportunities: [],
+      topOpportunities: [],
+      awaitingVerification: [],
+    };
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const sharedProps = {
+      summary,
+      money: () => "Hidden",
+      lastCheckInAt: "",
+      onOpenSettings: () => {},
+      onOpenImport: () => {},
+      onReviewQueue: () => {},
+      onCompleteCheckIn: () => {},
+      onConfirmIncome: () => {},
+      efficiency,
+      onReviewEfficiency: () => {},
+      onVerifyEfficiency: () => {},
+    };
+
+    await act(async () => root?.render(<HomeView {...sharedProps} />));
+
+    expect(container.textContent).not.toContain("Efficiency opportunities");
+    expect(container.textContent).not.toContain("Assets & investments");
+
+    await act(async () => root?.render(<HomeView {...sharedProps} hasActiveEfficiencyPlan />));
+
+    const efficiencyDetails = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("Efficiency opportunities"));
+    expect(efficiencyDetails).not.toBeUndefined();
+    expect(container.textContent).toContain("Active household plan in progress");
+    await act(async () => efficiencyDetails?.click());
+    expect(container.textContent).toContain("An active plan is in progress");
+  });
+
+  it("opens a named holding action at the focused Assets editor", async () => {
+    const data = fixture();
+    data.assetHoldings = [{
+      id: "rainy-day",
+      label: "Rainy day fund",
+      type: "cash",
+      currency: "USD",
+      owner: "joint",
+      status: "active",
+      valuations: [{ id: "value-1", date: "2026-07-01", amount: 5_000 }],
+    }];
+    const onOpenSettings = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => root?.render(
+      <HomeView
+        summary={computeMonthSummary(data, "2026-07", new Date(2026, 6, 15))}
+        money={() => "Hidden"}
+        lastCheckInAt=""
+        onOpenSettings={onOpenSettings}
+        onOpenImport={() => {}}
+        onReviewQueue={() => {}}
+        onCompleteCheckIn={() => {}}
+        onConfirmIncome={() => {}}
+      />,
+    ));
+
+    const assetsDisclosure = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("Assets & investments"));
+    await act(async () => assetsDisclosure?.click());
+    await act(async () => container?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit Rainy day fund holding"]',
+    )?.click());
+    expect(onOpenSettings).toHaveBeenCalledWith({
+      tab: "assets",
+      section: "assets",
+      itemId: "rainy-day",
+    });
   });
 
   it("hides settlement, member statements, and beneficiary columns for a one-member household", async () => {

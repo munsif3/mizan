@@ -6,6 +6,7 @@ import {
   withAccountBeneficiaryDefault,
 } from "./accounts";
 import { contributionReferencesTransaction, pruneSharedContributions } from "./contributions";
+import { applyCommitments } from "./commitments";
 import { closeInvalidEfficiencyPlans } from "./efficiency";
 import { pruneReceipts, unlinkTransaction, upsertReceipt, upsertReceiptGroup } from "./income";
 import { isSpendKind } from "./movements";
@@ -15,9 +16,11 @@ import {
   defaultKind,
   type Account,
   type AppData,
+  type AssetHolding,
   type CategoryKey,
   type Counterparty,
   type CustomCategory,
+  type FixedCost,
   type IncomeReceipt,
   type MerchantRule,
   type Member,
@@ -33,20 +36,37 @@ const UNASSIGNED_BENEFICIARY: SpendBeneficiary = { type: "unassigned" };
 export function transitionTransactionClassification(
   data: AppData,
   id: string,
-  patch: Partial<Pick<Transaction, "category" | "beneficiary" | "kind" | "counterpartyId">>,
+  patch: Partial<Pick<Transaction, "category" | "beneficiary" | "kind" | "counterpartyId" | "holdingId">>,
 ): { data: AppData; contributionLinkRemoved: boolean } {
   const current = data.transactions.find((item) => item.id === id);
   if (!current) return { data, contributionLinkRemoved: false };
   let next: Transaction = { ...current, ...patch, classificationLocked: true };
+  let baseTransactions = data.transactions;
+  if (patch.kind && patch.kind !== "internal_transfer" && current.linkedTransferId) {
+    baseTransactions = data.transactions.map((item) => {
+      if (item.id !== current.linkedTransferId) return item;
+      const unlinked = { ...item };
+      delete unlinked.linkedTransferId;
+      return unlinked;
+    });
+    delete next.linkedTransferId;
+  }
+  if (patch.kind) {
+    delete next.commitmentId;
+    delete next.investmentAmount;
+    if (patch.kind !== "investment_transfer") delete next.holdingId;
+  }
   if (patch.beneficiary) delete next.beneficiarySource;
   if (patch.kind && !isSpendKind(patch.kind)) {
     next.beneficiary = UNASSIGNED_BENEFICIARY;
     delete next.beneficiarySource;
+    next.category = "uncategorized";
   } else if (patch.kind && next.beneficiary.type === "unassigned") {
     next = withAccountBeneficiaryDefault(next, data.accounts, data.settings.members);
   }
   if (!next.counterpartyId) delete next.counterpartyId;
-  const transactions = data.transactions.map((item) => (item.id === id ? next : item));
+  if (!next.holdingId) delete next.holdingId;
+  const transactions = baseTransactions.map((item) => (item.id === id ? next : item));
   const contributionLinkRemoved = data.sharedContributions.some((item) =>
     contributionReferencesTransaction(item, id, data.transactions));
   const sharedContributions = pruneSharedContributions(
@@ -68,12 +88,17 @@ export function transitionRememberMerchant(data: AppData, id: string): AppData {
       : transaction.beneficiary,
     kind: transaction.kind,
     ...(transaction.counterpartyId ? { counterpartyId: transaction.counterpartyId } : {}),
+    ...(transaction.holdingId ? { holdingId: transaction.holdingId } : {}),
   };
   const merchantRules = withRule(data.merchantRules, transaction.description, rule);
   const unlocked = data.transactions.map((item) => item.id === id
     ? { ...item, classificationLocked: undefined }
     : item);
-  const transactions = applyRules(unlocked, merchantRules, data.accounts, data.settings.members);
+  const transactions = applyCommitments(
+    applyRules(unlocked, merchantRules, data.accounts, data.settings.members),
+    data.fixedCosts,
+    data.assetHoldings,
+  );
   return {
     ...data,
     merchantRules,
@@ -111,10 +136,22 @@ export function transitionTransactionAccount(data: AppData, id: string, account:
 export function transitionAccounts(data: AppData, accounts: Account[]): AppData {
   const linked = applyAccounts(data.transactions, accounts);
   const defaulted = applyAccountBeneficiaryDefaults(linked, accounts, data.settings.members);
-  const transactions = applyRules(defaulted, data.merchantRules, accounts, data.settings.members);
+  const transactions = applyCommitments(
+    applyRules(defaulted, data.merchantRules, accounts, data.settings.members),
+    data.fixedCosts,
+    data.assetHoldings,
+  );
+  const accountIds = new Set(accounts.map((account) => account.id));
+  const assetHoldings = data.assetHoldings.map((holding) => {
+    if (!holding.linkedAccountId || accountIds.has(holding.linkedAccountId)) return holding;
+    const next = { ...holding };
+    delete next.linkedAccountId;
+    return next;
+  });
   return {
     ...data,
     accounts,
+    assetHoldings,
     transactions,
     sharedContributions: pruneSharedContributions(data.sharedContributions, transactions, accounts, data.settings.members),
   };
@@ -130,7 +167,11 @@ export function transitionCategorizeMerchant(data: AppData, merchant: string, ru
       ? { ...transaction, classificationLocked: undefined }
       : transaction,
   );
-  const transactions = applyRules(reviewRowsUnlocked, merchantRules, data.accounts, data.settings.members);
+  const transactions = applyCommitments(
+    applyRules(reviewRowsUnlocked, merchantRules, data.accounts, data.settings.members),
+    data.fixedCosts,
+    data.assetHoldings,
+  );
   return {
     ...data,
     merchantRules,
@@ -200,7 +241,10 @@ export function transitionMembers(
     ]),
   );
   const accounts = data.accounts.map((account) =>
-    removedMemberIds.includes(account.owner) ? { ...account, owner: "joint" } : account,
+    removedMemberIds.includes(account.owner) ? { ...account, owner: "unassigned" as const } : account,
+  );
+  const assetHoldings = data.assetHoldings.map((holding) =>
+    removedMemberIds.includes(holding.owner) ? { ...holding, owner: "unassigned" as const } : holding,
   );
   const defaultedTransactions = applySoloBeneficiaryDefaults(
     applyAccountBeneficiaryDefaults(transactions, accounts, members, { fillUnassigned: false }),
@@ -215,6 +259,7 @@ export function transitionMembers(
       fixedCosts,
       merchantRules,
       accounts,
+      assetHoldings,
       efficiencyPlans: closeInvalidEfficiencyPlans(
         data.efficiencyPlans,
         new Set(members.map((member) => member.id)),
@@ -283,7 +328,17 @@ export function transitionRemoveTransaction(
     contributionLinkRemoved,
     data: {
       ...data,
-      transactions: data.transactions.filter((transaction) => transaction.id !== id),
+      transactions: data.transactions
+        .filter((transaction) => transaction.id !== id)
+        .map((transaction) => {
+          if (transaction.linkedTransferId !== id && !transaction.rejectedTransferIds?.includes(id)) return transaction;
+          const next = { ...transaction };
+          if (next.linkedTransferId === id) delete next.linkedTransferId;
+          const rejected = next.rejectedTransferIds?.filter((candidate) => candidate !== id) ?? [];
+          if (rejected.length) next.rejectedTransferIds = rejected;
+          else delete next.rejectedTransferIds;
+          return next;
+        }),
       sharedContributions: data.sharedContributions.filter((item) =>
         !contributionReferencesTransaction(item, id, data.transactions)),
       incomeReceipts: unlinkTransaction(data.incomeReceipts, id),
@@ -291,11 +346,13 @@ export function transitionRemoveTransaction(
   };
 }
 
-export function transitionDeleteRule(data: AppData, merchant: string): AppData {
+export function transitionDeleteRules(data: AppData, merchants: string[]): AppData {
+  const removed = new Set(merchants);
   const merchantRules = { ...data.merchantRules };
-  delete merchantRules[merchant];
+  for (const merchant of removed) delete merchantRules[merchant];
   const reset = data.transactions.map((transaction) => {
-    if (transaction.classificationLocked || matchingRuleKey(transaction.description, data.merchantRules) !== merchant) {
+    const ruleKey = matchingRuleKey(transaction.description, data.merchantRules);
+    if (transaction.classificationLocked || !ruleKey || !removed.has(ruleKey)) {
       return transaction;
     }
     let next: Transaction = {
@@ -307,7 +364,11 @@ export function transitionDeleteRule(data: AppData, merchant: string): AppData {
     next = withAccountBeneficiaryDefault(next, data.accounts, data.settings.members);
     return next;
   });
-  const transactions = applyRules(reset, merchantRules, data.accounts, data.settings.members);
+  const transactions = applyCommitments(
+    applyRules(reset, merchantRules, data.accounts, data.settings.members),
+    data.fixedCosts,
+    data.assetHoldings,
+  );
   return {
     ...data,
     merchantRules,
@@ -323,7 +384,12 @@ export function transitionDeleteRule(data: AppData, merchant: string): AppData {
 
 export function transitionResetClassification(data: AppData, id: string): AppData {
   const transactions = data.transactions.map((transaction) => {
-    if (transaction.id !== id) return transaction;
+    if (transaction.id !== id) {
+      if (transaction.linkedTransferId !== id) return transaction;
+      const unlinked = { ...transaction };
+      delete unlinked.linkedTransferId;
+      return unlinked;
+    }
     let next: Transaction = {
       ...transaction,
       category: "uncategorized",
@@ -331,6 +397,10 @@ export function transitionResetClassification(data: AppData, id: string): AppDat
       classificationLocked: true,
     };
     delete next.counterpartyId;
+    delete next.holdingId;
+    delete next.commitmentId;
+    delete next.investmentAmount;
+    delete next.linkedTransferId;
     next = withAccountBeneficiaryDefault(next, data.accounts, data.settings.members);
     return next;
   });
@@ -346,6 +416,16 @@ export function transitionResetClassification(data: AppData, id: string): AppDat
   };
 }
 
+/**
+ * Explicitly reject a durable commitment link. The row returns to review and
+ * stays locked so the same matcher cannot silently attach it again.
+ */
+export function transitionUnlinkCommitment(data: AppData, id: string): AppData {
+  const transaction = data.transactions.find((item) => item.id === id);
+  if (!transaction?.commitmentId) return data;
+  return transitionResetClassification(data, id);
+}
+
 export function transitionCounterparties(data: AppData, counterparties: Counterparty[]): AppData {
   const ids = new Set(counterparties.map((counterparty) => counterparty.id));
   const transactions = data.transactions.map((transaction) =>
@@ -356,7 +436,12 @@ export function transitionCounterparties(data: AppData, counterparties: Counterp
   const merchantRules = Object.fromEntries(
     Object.entries(data.merchantRules).map(([key, rule]) =>
       rule.counterpartyId && !ids.has(rule.counterpartyId)
-        ? [key, { category: rule.category, beneficiary: rule.beneficiary, kind: rule.kind }]
+        ? [key, {
+            category: rule.category,
+            beneficiary: rule.beneficiary,
+            kind: rule.kind,
+            ...(rule.holdingId ? { holdingId: rule.holdingId } : {}),
+          }]
         : [key, rule],
     ),
   );
@@ -405,21 +490,104 @@ export function transitionCustomCategories(
   };
 }
 
+export function transitionFixedCosts(data: AppData, fixedCosts: FixedCost[]): AppData {
+  const retained = new Set(fixedCosts.map((commitment) => commitment.id));
+  const reset = data.transactions.map((transaction) => {
+    if (!transaction.commitmentId || retained.has(transaction.commitmentId)) return transaction;
+    const next: Transaction = {
+      ...transaction,
+      kind: defaultKind(transaction.direction),
+      category: "uncategorized",
+      beneficiary: UNASSIGNED_BENEFICIARY,
+    };
+    delete next.commitmentId;
+    delete next.holdingId;
+    delete next.investmentAmount;
+    return withAccountBeneficiaryDefault(next, data.accounts, data.settings.members);
+  });
+  const transactions = applyCommitments(
+    applyRules(reset, data.merchantRules, data.accounts, data.settings.members),
+    fixedCosts,
+    data.assetHoldings,
+  );
+  return {
+    ...data,
+    fixedCosts,
+    transactions,
+    sharedContributions: pruneSharedContributions(
+      data.sharedContributions,
+      transactions,
+      data.accounts,
+      data.settings.members,
+    ),
+  };
+}
+
+export function transitionAssetHoldings(data: AppData, assetHoldings: AssetHolding[]): AppData {
+  const retained = new Set(assetHoldings.map((holding) => holding.id));
+  const transactions = data.transactions.map((transaction) => {
+    if (!transaction.holdingId || retained.has(transaction.holdingId)) return transaction;
+    const next = { ...transaction };
+    delete next.holdingId;
+    delete next.investmentAmount;
+    return next;
+  });
+  const fixedCosts = data.fixedCosts.map((commitment) => {
+    if (!commitment.holdingId || retained.has(commitment.holdingId)) return commitment;
+    const next = { ...commitment };
+    delete next.holdingId;
+    delete next.investmentAmount;
+    return next;
+  });
+  const merchantRules = Object.fromEntries(Object.entries(data.merchantRules).map(([key, rule]) => {
+    if (!rule.holdingId || retained.has(rule.holdingId)) return [key, rule];
+    const next = { ...rule };
+    delete next.holdingId;
+    return [key, next];
+  }));
+  return {
+    ...data,
+    assetHoldings,
+    transactions,
+    fixedCosts,
+    merchantRules,
+  };
+}
+
 export function transitionConfirmTransfer(data: AppData, debitId: string, creditId: string): AppData {
   return {
     ...data,
-    transactions: data.transactions.map((transaction) =>
-      transaction.id === debitId || transaction.id === creditId
-        ? {
-            ...transaction,
-            kind: "internal_transfer" as MovementKind,
-            category: "uncategorized" as CategoryKey,
-            beneficiary: UNASSIGNED_BENEFICIARY,
-            beneficiarySource: undefined,
-            classificationLocked: true,
-          }
-        : transaction,
-    ),
+    transactions: data.transactions.map((transaction) => {
+      if (transaction.id !== debitId && transaction.id !== creditId) return transaction;
+      const next: Transaction = {
+        ...transaction,
+        kind: "internal_transfer" as MovementKind,
+        category: "uncategorized" as CategoryKey,
+        beneficiary: UNASSIGNED_BENEFICIARY,
+        classificationLocked: true,
+        linkedTransferId: transaction.id === debitId ? creditId : debitId,
+      };
+      delete next.beneficiarySource;
+      delete next.rejectedTransferIds;
+      delete next.holdingId;
+      delete next.commitmentId;
+      delete next.investmentAmount;
+      return next;
+    }),
+  };
+}
+
+export function transitionRejectTransfer(data: AppData, debitId: string, creditId: string): AppData {
+  return {
+    ...data,
+    transactions: data.transactions.map((transaction) => {
+      const counterpartId = transaction.id === debitId ? creditId : transaction.id === creditId ? debitId : "";
+      if (!counterpartId) return transaction;
+      return {
+        ...transaction,
+        rejectedTransferIds: [...new Set([...(transaction.rejectedTransferIds ?? []), counterpartId])],
+      };
+    }),
   };
 }
 
@@ -434,6 +602,9 @@ export function transitionSharedContribution(data: AppData, contribution: Shared
           beneficiary: UNASSIGNED_BENEFICIARY,
           beneficiarySource: undefined,
           classificationLocked: true,
+          linkedTransferId: transaction.id === contribution.transferDebitTransactionId
+            ? contribution.transferCreditTransactionId
+            : contribution.transferDebitTransactionId,
         }
       : transaction,
   );

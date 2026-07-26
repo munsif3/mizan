@@ -22,11 +22,15 @@ export interface FirebaseServices {
 }
 
 const EMULATOR_HOST = "127.0.0.1";
-const AUTH_EMULATOR_PORT = 9099;
-const FIRESTORE_EMULATOR_PORT = 8080;
+
+function emulatorPort(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535 ? parsed : fallback;
+}
 
 /**
- * True only for `vite --mode emulator`.
+ * True only for a development mode that explicitly opts into the local
+ * emulator suite (for example `emulator` or `browser-test`).
  *
  * Deliberately a module-level const rather than a function: a production build
  * substitutes `import.meta.env.DEV` with `false`, folds this to `false`, and
@@ -94,10 +98,12 @@ function exposeEmulatorSignIn(auth: Auth): void {
 }
 
 function connectToEmulators(auth: Auth, db: Firestore): void {
-  connectAuthEmulator(auth, `http://${EMULATOR_HOST}:${AUTH_EMULATOR_PORT}`, {
+  const authPort = emulatorPort(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT, 9099);
+  const firestorePort = emulatorPort(import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT, 8080);
+  connectAuthEmulator(auth, `http://${EMULATOR_HOST}:${authPort}`, {
     disableWarnings: true,
   });
-  connectFirestoreEmulator(db, EMULATOR_HOST, FIRESTORE_EMULATOR_PORT);
+  connectFirestoreEmulator(db, EMULATOR_HOST, firestorePort);
   exposeEmulatorSignIn(auth);
 }
 

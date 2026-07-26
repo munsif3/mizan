@@ -1,6 +1,9 @@
 import { useState, type CSSProperties } from "react";
 import { ChevronDown } from "lucide-react";
+import type { SettingsTarget } from "../app/settingsTarget";
 import { computeAccountCoverage, coverageLabel, type AccountCoverageRow } from "../domain/accountCoverage";
+import { assetTypeLabel } from "../domain/assets";
+import { commitmentExpectedAmount, commitmentMatchedTransactions } from "../domain/commitments";
 import { monthLabel } from "../domain/dates";
 import type { PortionResolution } from "../domain/income";
 import type { IncomeCandidate } from "../domain/incomeMatch";
@@ -9,6 +12,12 @@ import type { EfficiencySnapshot } from "../domain/efficiency";
 import type { MonthSummary } from "../domain/summary";
 import type { Account, CategoryKey, EfficiencyOpportunity, Member, MemberId } from "../domain/types";
 import { Button, Disclosure, DrilldownAmount, MoneyValue } from "./bits";
+import {
+  HOME_ACTION_PRIORITY,
+  rankHomeActions,
+  type AppActionTarget,
+  type HomeAction,
+} from "./homeActions";
 export interface HomeTransactionFilters {
   category?: CategoryKey;
   beneficiary?: "household" | "unassigned" | MemberId;
@@ -55,6 +64,7 @@ function EfficiencySection({
   onReview,
   onVerify,
   onOpenTransactions,
+  hasActivePlan,
 }: {
   snapshot: EfficiencySnapshot;
   money: (value: number) => string;
@@ -63,6 +73,7 @@ function EfficiencySection({
   onReview: (opportunity: EfficiencyOpportunity) => void;
   onVerify: (opportunity: EfficiencyOpportunity) => void;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
+  hasActivePlan: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? snapshot.opportunities : snapshot.topOpportunities;
@@ -120,8 +131,18 @@ function EfficiencySection({
         </div>
       ) : (
         <div className="efficiency-empty">
-          <strong>{snapshot.readiness === "ready" ? "No material opportunity is active" : "Recommendations are deliberately paused"}</strong>
-          <p>{snapshot.readiness === "ready" ? "Mizan will surface a change when the evidence clears the materiality threshold." : snapshot.readinessReason}</p>
+          <strong>
+            {hasActivePlan
+              ? "An active plan is in progress"
+              : snapshot.readiness === "ready" ? "No material opportunity is active" : "Recommendations are deliberately paused"}
+          </strong>
+          <p>
+            {hasActivePlan
+              ? "Mizan will surface the plan here when its target month is ready for verification."
+              : snapshot.readiness === "ready"
+                ? "Mizan will surface a change when the evidence clears the materiality threshold."
+                : snapshot.readinessReason}
+          </p>
         </div>
       )}
 
@@ -182,13 +203,13 @@ function PurposeMatrix({
       <div className="ledger-empty-state compact">
         <span className="soft-label">No recorded activity</span>
         <h3>Only planning commitments are present</h3>
-        <p>Imported or manually entered spending will appear here by purpose and beneficiary.</p>
+        <p>Imported or manually entered spending will appear here by purpose and who it was for.</p>
       </div>
     );
   }
 
   return (
-    <div className="spending-matrix" role="table" aria-label="Spending by purpose and beneficiary" style={matrixStyle}>
+    <div className="spending-matrix" role="table" aria-label="Spending by purpose and who it was for" style={matrixStyle}>
       <div className="who-matrix-header" role="row">
         <span role="columnheader">What for</span>
         {!solo && <span role="columnheader">Household</span>}
@@ -391,11 +412,12 @@ interface HomeDetailModel {
   solo: boolean;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
   efficiency?: EfficiencySnapshot;
+  hasActiveEfficiencyPlan: boolean;
   onReviewEfficiency?: (opportunity: EfficiencyOpportunity) => void;
   onVerifyEfficiency?: (opportunity: EfficiencyOpportunity) => void;
   hasActivity: boolean;
   fixedCommitmentsNeedReview: boolean;
-  onOpenSettings: () => void;
+  onOpenSettings: (target?: SettingsTarget) => void;
   freshnessLabel: string;
   checkInDays: number | null;
   movementRows: MonthSummary["movementRows"];
@@ -404,16 +426,21 @@ interface HomeDetailModel {
 
 function HomeDetailSections({ model }: { model: HomeDetailModel }) {
   const {
-    summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency,
+    summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency, hasActiveEfficiencyPlan,
     onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
     onOpenSettings, freshnessLabel, checkInDays, movementRows, coverageRows,
   } = model;
   return (
     <>
-      {efficiency && onReviewEfficiency && onVerifyEfficiency && (
+      {efficiency
+        && (efficiency.opportunities.length > 0 || hasActiveEfficiencyPlan)
+        && onReviewEfficiency
+        && onVerifyEfficiency && (
         <Disclosure
           title="Efficiency opportunities"
-          summary={efficiency.opportunities.length ? `${efficiency.opportunities.length} evidence-based opportunities` : efficiency.readinessReason}
+          summary={efficiency.opportunities.length
+            ? `${efficiency.opportunities.length} evidence-based opportunities`
+            : "Active household plan in progress"}
         >
         <EfficiencySection
           snapshot={efficiency}
@@ -423,6 +450,7 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
           onReview={onReviewEfficiency}
           onVerify={onVerifyEfficiency}
           onOpenTransactions={onOpenTransactions}
+          hasActivePlan={hasActiveEfficiencyPlan}
         />
         </Disclosure>
       )}
@@ -432,7 +460,7 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
           title={solo ? "Spending" : "Spending and settlement"}
           summary={solo
             ? `${money(s.attribution.recordedSpend)} recorded by purpose`
-            : `${money(s.attribution.recordedSpend)} recorded across purpose, responsibility, and payer`}
+            : `${money(s.attribution.recordedSpend)} recorded across purpose, who it was for, and paid from`}
         >
       <section className="friendly-section attribution-section">
         <div className="friendly-heading attribution-heading">
@@ -462,7 +490,7 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
           <div>
             <span>
               <strong>Joint or unregistered funding</strong>
-              <small>Recorded spending with no single member payer; excluded from settlement.</small>
+              <small>Recorded spending with no single person it was paid from; excluded from settlement.</small>
             </span>
             <DrilldownAmount
               value={s.attribution.jointOrUnregisteredFunding}
@@ -485,13 +513,13 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
           </div>
           <div className={s.attribution.unassignedBeneficiarySpend > 0 ? "needs-review" : ""}>
             <span>
-              <strong>Beneficiary still unassigned</strong>
-              <small>Included in recorded activity, but not assigned to the household or a member yet.</small>
+              <strong>Who it was for is still unassigned</strong>
+              <small>Included in recorded activity, but not assigned to the household or a person yet.</small>
             </span>
             <DrilldownAmount
               value={s.attribution.unassignedBeneficiarySpend}
               money={money}
-              label="Spending with an unassigned beneficiary"
+              label="Spending with no person assigned"
               onClick={openTarget(onOpenTransactions, { beneficiary: "unassigned" })}
             />
           </div>
@@ -501,13 +529,13 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
               <small>
                 Used by the forecast, but excluded from recorded activity and settlement until payment evidence arrives.
                 {s.attribution.fixedCommitments.unassigned > 0
-                  ? ` ${money(s.attribution.fixedCommitments.unassigned)} still has no beneficiary.`
+                  ? ` ${money(s.attribution.fixedCommitments.unassigned)} still needs who it is for.`
                   : fixedCommitmentsNeedReview ? " A commitment purpose still needs review." : ""}
               </small>
             </span>
             <div className="planning-commitment-actions">
               <b>{money(s.attribution.fixedCommitments.total)}</b>
-              {fixedCommitmentsNeedReview && <button className="link-button" onClick={onOpenSettings}>Review commitments</button>}
+              {fixedCommitmentsNeedReview && <button className="link-button" onClick={() => onOpenSettings({ tab: "budget", section: "commitments" })}>Review commitments</button>}
             </div>
           </div>
         </div>
@@ -607,10 +635,18 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
             {s.monthFixed.map((fixed) => (
               <div key={fixed.id}>
                 <span>{fixed.label}</span>
-                <strong>{money(fixed.amount)}</strong>
+                <strong>{money(commitmentExpectedAmount(fixed, s.month))}</strong>
                 <small>
-                  {fixed.kind === "loan_payment" ? "Loan / debt · " : ""}
-                  {fixed.until ? `ends ${monthLabel(fixed.until)}` : "ongoing"}
+                  {fixed.kind === "loan_payment"
+                    ? "Loan / debt · "
+                    : fixed.kind === "investment_transfer"
+                      ? "Investment contribution · "
+                      : fixed.investmentAmount
+                        ? "Insurance + investment · "
+                        : ""}
+                  {commitmentMatchedTransactions(s.monthTransactions, fixed, s.month).length
+                    ? "matched to statement"
+                    : fixed.until ? `ends ${monthLabel(fixed.until)}` : "ongoing"}
                 </small>
               </div>
             ))}
@@ -654,6 +690,7 @@ function useHomeViewModel({
   onConfirmContribution,
   onOpenTransactions,
   efficiency,
+  hasActiveEfficiencyPlan = false,
   onReviewEfficiency,
   onVerifyEfficiency,
 }: {
@@ -663,7 +700,7 @@ function useHomeViewModel({
   percent?: (value: number, digits?: number) => string;
   financialValuesHidden?: boolean;
   lastCheckInAt: string;
-  onOpenSettings: () => void;
+  onOpenSettings: (target?: SettingsTarget) => void;
   onOpenImport: () => void;
   onReviewQueue: () => void;
   onCompleteCheckIn: () => void;
@@ -676,6 +713,7 @@ function useHomeViewModel({
   onConfirmContribution?: (candidate: SharedContributionCandidate) => void;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
   efficiency?: EfficiencySnapshot;
+  hasActiveEfficiencyPlan?: boolean;
   onReviewEfficiency?: (opportunity: EfficiencyOpportunity) => void;
   onVerifyEfficiency?: (opportunity: EfficiencyOpportunity) => void;
 }) {
@@ -717,98 +755,182 @@ function useHomeViewModel({
           ? "1 day behind"
           : `${s.dataAgeDays} days behind`;
 
-  const attentionItems = [
-    ...coverageRows.filter((row) => row.status !== "current").map((row) => ({
-      title: `Update ${row.account.label}`,
-      body: row.status === "missing"
-        ? `${row.ownerLabel}'s account has no confirmed coverage date. Import a statement or mark what has been reviewed.`
-        : `${row.ownerLabel}'s account is only confirmed through ${row.throughDate}. The household forecast remains incomplete.`,
-      action: <Button variant="secondary" onClick={onOpenSettings}>Review account</Button>,
+  const coverageNeedingUpdate = coverageRows.filter((row) => row.status !== "current");
+  const coverageActions: HomeAction[] = coverageNeedingUpdate.length
+    ? [{
+        id: "account-coverage",
+        family: "account_coverage",
+        priority: HOME_ACTION_PRIORITY.account_coverage,
+        count: coverageNeedingUpdate.length,
+        title: coverageNeedingUpdate.length === 1
+          ? `Update ${coverageNeedingUpdate[0]!.account.label}`
+          : `Update ${coverageNeedingUpdate.length} accounts`,
+        body: coverageNeedingUpdate.length === 1
+          ? coverageNeedingUpdate[0]!.status === "missing"
+            ? `${coverageNeedingUpdate[0]!.ownerLabel}'s account has no confirmed coverage date. Import a statement or mark what has been reviewed.`
+            : `${coverageNeedingUpdate[0]!.ownerLabel}'s account is only confirmed through ${coverageNeedingUpdate[0]!.throughDate}. The household forecast remains incomplete.`
+          : `${coverageNeedingUpdate.length} active accounts need current coverage before the household forecast is complete.`,
+        details: coverageNeedingUpdate.length > 1
+          ? coverageNeedingUpdate.map((row) => row.status === "missing"
+              ? `${row.account.label} (${row.ownerLabel}): not confirmed`
+              : `${row.account.label} (${row.ownerLabel}): confirmed through ${row.throughDate}`)
+          : undefined,
+        target: {
+          kind: "button",
+          label: coverageNeedingUpdate.length === 1 ? "Review account" : "Review accounts",
+          onSelect: () => onOpenSettings({
+            tab: "accounts",
+            section: "accounts",
+            ...(coverageNeedingUpdate.length === 1 ? { itemId: coverageNeedingUpdate[0]!.account.id } : {}),
+          }),
+        },
+      }]
+    : [];
+
+  const attentionItems = rankHomeActions([
+    ...coverageActions,
+    ...s.incomeItems.filter((item) => item.receipt?.currencyReview).map((item): HomeAction => ({
+      id: `income-currency-${item.memberId}-${item.portion.id}`,
+      family: "income_currency_review",
+      priority: HOME_ACTION_PRIORITY.income_currency_review,
+      title: `Check ${item.portion.label} currency`,
+      body: "This older confirmation could not be assigned a native currency safely. Review it to verify the household total.",
+      target: { kind: "button", label: "Check currency", onSelect: () => onConfirmIncome(item) },
     })),
-    ...contributionSuggestions.map((candidate) => {
-      const contributor = householdMembers.find((member) => member.id === candidate.contributorMemberId)?.name ?? "Household member";
-      const recovered = candidate.expenses.reduce((sum, expense) => sum + expense.amount, 0);
-      return {
-        title: `Confirm ${contributor}'s loan contribution`,
-        body: `${money(candidate.amount)} moved into ${candidate.credit.account} near ${candidate.expenses.length} recovery deduction${candidate.expenses.length === 1 ? "" : "s"} totalling ${money(recovered)}. Review the transfer pair and recovery group before changing settlement.`,
-        action: onConfirmContribution ? <Button variant="primary" onClick={() => onConfirmContribution(candidate)}>Review contribution</Button> : <span className="attention-pill">Review</span>,
-      };
-    }),
-    ...s.incomeItems.filter((item) => !item.receipt && (item.status === "overdue" || candidates.has(item.portion.id))).map((item) => ({
+    ...s.incomeItems.filter((item) => item.missingRate).map((item): HomeAction => ({
+      id: `exchange-rate-${item.memberId}-${item.portion.id}`,
+      family: "missing_exchange_rate",
+      priority: HOME_ACTION_PRIORITY.missing_exchange_rate,
+      title: `Add ${item.portion.currency} exchange rate`,
+      body: `${item.portion.label} cannot be included in the projection until its exchange rate is set.`,
+      target: {
+        kind: "button",
+        label: "Add exchange rate",
+        onSelect: () => onOpenSettings({ tab: "budget", section: "exchange-rates" }),
+      },
+    })),
+    ...(dataNeedsUpdate && !waitingForCoverage
+      ? [{
+          id: "recent-activity",
+          family: "recent_activity" as const,
+          priority: HOME_ACTION_PRIORITY.recent_activity,
+          title: "Bring transactions up to date",
+          body: s.latestTransactionDate
+            ? `Latest activity is ${s.latestTransactionDate}. Import or add recent transactions before trusting the forecast.`
+            : "No transactions are recorded for this month. Import or add activity before trusting the forecast.",
+          target: { kind: "button" as const, label: "Import activity", onSelect: onOpenImport },
+        }]
+      : []),
+    ...(s.unresolvedCount
+      ? [{
+          id: "classification",
+          family: "classification" as const,
+          priority: HOME_ACTION_PRIORITY.classification,
+          count: s.unresolvedCount,
+          title: "Classify new spending",
+          body: `${s.unresolvedCount} transaction${s.unresolvedCount === 1 ? "" : "s"} need a purpose or who it was for before the month is trustworthy.`,
+          target: { kind: "button" as const, label: "Review queue", onSelect: onReviewQueue },
+        }]
+      : []),
+    ...s.incomeItems.filter((item) => !item.receipt && (item.status === "overdue" || candidates.has(item.portion.id))).map((item): HomeAction => ({
+      id: `income-confirmation-${item.memberId}-${item.portion.id}`,
+      family: "income_confirmation",
+      priority: HOME_ACTION_PRIORITY.income_confirmation,
       title: `Confirm ${item.portion.label}`,
       body: candidates.has(item.portion.id)
         ? `A matching credit of ${moneyIn(candidates.get(item.portion.id)!.sourceAmount, candidates.get(item.portion.id)!.sourceCurrency)} on ${candidates.get(item.portion.id)!.transaction.date} is already in your statement.`
         : `${item.memberName}'s expected income has passed its arrival window. Confirm what actually arrived.`,
-      action: <Button variant="primary" onClick={() => onConfirmIncome(item, candidates.get(item.portion.id))}>Confirm income</Button>,
+      target: {
+        kind: "button",
+        label: "Confirm income",
+        onSelect: () => onConfirmIncome(item, candidates.get(item.portion.id)),
+      },
     })),
-    ...s.incomeItems.filter((item) => item.receipt?.currencyReview).map((item) => ({
-      title: `Check ${item.portion.label} currency`,
-      body: "This older confirmation could not be assigned a native currency safely. Review it to verify the household total.",
-      action: <Button variant="primary" onClick={() => onConfirmIncome(item)}>Check currency</Button>,
-    })),
-    ...s.incomeItems.filter((item) => item.missingRate).map((item) => ({
-      title: `Add ${item.portion.currency} exchange rate`,
-      body: `${item.portion.label} cannot be included in the projection until its exchange rate is set.`,
-      action: <Button variant="secondary" onClick={onOpenSettings}>Open settings</Button>,
-    })),
-    ...(dataNeedsUpdate && !waitingForCoverage
-      ? [
-          {
-            title: "Bring transactions up to date",
-            body: s.latestTransactionDate
-              ? `Latest activity is ${s.latestTransactionDate}. Import or add recent transactions before trusting the forecast.`
-              : "No transactions are recorded for this month. Import or add activity before trusting the forecast.",
-            action: <Button variant="primary" onClick={onOpenImport}>Import activity</Button>,
-          },
-        ]
-      : []),
-    ...(s.unresolvedCount
-      ? [
-          {
-            title: "Classify new spending",
-            body: `${s.unresolvedCount} transaction${s.unresolvedCount === 1 ? "" : "s"} need a purpose or beneficiary before the month is trustworthy.`,
-            action: <Button variant="primary" onClick={onReviewQueue}>Review queue</Button>,
-          },
-        ]
-      : []),
     ...(weeklyCheckInDue
-      ? [
-          {
-            title: "Complete this week's money check-in",
-            body: checkInReady
-              ? "The data is current and this month's categories are clean. Record that you reviewed the plan."
-              : "Update recent activity and resolve this month's purpose and beneficiary gaps, then record the check-in.",
-            action: <Button variant={checkInReady ? "primary" : "secondary"} onClick={onCompleteCheckIn}>
-              {checkInReady ? "Mark reviewed" : "Acknowledge gaps"}
-            </Button>,
+      ? [{
+          id: "weekly-check-in",
+          family: "weekly_check_in" as const,
+          priority: HOME_ACTION_PRIORITY.weekly_check_in,
+          title: "Complete this week's money check-in",
+          body: checkInReady
+            ? "The data is current and this month's categories are clean. Record that you reviewed the plan."
+            : "Update recent activity and resolve this month's purpose and who-it-was-for gaps, then record the check-in.",
+          target: {
+            kind: "button" as const,
+            label: checkInReady ? "Mark reviewed" : "Acknowledge gaps",
+            onSelect: onCompleteCheckIn,
           },
-        ]
+        }]
       : []),
-    ...s.transfers.map((transfer) => ({
+    ...contributionSuggestions.map((candidate): HomeAction => {
+      const contributor = householdMembers.find((member) => member.id === candidate.contributorMemberId)?.name ?? "Household member";
+      const recovered = candidate.expenses.reduce((sum, expense) => sum + expense.amount, 0);
+      return {
+        id: `contribution-${candidate.debit.id}-${candidate.credit.id}`,
+        family: "contribution_confirmation",
+        priority: HOME_ACTION_PRIORITY.contribution_confirmation,
+        title: `Confirm ${contributor}'s loan contribution`,
+        body: `${money(candidate.amount)} moved into ${candidate.credit.account} near ${candidate.expenses.length} recovery deduction${candidate.expenses.length === 1 ? "" : "s"} totalling ${money(recovered)}. Review the transfer pair and recovery group before changing settlement.`,
+        target: onConfirmContribution
+          ? { kind: "button", label: "Review contribution", onSelect: () => onConfirmContribution(candidate) }
+          : { kind: "status", label: "Review" },
+      };
+    }),
+    ...s.transfers.map((transfer): HomeAction => ({
+      id: `settlement-${transfer.fromId}-${transfer.toId}`,
+      family: "settlement",
+      priority: HOME_ACTION_PRIORITY.settlement,
       title: "Settle household balance",
       body: `${transfer.fromName} pays ${transfer.toName}: ${money(transfer.amount)}.`,
-      action: <span className="attention-pill">Settlement</span>,
+      target: { kind: "status", label: "Settlement" },
     })),
-    ...s.possibleFixedCostDuplicates.map((fixed) => ({
+    ...s.possibleFixedCostDuplicates.map((fixed): HomeAction => ({
+      id: `fixed-cost-duplicate-${fixed.id}`,
+      family: "fixed_cost_duplicate",
+      priority: HOME_ACTION_PRIORITY.fixed_cost_duplicate,
       title: `Check ${fixed.label} for double counting`,
       body: `A ${money(fixed.amount)} transaction in the same category is already in this month. If it is the same payment, remove this fixed cost.`,
-      action: <Button variant="secondary" onClick={onOpenSettings}>Check budget</Button>,
+      target: {
+        kind: "button",
+        label: "Check budget",
+        onSelect: () => onOpenSettings({ tab: "budget", section: "commitments", itemId: fixed.id }),
+      },
     })),
-    ...s.endingSoon.map((fixed) => ({
+    ...s.monthFixed.filter((fixed) => fixed.kind === "investment_transfer" && !fixed.holdingId).map((fixed): HomeAction => ({
+      id: `holding-link-${fixed.id}`,
+      family: "holding_link",
+      priority: HOME_ACTION_PRIORITY.holding_link,
+      title: `Link ${fixed.label} to an asset`,
+      body: "The installment is excluded from spend, but it needs a Cash, property, FD, policy, fund, or other holding before Mizan can track its cost basis.",
+      target: {
+        kind: "button",
+        label: "Choose holding",
+        onSelect: () => onOpenSettings({ tab: "assets", section: "assets" }),
+      },
+    })),
+    ...s.endingSoon.map((fixed): HomeAction => ({
+      id: `ending-commitment-${fixed.id}`,
+      family: "ending_commitment",
+      priority: HOME_ACTION_PRIORITY.ending_commitment,
       title: `${fixed.label} ends ${monthLabel(fixed.until ?? "")}`,
       body: `${money(fixed.amount)} per month can be redirected once it ends.`,
-      action: <Button variant="secondary" onClick={onOpenSettings}>Plan it</Button>,
+      target: {
+        kind: "button",
+        label: "Plan it",
+        onSelect: () => onOpenSettings({ tab: "budget", section: "commitments", itemId: fixed.id }),
+      },
     })),
     ...(!onTrack
-      ? [
-          {
-            title: "Save-rate target at risk",
-            body: `Projected save rate is below the ${percent(s.targetSaveRate, 0)} target.`,
-            action: <span className="attention-pill danger">At risk</span>,
-          },
-        ]
+      ? [{
+          id: "save-rate",
+          family: "save_rate" as const,
+          priority: HOME_ACTION_PRIORITY.save_rate,
+          title: "Save-rate target at risk",
+          body: `Projected save rate is below the ${percent(s.targetSaveRate, 0)} target.`,
+          target: { kind: "status" as const, label: "At risk", tone: "danger" as const },
+        }]
       : []),
-  ];
+  ]);
   const visibleAttentionItems = showAllActions ? attentionItems : attentionItems.slice(0, 3);
 
   return {
@@ -816,7 +938,7 @@ function useHomeViewModel({
     checkInDays, money, moneyIn, percent, solo,
     financialValuesHidden, onConfirmIncome, candidates, onAddOneOffIncome, attentionItems,
     visibleAttentionItems, showAllActions, setShowAllActions, onOpenTransactions, efficiency, onReviewEfficiency,
-    onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
+    onVerifyEfficiency, hasActiveEfficiencyPlan, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
     waitingForCoverage,
   };
 }
@@ -825,8 +947,8 @@ type HomeViewModel = ReturnType<typeof useHomeViewModel>;
 
 function HomeHeroSummary({ model }: { model: HomeViewModel }) {
   const {
-    s, onTrack, forecastReady, onOpenImport, onReviewQueue, onOpenSettings,
-    money, financialValuesHidden, percent, solo, waitingForCoverage, freshnessLabel,
+    s, onTrack, forecastReady, money, financialValuesHidden, percent, solo,
+    waitingForCoverage, freshnessLabel,
   } = model;
   return (
     <>
@@ -853,17 +975,6 @@ function HomeHeroSummary({ model }: { model: HomeViewModel }) {
               {" "}<MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
             </p>
           )}
-          <div className="hero-actions">
-            {!forecastReady && waitingForCoverage ? (
-              <Button variant="primary" onClick={onOpenSettings}>Review account coverage</Button>
-            ) : !forecastReady ? (
-              <Button variant="primary" onClick={onOpenImport}>Import activity</Button>
-            ) : s.unresolvedCount ? (
-              <Button variant="primary" onClick={onReviewQueue}>Review queue</Button>
-            ) : (
-              <Button variant="secondary" onClick={onOpenSettings}>Adjust budget</Button>
-            )}
-          </div>
         </div>
         <div className="hero-meter">
           {forecastReady ? (
@@ -965,6 +1076,26 @@ function HomeIncomeSection({ model }: { model: HomeViewModel }) {
   );
 }
 
+function HomeActionControl({
+  target,
+  rank,
+}: {
+  target: AppActionTarget;
+  rank: "primary" | "secondary" | "backlog";
+}) {
+  if (target.kind === "status") {
+    return <span className={`attention-pill ${target.tone === "danger" ? "danger" : ""}`}>{target.label}</span>;
+  }
+  return (
+    <Button
+      variant={rank === "primary" ? "primary" : rank === "secondary" ? "secondary" : "ghost"}
+      onClick={target.onSelect}
+    >
+      {target.label}
+    </Button>
+  );
+}
+
 function HomeAttentionSection({ model }: { model: HomeViewModel }) {
   const {
     hasActivity, attentionItems, forecastReady, onTrack, visibleAttentionItems,
@@ -988,15 +1119,31 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
         </div>
         <div className="attention-grid">
           {attentionItems.length ? (
-            visibleAttentionItems.map((item) => (
-              <div className="attention-card" key={`${item.title}-${item.body}`}>
+            visibleAttentionItems.map((item, index) => {
+              const rank = index === 0 ? "primary" : index < 3 ? "secondary" : "backlog";
+              return (
+              <div
+                className="attention-card"
+                data-action-count={item.count}
+                data-action-family={item.family}
+                data-action-rank={rank}
+                key={item.id}
+              >
                 <div>
+                  {index === 0 && <span className="soft-label">Do this next</span>}
+                  {index === 3 && <span className="soft-label">Backlog</span>}
                   <strong>{item.title}</strong>
                   <p>{item.body}</p>
+                  {item.details && item.details.length > 0 && (
+                    <ul>
+                      {item.details.map((detail) => <li key={detail}>{detail}</li>)}
+                    </ul>
+                  )}
                 </div>
-                {item.action}
+                <HomeActionControl target={item.target} rank={rank} />
               </div>
-            ))
+              );
+            })
           ) : (
             <div className="attention-card calm">
               <div>
@@ -1008,8 +1155,12 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
           )}
         </div>
         {attentionItems.length > 3 && (
-          <button className="link-button action-queue-toggle" onClick={() => setShowAllActions((current) => !current)}>
-            {showAllActions ? "Show top three" : `Show all ${attentionItems.length} actions`}
+          <button
+            aria-expanded={showAllActions}
+            className="link-button action-queue-toggle"
+            onClick={() => setShowAllActions((current) => !current)}
+          >
+            {showAllActions ? "Show priority tasks" : `Show ${attentionItems.length - 3} more`}
           </button>
         )}
       </section>}
@@ -1018,10 +1169,79 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
   );
 }
 
+function HomeAssetSection({ model }: { model: HomeViewModel }) {
+  const { s, money, financialValuesHidden, onOpenSettings } = model;
+  const snapshot = s.assetSnapshot;
+  if (!snapshot.rows.length && s.investmentContributions <= 0 && s.plannedInvestmentContributions <= 0) return null;
+  return (
+    <Disclosure
+      title="Assets & investments"
+      summary={snapshot.totalValue > 0
+        ? `${money(snapshot.totalValue)} across ${snapshot.rows.length} holding${snapshot.rows.length === 1 ? "" : "s"}`
+        : `${snapshot.rows.length} holding${snapshot.rows.length === 1 ? "" : "s"} awaiting valuation`}
+    >
+      <section className="friendly-section asset-overview">
+        <div className="friendly-heading">
+          <div>
+            <span className="soft-label">Holdings</span>
+            <h3>Value and contributions stay separate</h3>
+          </div>
+          <Button variant="secondary" onClick={() => onOpenSettings({ tab: "assets", section: "assets" })}>Manage holdings</Button>
+        </div>
+        <div className="asset-summary-strip">
+          <div>
+            <span>Latest valued total</span>
+            <strong><MoneyValue formatted={money(snapshot.totalValue)} hidden={financialValuesHidden} /></strong>
+            {snapshot.unvaluedCount > 0 && <small>{snapshot.unvaluedCount} holding{snapshot.unvaluedCount === 1 ? "" : "s"} not valued</small>}
+          </div>
+          <div>
+            <span>Contributed this month</span>
+            <strong><MoneyValue formatted={money(s.investmentContributions)} hidden={financialValuesHidden} /></strong>
+            <small>Recorded transaction evidence</small>
+          </div>
+          <div>
+            <span>Still planned this month</span>
+            <strong><MoneyValue formatted={money(s.plannedInvestmentContributions)} hidden={financialValuesHidden} /></strong>
+            <small>Unmatched scheduled contributions</small>
+          </div>
+        </div>
+        <div className="asset-row-list">
+          {snapshot.rows.map((row) => (
+            <article key={row.holding.id}>
+              <div>
+                <button
+                  aria-label={`Edit ${row.holding.label} holding`}
+                  className="link-button"
+                  onClick={() => onOpenSettings({
+                    tab: "assets",
+                    section: "assets",
+                    itemId: row.holding.id,
+                  })}
+                >
+                  <strong>{row.holding.label}</strong>
+                </button>
+                <small>{assetTypeLabel(row.holding.type)} · {row.holding.status.replaceAll("_", " ")}</small>
+              </div>
+              <div>
+                <span>{row.value === null ? "No valuation" : <MoneyValue formatted={money(row.value)} hidden={financialValuesHidden} />}</span>
+                <small>{row.valuationDate ? `Valued ${row.valuationDate}` : "Add a dated valuation"}</small>
+              </div>
+              <div>
+                <span><MoneyValue formatted={money(row.contributed)} hidden={financialValuesHidden} /></span>
+                <small>Recorded cost basis</small>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    </Disclosure>
+  );
+}
+
 function HomeOverview({ model }: { model: HomeViewModel }) {
   const {
     s, onOpenSettings, checkInDays, money, percent, financialValuesHidden, solo,
-    onOpenTransactions, efficiency, onReviewEfficiency,
+    onOpenTransactions, efficiency, hasActiveEfficiencyPlan, onReviewEfficiency,
     onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
   } = model;
   if (!s.incomeItems.length) {
@@ -1036,7 +1256,7 @@ function HomeOverview({ model }: { model: HomeViewModel }) {
           </p>
         </div>
         <div className="hero-meter">
-          <Button variant="primary" onClick={onOpenSettings}>Open settings</Button>
+          <Button variant="primary" onClick={() => onOpenSettings({ tab: "household", section: "income" })}>Open income settings</Button>
         </div>
       </section>
     );
@@ -1047,8 +1267,9 @@ function HomeOverview({ model }: { model: HomeViewModel }) {
       <HomeHeroSummary model={model} />
       <HomeIncomeSection model={model} />
       <HomeAttentionSection model={model} />
+      <HomeAssetSection model={model} />
       <HomeDetailSections model={{
-        summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency,
+        summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency, hasActiveEfficiencyPlan,
         onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
         onOpenSettings, freshnessLabel, checkInDays, movementRows, coverageRows,
       }} />

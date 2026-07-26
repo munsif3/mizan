@@ -75,8 +75,8 @@ describe("UI render smoke", () => {
         onComplete={() => {}}
       />,
     );
-    expect(html).toContain("Members and income");
-    expect(html).toContain("Add at least one named member and a currency code.");
+    expect(html).toContain("Your details");
+    expect(html).toContain("Add your name and a currency code.");
   });
 
   it("renders the configured Firebase sign-in gate", () => {
@@ -292,7 +292,7 @@ describe("UI render smoke", () => {
     expect(html).toContain("transaction-cards");
   });
 
-  it("renders settings with the members editor", () => {
+  it("renders compact member and income summaries before an editor is opened", () => {
     const data = threeMemberData();
     const html = renderToString(
       <SettingsModal
@@ -304,7 +304,7 @@ describe("UI render smoke", () => {
         onUpdateFixedCosts={() => {}}
         onUpdateAccounts={() => {}}
         onUpsertRule={() => {}}
-        onDeleteRule={() => {}}
+        onDeleteRules={() => {}}
         onUpdateCounterparties={() => {}}
         onUpdateCustomCategories={() => {}}
         sync={{
@@ -342,18 +342,14 @@ describe("UI render smoke", () => {
       />,
     );
     expect(html).toContain("Household members");
-    expect(html).toContain("Member name");
-    expect(html).toContain("Add monthly deposit");
-    expect(html).toContain("Add one-off income");
-    expect(html).toContain("What reaches the account?");
-    expect(html).toContain("How is tax handled?");
-    expect(html).toContain("When does it arrive?");
-    expect(html).toContain("Already deducted");
-    expect(html).toContain("Mizan reserves tax first.");
-    expect(html).toContain("income-member-header");
-    expect(html).toContain("income-deposit-card");
-    expect(html).toContain("arrival-inputs");
+    expect(html).toContain("Members and income stay compact");
+    expect(html).toContain("Ana");
+    expect(html).toContain("Monthly income");
+    expect(html).toContain("income source");
     expect(html).toContain("Change participation");
+    expect(html).not.toContain("Member name");
+    expect(html).not.toContain("What reaches the account?");
+    expect(html).not.toContain("income-deposit-card");
     expect(html).not.toContain('aria-label="Delete Ana"');
     expect(html).toContain("Accounts &amp; rules");
     expect(html).toContain("Sync &amp; backup");

@@ -1,9 +1,18 @@
 import { ownerOfTransaction } from "./accounts";
+import { computeAssetSnapshot, holdingContributionAmount, type AssetSnapshot } from "./assets";
 import { beneficiaryEquals } from "./beneficiaries";
 import { categoryInfo, spendingCategoryOptions } from "./categories";
+import {
+  commitmentActive,
+  commitmentExpectedAmount,
+  commitmentInvestmentAmount,
+  commitmentMatchedTransactions,
+  commitmentSpendAmount,
+} from "./commitments";
 import { pruneSharedContributions } from "./contributions";
 import { addMonths, daysInMonth, isoDateOf, monthOf } from "./dates";
 import { resolveMonthIncome, type PortionResolution } from "./income";
+import { ledgerIndexFor } from "./ledgerIndex";
 import { memberParticipatesInMonth, memberParticipatesOn, participatingMembersOn } from "./memberLifecycle";
 import { SPEND_KINDS } from "./movements";
 import { netAmount } from "./transactionMath";
@@ -39,6 +48,7 @@ export interface HistoryRow {
   spend: number;
   saved: number;
   rate: number;
+  assetValue: number;
 }
 
 /** Totals partitioned by the people or household that consumed the spend. */
@@ -139,6 +149,10 @@ export interface MonthSummary {
   incomeItems: PortionResolution[];
   cardSpend: number;
   fixedSpend: number;
+  /** Posted investment allocations in this month. */
+  investmentContributions: number;
+  /** Unmatched scheduled investment allocations still expected this month. */
+  plannedInvestmentContributions: number;
   totalSpend: number;
   remaining: number;
   saveRate: number;
@@ -177,6 +191,7 @@ export interface MonthSummary {
   endingSoon: FixedCost[];
   /** Exact category/amount matches that may represent the same payment twice. */
   possibleFixedCostDuplicates: FixedCost[];
+  assetSnapshot: AssetSnapshot;
   attribution: SpendingAttribution;
 }
 
@@ -198,13 +213,22 @@ export function isSpend(txn: Transaction): boolean {
   return txn.direction !== "credit" && (txn.kind ? SPEND_KINDS.has(txn.kind) : true);
 }
 
-/** Sum of net amounts for the spend-only subset of a transaction list. */
-export function spendTotal(transactions: Transaction[]): number {
-  return transactions.filter(isSpend).reduce((sum, txn) => sum + netAmount(txn), 0);
+/** Spend portion of one row after an explicit insurance/investment allocation. */
+export function transactionSpendAmount(txn: Transaction): number {
+  if (!isSpend(txn)) return 0;
+  const value = netAmount(txn);
+  const ratio = txn.amount > 0 ? value / txn.amount : 0;
+  const invested = Math.max(0, Number(txn.investmentAmount) || 0) * ratio;
+  return Math.max(0, value - invested);
 }
 
-function fixedActive(fixed: FixedCost, month: string): boolean {
-  return !fixed.until || month <= fixed.until;
+/** Sum of net amounts for the spend-only subset of a transaction list. */
+export function spendTotal(transactions: readonly Transaction[]): number {
+  return transactions.reduce((sum, txn) => sum + transactionSpendAmount(txn), 0);
+}
+
+function commitmentUnmatched(data: AppData, fixed: FixedCost, month: string): boolean {
+  return commitmentMatchedTransactions(data.transactions, fixed, month).length === 0;
 }
 
 /** Sorted months that have data, always including the current calendar month. */
@@ -281,11 +305,11 @@ export function settleUp(rows: { id: MemberId; name: string; net: number }[]): T
 
 function categoryTotalForMonth(data: AppData, category: CategoryKey, month: string): number {
   const transactions = spendTotal(
-    data.transactions.filter((txn) => monthOf(txn.date) === month && txn.category === category),
+    ledgerIndexFor(data.transactions).forMonth(month).filter((txn) => txn.category === category),
   );
   const fixed = data.fixedCosts
-    .filter((cost) => fixedActive(cost, month) && cost.category === category)
-    .reduce((sum, cost) => sum + Number(cost.amount || 0), 0);
+    .filter((cost) => commitmentActive(cost, month) && commitmentUnmatched(data, cost, month) && cost.category === category)
+    .reduce((sum, cost) => sum + commitmentSpendAmount(cost, month), 0);
   return transactions + fixed;
 }
 
@@ -382,13 +406,11 @@ export function needsClassificationReview(txn: Transaction): boolean {
 export function computeSpendingAttribution(data: AppData, month: string): SpendingAttribution {
   const { members, customCategories } = data.settings;
   const memberIds = new Set(members.map((member) => member.id));
-  const recordedTransactions = data.transactions.filter(
-    (txn) => monthOf(txn.date) === month && isSpend(txn),
-  );
+  const recordedTransactions = ledgerIndexFor(data.transactions).forMonth(month).filter(isSpend);
   const recordedEntries: AttributionEntry[] = recordedTransactions.map((txn) => ({
     category: txn.category,
     beneficiary: txn.beneficiary,
-    amount: netAmount(txn),
+    amount: transactionSpendAmount(txn),
     merchant: txn.description,
   }));
   const recordedTotals = emptyBeneficiaryAmounts(members);
@@ -396,7 +418,8 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
     addBeneficiaryAmount(recordedTotals, entry.beneficiary, entry.amount, memberIds);
   }
 
-  const activeFixed = data.fixedCosts.filter((fixed) => fixedActive(fixed, month));
+  const activeFixed = data.fixedCosts.filter((fixed) =>
+    commitmentActive(fixed, month) && commitmentUnmatched(data, fixed, month) && commitmentSpendAmount(fixed, month) > 0);
   const fixedEntries: AttributionEntry[] = activeFixed.map((fixed) => {
     const beneficiary = fixed.beneficiary;
     const assignedMember = beneficiary.type === "member"
@@ -407,7 +430,7 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
       beneficiary: assignedMember && !memberParticipatesInMonth(assignedMember, month)
         ? { type: "unassigned" }
         : beneficiary,
-      amount: Number(fixed.amount || 0),
+      amount: commitmentSpendAmount(fixed, month),
       merchant: fixed.label,
     };
   });
@@ -445,7 +468,7 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
   }
 
   for (const txn of recordedTransactions) {
-    const value = netAmount(txn);
+    const value = transactionSpendAmount(txn);
     const beneficiary = normalizedBeneficiary(txn.beneficiary, memberIds);
     const funding = new Map<MemberId, number>();
     let remaining = value;
@@ -554,19 +577,30 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
   const { targetSaveRate, members, customCategories } = data.settings;
   const income = resolveMonthIncome(members, data.incomeReceipts, data.settings.currency, data.settings.fxRates, month, today);
   const incomeTotal = income.total;
+  const ledgerIndex = ledgerIndexFor(data.transactions);
 
   // Credits (deposits, salary, transfers in) are kept in monthTransactions for
   // display (the Transactions table shows the account's full history) but are
   // never spend — income stays the manual settings figure, not
   // statement-derived — so every money sum below uses the debit-only subset.
-  const monthTransactionsAll = data.transactions.filter((txn) => monthOf(txn.date) === month);
+  const monthTransactionsAll = [...ledgerIndex.forMonth(month)];
   const monthTransactions = monthTransactionsAll;
   const monthSpendAll = monthTransactionsAll.filter(isSpend);
   const monthSpend = monthSpendAll;
-  const monthFixed = data.fixedCosts.filter((fixed) => fixedActive(fixed, month));
+  const monthFixed = data.fixedCosts.filter((fixed) =>
+    commitmentActive(fixed, month) && commitmentExpectedAmount(fixed, month) > 0);
 
   const cardSpend = spendTotal(monthTransactions);
-  const fixedSpend = monthFixed.reduce((sum, fixed) => sum + Number(fixed.amount || 0), 0);
+  const fixedSpend = monthFixed
+    .filter((fixed) => commitmentUnmatched(data, fixed, month))
+    .reduce((sum, fixed) => sum + commitmentSpendAmount(fixed, month), 0);
+  const investmentContributions = monthTransactions.reduce(
+    (sum, transaction) => sum + holdingContributionAmount(transaction),
+    0,
+  );
+  const plannedInvestmentContributions = monthFixed
+    .filter((fixed) => commitmentUnmatched(data, fixed, month))
+    .reduce((sum, fixed) => sum + commitmentInvestmentAmount(fixed, month), 0);
   const totalSpend = cardSpend + fixedSpend;
   const remaining = incomeTotal - totalSpend;
   const saveRate = incomeTotal ? (remaining / incomeTotal) * 100 : 0;
@@ -609,10 +643,10 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
 
   const categoryTotals = new Map<CategoryKey, number>();
   for (const txn of monthSpend) {
-    categoryTotals.set(txn.category, (categoryTotals.get(txn.category) ?? 0) + netAmount(txn));
+    categoryTotals.set(txn.category, (categoryTotals.get(txn.category) ?? 0) + transactionSpendAmount(txn));
   }
-  for (const fixed of monthFixed) {
-    categoryTotals.set(fixed.category, (categoryTotals.get(fixed.category) ?? 0) + Number(fixed.amount || 0));
+  for (const fixed of monthFixed.filter((item) => commitmentUnmatched(data, item, month))) {
+    categoryTotals.set(fixed.category, (categoryTotals.get(fixed.category) ?? 0) + commitmentSpendAmount(fixed, month));
   }
   const categoryRows: CategoryRow[] = [...categoryTotals.entries()]
     .map(([key, value]) => {
@@ -639,18 +673,18 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
   };
 
   const previousMonth = addMonths(month, -1);
-  const hasPreviousData = data.transactions.some((txn) => monthOf(txn.date) === previousMonth);
+  const hasPreviousData = ledgerIndex.forMonth(previousMonth).length > 0;
   const movementRows: MovementRow[] = categoryRows.slice(0, 3).map((row) => {
     const previous = hasPreviousData ? categoryTotalForMonth(data, row.key, previousMonth) : 0;
     const details = [
       ...monthFixed
-        .filter((fixed) => fixed.category === row.key)
-        .map((fixed) => ({ label: fixed.label, value: Number(fixed.amount || 0) })),
+        .filter((fixed) => fixed.category === row.key && commitmentUnmatched(data, fixed, month))
+        .map((fixed) => ({ label: fixed.label, value: commitmentSpendAmount(fixed, month) })),
       ...monthSpend
         .filter((txn) => txn.category === row.key)
-        .sort((a, b) => netAmount(b) - netAmount(a))
+        .sort((a, b) => transactionSpendAmount(b) - transactionSpendAmount(a))
         .slice(0, 3)
-        .map((txn) => ({ label: txn.description, value: netAmount(txn) })),
+        .map((txn) => ({ label: txn.description, value: transactionSpendAmount(txn) })),
     ].slice(0, 3);
     return { ...row, previous, delta: row.value - previous, details };
   });
@@ -681,12 +715,14 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
   const horizon = addMonths(month, 2);
   const endingSoon = monthFixed.filter((fixed) => fixed.until && fixed.until <= horizon);
   const possibleFixedCostDuplicates = monthFixed.filter((fixed) =>
+    commitmentUnmatched(data, fixed, month) &&
     monthSpendAll.some(
       (txn) => txn.category === fixed.category
         && beneficiaryEquals(txn.beneficiary, fixed.beneficiary)
-        && Math.abs(netAmount(txn) - Number(fixed.amount || 0)) < 0.01,
+        && Math.abs(transactionSpendAmount(txn) - commitmentSpendAmount(fixed, month)) < 0.01,
     ),
   );
+  const assetSnapshot = computeAssetSnapshot(data, month, ledgerIndex);
 
   return {
     month,
@@ -702,6 +738,8 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
     incomeItems: income.items,
     cardSpend,
     fixedSpend,
+    investmentContributions,
+    plannedInvestmentContributions,
     totalSpend,
     remaining,
     saveRate,
@@ -729,6 +767,7 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
     reviewQueueCount,
     endingSoon,
     possibleFixedCostDuplicates,
+    assetSnapshot,
     attribution,
     unresolvedCount,
   };
@@ -744,6 +783,7 @@ export interface ReviewItem {
   suggestedBeneficiary?: MerchantRule["beneficiary"];
   suggestedKind?: Transaction["kind"];
   suggestedCounterpartyId?: string;
+  suggestedHoldingId?: string;
 }
 
 interface ReviewAccountContext {
@@ -760,7 +800,7 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
     const merchant = txn.description.replace(/\s+/g, " ").trim().toUpperCase();
     const item = groups.get(merchant) ?? { merchant, count: 0, total: 0, rows: [] };
     item.count += 1;
-    item.total += netAmount(txn);
+    item.total += transactionSpendAmount(txn);
     item.rows.push(txn);
     groups.set(merchant, item);
   }
@@ -768,7 +808,7 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
     .map(({ rows, ...item }): ReviewItem => {
       const accountContexts = new Map<string, ReviewAccountContext>();
       for (const row of rows) {
-        const fallbackAccount = (row.rawAccount ?? row.account).replace(/\s+/g, " ").trim() || "Unknown account";
+        const fallbackAccount = (row.rawAccount ?? row.account).replace(/\s+/g, " ").trim() || "Unmatched statement account";
         const key = row.accountId ? `id:${row.accountId}` : `raw:${fallbackAccount.toUpperCase()}`;
         const current = accountContexts.get(key);
         if (current) {
@@ -790,6 +830,7 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
       const firstBeneficiary = knownBeneficiaries[0];
       const kinds = [...new Set(rows.map((row) => row.kind))];
       const counterparties = [...new Set(rows.map((row) => row.counterpartyId).filter((id): id is string => Boolean(id)))];
+      const holdings = [...new Set(rows.map((row) => row.holdingId).filter((id): id is string => Boolean(id)))];
       return {
         ...item,
         accountContexts: [...accountContexts.values()].sort(
@@ -801,6 +842,7 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
           : {}),
         ...(kinds.length === 1 ? { suggestedKind: kinds[0] } : {}),
         ...(counterparties.length === 1 ? { suggestedCounterpartyId: counterparties[0] } : {}),
+        ...(holdings.length === 1 ? { suggestedHoldingId: holdings[0] } : {}),
       };
     })
     .sort((a, b) => b.total - a.total || a.merchant.localeCompare(b.merchant));
@@ -811,6 +853,7 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
  * month; months without receipts use the current expected portions.
  */
 export function computeHistory(data: AppData, months: string[], today: Date): HistoryRow[] {
+  const ledgerIndex = ledgerIndexFor(data.transactions);
   return months.map((month) => {
     const income = resolveMonthIncome(
       data.settings.members,
@@ -822,10 +865,10 @@ export function computeHistory(data: AppData, months: string[], today: Date): Hi
     );
     const incomeTotal = income.total;
     const spend =
-      spendTotal(data.transactions.filter((txn) => monthOf(txn.date) === month)) +
+      spendTotal(ledgerIndex.forMonth(month)) +
       data.fixedCosts
-        .filter((fixed) => fixedActive(fixed, month))
-        .reduce((sum, fixed) => sum + Number(fixed.amount || 0), 0);
+        .filter((fixed) => commitmentActive(fixed, month) && commitmentUnmatched(data, fixed, month))
+        .reduce((sum, fixed) => sum + commitmentSpendAmount(fixed, month), 0);
     const saved = incomeTotal - spend;
     const oneOffIncome = income.items
       .filter((item) => item.portion.schedule.frequency === "one_off")
@@ -838,6 +881,7 @@ export function computeHistory(data: AppData, months: string[], today: Date): Hi
       spend,
       saved,
       rate: incomeTotal ? (saved / incomeTotal) * 100 : 0,
+      assetValue: computeAssetSnapshot(data, month, ledgerIndex).totalValue,
     };
   });
 }

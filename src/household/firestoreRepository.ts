@@ -16,7 +16,7 @@ import {
   type WriteBatch,
 } from "firebase/firestore";
 import type { AuthUser } from "../auth/authStore";
-import type { Account, AppData, Counterparty, CustomCategory, EfficiencyPlan, FixedCost, IncomeReceipt, Member, SharedContribution, Transaction } from "../domain/types";
+import type { Account, AppData, AssetHolding, Counterparty, CustomCategory, EfficiencyPlan, FixedCost, IncomeReceipt, Member, SharedContribution, Transaction } from "../domain/types";
 import type { DataRepository, RepositorySubscriptionOptions } from "../storage/repository";
 import {
   appDataToCloudCollections,
@@ -52,6 +52,7 @@ const SNAPSHOT_DATA_COLLECTIONS = [
   "sharedContributions",
   "accounts",
   "fixedCosts",
+  "assetHoldings",
   "incomeReceipts",
   "efficiencyPlans",
   "members",
@@ -466,6 +467,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
       sharedContributions,
       accounts,
       fixedCosts,
+      assetHoldings,
       incomeReceipts,
       efficiencyPlans,
       members,
@@ -478,6 +480,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
       orderedCollection<SharedContribution>(collectionFor("sharedContributions")),
       orderedCollection<Account>(collectionFor("accounts")),
       orderedCollection<FixedCost>(collectionFor("fixedCosts")),
+      orderedCollection<AssetHolding>(collectionFor("assetHoldings")),
       orderedCollection<IncomeReceipt>(collectionFor("incomeReceipts")),
       orderedCollection<EfficiencyPlan>(collectionFor("efficiencyPlans")),
       orderedCollection<Member>(collectionFor("members")),
@@ -492,6 +495,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
       sharedContributions,
       accounts,
       fixedCosts,
+      assetHoldings,
       incomeReceipts,
       efficiencyPlans,
       members,
@@ -562,6 +566,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
         ...appendOrderedCollectionJobs(collectionFor("sharedContributions"), cloud.sharedContributions, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("accounts"), cloud.accounts, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("fixedCosts"), cloud.fixedCosts, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("assetHoldings"), cloud.assetHoldings, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("incomeReceipts"), cloud.incomeReceipts, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("efficiencyPlans"), cloud.efficiencyPlans, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("members"), cloud.members, (item) => item.id),
@@ -594,6 +599,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
       replaceOrderedCollectionJobs(collectionFor("sharedContributions"), cloud.sharedContributions, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("accounts"), cloud.accounts, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("fixedCosts"), cloud.fixedCosts, (item) => item.id),
+      replaceOrderedCollectionJobs(collectionFor("assetHoldings"), cloud.assetHoldings, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("incomeReceipts"), cloud.incomeReceipts, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("efficiencyPlans"), cloud.efficiencyPlans, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("members"), cloud.members, (item) => item.id),

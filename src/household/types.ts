@@ -1,5 +1,6 @@
 import type {
   Account,
+  AssetHolding,
   Counterparty,
   CsvMapping,
   CustomCategory,
@@ -12,7 +13,7 @@ import type {
   Transaction,
 } from "../domain/types";
 
-export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 9;
+export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 10;
 export const CLOUD_SNAPSHOT_MANIFEST_VERSION = 1;
 
 type HouseholdRole = "owner" | "member";
@@ -66,6 +67,7 @@ export interface CloudCollections {
   sharedContributions: SharedContribution[];
   accounts: Account[];
   fixedCosts: FixedCost[];
+  assetHoldings: AssetHolding[];
   incomeReceipts: IncomeReceipt[];
   efficiencyPlans: EfficiencyPlan[];
   members: Member[];

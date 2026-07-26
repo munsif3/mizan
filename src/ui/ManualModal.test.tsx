@@ -53,7 +53,7 @@ describe("ManualModal beneficiary classification", () => {
     await setValue('input[aria-label="Amount"]', "4500");
     await setValue('input[aria-label="Description"]', "TRAIN PASS");
     await setValue('select[aria-label="Category"]', "transport");
-    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]');
+    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Who it was for"]');
     await act(async () => {
       if (!beneficiary) return;
       beneficiary.value = "member:sam";
@@ -96,7 +96,7 @@ describe("ManualModal beneficiary classification", () => {
     };
     await setInput("Amount", "1090");
     await setInput("Description", "COOL PLANET");
-    expect(container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]')?.value).toBe("member:sara");
+    expect(container?.querySelector<HTMLSelectElement>('select[aria-label="Who it was for"]')?.value).toBe("member:sara");
     await act(async () => container?.querySelector<HTMLFormElement>("form")?.requestSubmit());
     expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({
       account: "Sara Card",
@@ -140,7 +140,7 @@ describe("ManualModal beneficiary classification", () => {
       account.value = "home-card";
       account.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]')?.value).toBe("household");
+    expect(container?.querySelector<HTMLSelectElement>('select[aria-label="Who it was for"]')?.value).toBe("household");
 
     await act(async () => container?.querySelector<HTMLFormElement>("form")?.requestSubmit());
     expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({
@@ -182,7 +182,7 @@ describe("ManualModal beneficiary classification", () => {
     };
     await setInput("Amount", "4500");
     await setInput("Description", "FAMILY DINNER");
-    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]');
+    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Who it was for"]');
     await act(async () => {
       if (!beneficiary) return;
       beneficiary.value = "household";
@@ -218,7 +218,7 @@ describe("ManualModal beneficiary classification", () => {
       />,
     ));
 
-    expect(container?.querySelector('select[aria-label="Beneficiary"]')).toBeNull();
+    expect(container?.querySelector('select[aria-label="Who it was for"]')).toBeNull();
     const setInput = async (label: string, value: string) => {
       const field = container?.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
       await act(async () => {
@@ -262,7 +262,7 @@ describe("ManualModal beneficiary classification", () => {
     };
     await setInput("Amount", "500");
     await setInput("Description", "CASH PURCHASE");
-    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary"]');
+    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Who it was for"]');
     await act(async () => {
       if (!beneficiary) return;
       beneficiary.value = "household";

@@ -233,12 +233,12 @@ describe("effective-dated accounts", () => {
 });
 
 describe("seeding", () => {
-  it("guesses owner from a member name in the label, else joint", () => {
+  it("guesses named and explicitly joint owners, else leaves funding unassigned", () => {
     expect(guessOwner("Alex Visa", MEMBERS)).toBe("alex");
     expect(guessOwner("sam amex", MEMBERS)).toBe("sam");
     expect(guessOwner("Joint Savings", MEMBERS)).toBe("joint");
-    expect(guessOwner("Cash", MEMBERS)).toBe("joint");
-    expect(guessOwner("Unknown Bank", MEMBERS)).toBe("joint");
+    expect(guessOwner("Cash", MEMBERS)).toBe("unassigned");
+    expect(guessOwner("Unknown Bank", MEMBERS)).toBe("unassigned");
   });
 
   it("builds a registry from distinct labels in existing data", () => {

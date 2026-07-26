@@ -1,10 +1,10 @@
 import { beneficiaryEquals } from "./beneficiaries";
 import { categoryInfo } from "./categories";
+import { commitmentActive, commitmentSpendAmount } from "./commitments";
 import { addMonths, daysInMonth, isoDateOf, monthOf } from "./dates";
 import { stableHash } from "./ids";
 import { cleanMerchant, matchingRuleKey } from "./rules";
-import { computeMonthSummary, isSpend, needsClassificationReview } from "./summary";
-import { netAmount } from "./transactionMath";
+import { computeMonthSummary, isSpend, needsClassificationReview, transactionSpendAmount } from "./summary";
 import type {
   AppData,
   CategoryKey,
@@ -103,7 +103,7 @@ function facts(data: AppData): SpendFact[] {
       merchantLabel: transaction.description.trim() || merchantKey,
       category: transaction.category,
       beneficiary: transaction.beneficiary,
-      amount: netAmount(transaction),
+      amount: transactionSpendAmount(transaction),
     }];
   });
 }
@@ -257,7 +257,7 @@ function planMeasurement(data: AppData, spendFacts: SpendFact[], plan: Efficienc
   }
   const fixedSubject = plan.subject as Extract<EfficiencySubject, { type: "fixed_cost" }>;
   const fixed = data.fixedCosts.find((item) => item.id === fixedSubject.fixedCostId);
-  const actual = fixed && (!fixed.until || month <= fixed.until) ? Number(fixed.amount || 0) : 0;
+  const actual = fixed && commitmentActive(fixed, month) ? commitmentSpendAmount(fixed, month) : 0;
   const categoryBaseline = median(plan.baseline.months.map((item) => categoryAmount(
     spendFacts,
     item,
@@ -414,6 +414,8 @@ export function computeEfficiencySnapshot(data: AppData, month: string, today: D
   }
 
   for (const fixed of summary.endingSoon) {
+    const monthlySpend = commitmentSpendAmount(fixed, month);
+    if (monthlySpend <= 0) continue;
     const subject: Extract<EfficiencySubject, { type: "fixed_cost" }> = {
       type: "fixed_cost",
       fixedCostId: fixed.id,
@@ -421,16 +423,16 @@ export function computeEfficiencySnapshot(data: AppData, month: string, today: D
       beneficiary: fixed.beneficiary,
     };
     const plan = latestPlan(data.efficiencyPlans, subject);
-    if (shouldSuppress(plan, month, Number(fixed.amount || 0))) continue;
+    if (shouldSuppress(plan, month, monthlySpend)) continue;
     opportunities.push(makeOpportunity({
       kind: "commitment_ending",
       subject,
       subjectLabel: fixed.label,
       confidence: "high",
       evidenceMonths: fixed.until ? [fixed.until] : [],
-      currentMonthlyCost: Number(fixed.amount || 0),
-      baselineMonthlyCost: Number(fixed.amount || 0),
-      estimatedMonthlySavings: Number(fixed.amount || 0),
+      currentMonthlyCost: monthlySpend,
+      baselineMonthlyCost: monthlySpend,
+      estimatedMonthlySavings: monthlySpend,
       suggestedAction: "stop",
       evidence: [
         `The commitment is configured to end in ${fixed.until}.`,
@@ -439,7 +441,7 @@ export function computeEfficiencySnapshot(data: AppData, month: string, today: D
       income: summary.incomeTotal,
       targetGap,
       plan,
-      rankingAmount: Number(fixed.amount || 0) * 0.4,
+      rankingAmount: monthlySpend * 0.4,
     }));
   }
 

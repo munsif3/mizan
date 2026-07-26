@@ -109,6 +109,7 @@ export function HistoryView({
             <div><dt>Income</dt><dd><MoneyValue formatted={money(current.income)} hidden={financialValuesHidden} /></dd></div>
             <div><dt>Spend</dt><dd><MoneyValue formatted={money(current.spend)} hidden={financialValuesHidden} /></dd></div>
             <div><dt>Saved</dt><dd><MoneyValue formatted={money(current.saved)} hidden={financialValuesHidden} /></dd></div>
+            {current.assetValue > 0 && <div><dt>Asset value</dt><dd><MoneyValue formatted={money(current.assetValue)} hidden={financialValuesHidden} /></dd></div>}
           </dl>
           {(current.oneOffIncome > 0 || current.protectedIncome > 0) && (
             <p className="history-income-notes">

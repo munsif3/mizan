@@ -137,15 +137,6 @@ th {
   text-transform: uppercase;
 }
 
-.member-color-control {
-  display: grid;
-  gap: 3px;
-  color: var(--ql-muted);
-  font-size: 12px;
-  font-weight: 750;
-  text-align: center;
-}
-
 .deposit-section-heading > span {
   display: grid;
   width: 24px;

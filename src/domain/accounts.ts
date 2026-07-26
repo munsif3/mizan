@@ -196,12 +196,12 @@ export function transactionDisplayCurrency(txn: Transaction, accounts: Account[]
 
 /** Who funded this transaction, resolving stable account identity first. */
 export function ownerOfTransaction(txn: Transaction, accounts: Account[]): AccountOwner {
-  return accountForTransaction(txn, accounts)?.owner ?? "joint";
+  return accountForTransaction(txn, accounts)?.owner ?? "unassigned";
 }
 
 /**
  * One-time owner guess when seeding the registry from existing data: the first
- * member whose name appears in the account label, else joint. Members are
+ * member whose name appears in the account label, else unassigned. Members are
  * checked in list order so the guess is deterministic.
  */
 export function guessOwner(label: string, members: Member[]): AccountOwner {
@@ -210,7 +210,8 @@ export function guessOwner(label: string, members: Member[]): AccountOwner {
     const name = normalize(member.name);
     if (name && text.includes(name)) return member.id;
   }
-  return "joint";
+  if (/\b(?:JOINT|SHARED|HOUSEHOLD)\b/.test(text)) return "joint";
+  return "unassigned";
 }
 
 /** Build a starter registry from the distinct account labels already in the data. */

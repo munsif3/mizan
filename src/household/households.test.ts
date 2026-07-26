@@ -42,6 +42,7 @@ describe("household helpers", () => {
     expect(hasLocalFinancialData({ ...empty, merchantRules: { SHOP: { category: "food", beneficiary: { type: "household" }, kind: "expense" } } })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, incomeReceipts: [{ id: "rcpt_2026-07_p", month: "2026-07", memberId: "m", portionId: "p", amount: 1 }] })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, sharedContributions: [{ id: "c", allocations: [{ expenseTransactionId: "e", amount: 1 }], transferDebitTransactionId: "d", transferCreditTransactionId: "i", contributorMemberId: "m", amount: 1 }] })).toBe(true);
+    expect(hasLocalFinancialData({ ...empty, assetHoldings: [{ id: "fd", label: "FD", type: "fixed_deposit", currency: "LKR", owner: "unassigned", status: "active", valuations: [] }] })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, settings: { ...empty.settings, fxRates: { USD: 305 } } })).toBe(true);
     expect(hasLocalFinancialData({ ...empty, settings: { ...empty.settings, csvPresets: { abc: { hasHeader: true, dateColumn: 0, dateOrder: "dmy", descriptionColumn: 1, amountMode: "single", amountColumn: 2 } } } })).toBe(true);
   });
@@ -75,6 +76,16 @@ describe("household helpers", () => {
       { id: "acc2", label: "Contributor Card", currency: "USD", owner: "contributor", beneficiaryDefault: "review", match: ["5678"] },
     ];
     data.fixedCosts = [{ id: "fixed1", label: "Rent", amount: 100, kind: "loan_payment", category: "housing", beneficiary: { type: "household" } }];
+    data.assetHoldings = [{
+      id: "asset1",
+      label: "One-year FD",
+      type: "fixed_deposit",
+      currency: "USD",
+      owner: "owner",
+      status: "active",
+      linkedAccountId: "acc1",
+      valuations: [{ id: "value1", date: "2026-07-01", amount: 1_500 }],
+    }];
     data.incomeReceipts = [{ id: "rcpt_2026-07_owner_por_owner", month: "2026-07", memberId: "owner", portionId: "por_owner", amount: 1100, transactionId: "txn1" }];
     data.merchantRules = { SHOP: { category: "custom:cat1", beneficiary: { type: "account_default" }, kind: "expense" } };
     data.transactions = [
@@ -95,11 +106,12 @@ describe("household helpers", () => {
     }];
 
     const cloud = appDataToCloudCollections(data, "user_1", "2026-07-09T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(9);
+    expect(cloud.settings?.schemaVersion).toBe(10);
     expect(cloud.merchantRules[0]?.key).toBe("SHOP");
     expect(cloud.csvPresets[0]?.signature).toBe("signature_1");
     expect(cloud.incomeReceipts).toEqual(data.incomeReceipts);
     expect(cloud.sharedContributions).toEqual(data.sharedContributions);
+    expect(cloud.assetHoldings).toEqual(data.assetHoldings);
     expect(cloud.efficiencyPlans).toEqual(data.efficiencyPlans);
     expect(cloud.settings?.fxRates).toEqual({ LKR: 0.0032 });
     expect(cloudCollectionsToAppData(cloud)).toEqual(data);
@@ -152,7 +164,7 @@ describe("household helpers", () => {
       } as never],
     });
     expect(data.fixedCosts[0]?.kind).toBe("expense");
-    expect(data.schemaVersion).toBe(16);
+    expect(data.schemaVersion).toBe(17);
   });
 
   it("defaults cloud v6 income sources to monthly ordinary treatment", () => {
@@ -178,20 +190,20 @@ describe("household helpers", () => {
     expect(data.incomeReceipts[0]).toMatchObject({
       label: "Salary", taxRate: 0, taxWithheld: true, budgetTreatment: "ordinary",
     });
-    expect(data.schemaVersion).toBe(16);
+    expect(data.schemaVersion).toBe(17);
   });
 
   it("rejects household data written by a newer cloud schema", () => {
     const settings = appDataToCloudCollections(emptyData(), "user_1").settings!;
     expect(() => cloudCollectionsToAppData({
-      settings: { ...settings, schemaVersion: 10 as 9 },
-    })).toThrow(/cloud schema v10.*update Mizan/i);
+      settings: { ...settings, schemaVersion: 11 as 10 },
+    })).toThrow(/cloud schema v11.*update Mizan/i);
   });
 
   it("maps a full reset to empty split collections with valid settings", () => {
     const reset = emptyData();
     const cloud = appDataToCloudCollections(reset, "user_1", "2026-07-10T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(9);
+    expect(cloud.settings?.schemaVersion).toBe(10);
     expect(cloud.transactions).toEqual([]);
     expect(cloud.sharedContributions).toEqual([]);
     expect(cloud.accounts).toEqual([]);

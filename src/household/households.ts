@@ -38,6 +38,7 @@ export function hasLocalFinancialData(data: AppData): boolean {
       Object.keys(data.merchantRules).length ||
       data.accounts.length ||
       data.fixedCosts.length ||
+      data.assetHoldings.length ||
       data.incomeReceipts.length ||
       data.efficiencyPlans.length ||
       data.settings.members.length ||
@@ -113,6 +114,7 @@ export function appDataToCloudCollections(appData: AppData, updatedBy: string, n
     sharedContributions: appData.sharedContributions,
     accounts: appData.accounts,
     fixedCosts: appData.fixedCosts,
+    assetHoldings: appData.assetHoldings,
     incomeReceipts: appData.incomeReceipts,
     efficiencyPlans: appData.efficiencyPlans,
     members: appData.settings.members,
@@ -133,13 +135,15 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
   return migrate({
     // Split-cloud v4 stored AppData v10 semantics; v5 added beneficiaries,
     // v6 recurring-commitment payment types, v7 scheduled income sources,
-    // v8 household-shared efficiency plans, and v9 lifecycle/coverage evidence.
-    schemaVersion: cloudSchemaVersion >= 9 ? 16 : cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
+    // v8 household-shared efficiency plans, v9 lifecycle/coverage evidence,
+    // and v10 asset holdings plus reconciled commitments.
+    schemaVersion: cloudSchemaVersion >= 10 ? 17 : cloudSchemaVersion >= 9 ? 16 : cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
     transactions: collections.transactions ?? [],
     sharedContributions: collections.sharedContributions ?? [],
     merchantRules,
     accounts: collections.accounts ?? [],
     fixedCosts: collections.fixedCosts ?? [],
+    assetHoldings: collections.assetHoldings ?? [],
     incomeReceipts: collections.incomeReceipts ?? [],
     efficiencyPlans: collections.efficiencyPlans ?? [],
     settings: {

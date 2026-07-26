@@ -74,10 +74,10 @@ describe("migrate (trackr v1 -> mizan v5)", () => {
   });
 
   it("seeds the account registry from distinct labels, guessing owners from member names", () => {
-    // "Cash" contains no member name, so it seeds as joint (no bank/card heuristic any more).
+    // Legacy labels without a confident member or joint marker stay explicitly unassigned.
     expect(data.accounts.map((account) => [account.label, account.owner])).toEqual([
-      ["Alex Visa", "joint"],
-      ["Cash", "joint"],
+      ["Alex Visa", "unassigned"],
+      ["Cash", "unassigned"],
     ]);
   });
 
@@ -142,8 +142,8 @@ describe("migrate (legacy member data -> v5 members)", () => {
     });
   });
 
-  it("keeps owners that match members and forces unknown owners to joint", () => {
-    expect(data.accounts.map((account) => account.owner)).toEqual(["primary", "secondary", "joint"]);
+  it("keeps owners that match members and leaves unresolved owners unassigned", () => {
+    expect(data.accounts.map((account) => account.owner)).toEqual(["primary", "secondary", "unassigned"]);
   });
 
   it("seeds the member list and preserves the target save rate", () => {
@@ -235,7 +235,7 @@ describe("migrate (v7 income portions)", () => {
       schemaVersion: 6,
       settings: { members: [{ id: "m", name: "Member", color: "#123456", income: 1000 }], currency: "LKR" },
     });
-    expect(data.schemaVersion).toBe(16);
+    expect(data.schemaVersion).toBe(17);
     expect(data.settings.members[0]?.portions).toEqual([
       { id: "por_m", label: "Monthly income", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" },
     ]);
@@ -322,7 +322,7 @@ describe("migrate (v13 -> v14 scheduled income)", () => {
       },
       incomeReceipts: [{ id: "old", month: "2026-07", memberId: "m", portionId: "salary", amount: 1100 }],
     });
-    expect(data.schemaVersion).toBe(16);
+    expect(data.schemaVersion).toBe(17);
     expect(data.settings.members[0]?.portions[0]).toMatchObject({
       schedule: { frequency: "monthly" },
       budgetTreatment: "ordinary",
@@ -425,7 +425,7 @@ describe("migrate (v11 -> v12 purpose and beneficiary classification)", () => {
 
   it("preserves purpose categories and separates valid legacy personal beneficiaries", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(16);
+    expect(data.schemaVersion).toBe(17);
     expect(data.transactions.map(({ id, category, beneficiary }) => ({ id, category, beneficiary }))).toEqual([
       { id: "shared", category: "food", beneficiary: { type: "household" } },
       { id: "personal", category: "uncategorized", beneficiary: { type: "member", memberId: "sam" } },
@@ -556,7 +556,7 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
 
   it("preserves valid statement-backed contribution links", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(16);
+    expect(data.schemaVersion).toBe(17);
     expect(data.sharedContributions).toEqual([{
       id: "c1",
       allocations: [{ expenseTransactionId: "loan", amount: 125000 }],
@@ -701,7 +701,7 @@ describe("schema v16 household continuity", () => {
         },
       }],
     });
-    expect(current.schemaVersion).toBe(16);
+    expect(current.schemaVersion).toBe(17);
     expect(current.settings.members[0]?.lifecycle).toMatchObject({ inactiveReason: "left" });
     expect(current.accounts[0]?.coverage?.throughDate).toBe("2026-07-31");
 
@@ -710,5 +710,87 @@ describe("schema v16 household continuity", () => {
       settings: { members: [{ id: "sam", name: "Sam", color: "#fff", portions: [] }] },
     });
     expect(legacy.settings.members[0]?.lifecycle).toBeUndefined();
+  });
+});
+
+describe("schema v17 holdings, commitments, and transfer decisions", () => {
+  it("preserves valid links and cleans orphaned owners and references", () => {
+    const data = migrate({
+      schemaVersion: 17,
+      settings: {
+        currency: "LKR",
+        members: [{ id: "owner", name: "Owner", color: "#fff", portions: [] }],
+      },
+      accounts: [{ id: "cash", label: "Cash account", owner: "owner", beneficiaryDefault: "review", match: [] }],
+      assetHoldings: [
+        {
+          id: "policy",
+          label: "Union policy",
+          type: "insurance_policy",
+          currency: "LKR",
+          owner: "ghost",
+          status: "active",
+          linkedAccountId: "missing",
+          valuations: [{ id: "v", date: "2026-07-01", amount: 1_106_043 }],
+        },
+      ],
+      fixedCosts: [{
+        id: "union",
+        label: "Union installment",
+        amount: 92_170,
+        kind: "investment_transfer",
+        category: "uncategorized",
+        beneficiary: { type: "unassigned" },
+        holdingId: "policy",
+        totalAmount: 1_106_043,
+        merchantMatch: ["UNION ASSURANCE LIMITED INST"],
+      }],
+      transactions: [
+        {
+          id: "debit",
+          date: "2026-07-01",
+          description: "UNION ASSURANCE LIMITED INST",
+          amount: 92_170,
+          category: "uncategorized",
+          beneficiary: { type: "unassigned" },
+          account: "Cash account",
+          accountId: "cash",
+          note: "",
+          source: "imported",
+          direction: "debit",
+          kind: "investment_transfer",
+          holdingId: "policy",
+          commitmentId: "union",
+          linkedTransferId: "credit",
+          rejectedTransferIds: ["missing", "debit"],
+        },
+        {
+          id: "credit",
+          date: "2026-07-02",
+          description: "TRANSFER IN",
+          amount: 92_170,
+          category: "uncategorized",
+          beneficiary: { type: "unassigned" },
+          account: "Cash account",
+          accountId: "cash",
+          note: "",
+          source: "imported",
+          direction: "credit",
+          kind: "internal_transfer",
+          linkedTransferId: "debit",
+        },
+      ],
+    });
+
+    expect(data.schemaVersion).toBe(17);
+    expect(data.assetHoldings[0]).toMatchObject({ id: "policy", owner: "unassigned" });
+    expect(data.assetHoldings[0]?.linkedAccountId).toBeUndefined();
+    expect(data.fixedCosts[0]).toMatchObject({ holdingId: "policy", totalAmount: 1_106_043 });
+    expect(data.transactions[0]).toMatchObject({
+      holdingId: "policy",
+      commitmentId: "union",
+      linkedTransferId: "credit",
+    });
+    expect(data.transactions[0]?.rejectedTransferIds).toBeUndefined();
   });
 });

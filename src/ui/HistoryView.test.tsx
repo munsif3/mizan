@@ -6,8 +6,8 @@ import type { EfficiencyPlan } from "../domain/types";
 import { HistoryView } from "./HistoryView";
 
 const rows: HistoryRow[] = [
-  { month: "2026-06", income: 100_000, protectedIncome: 0, oneOffIncome: 0, spend: 80_000, saved: 20_000, rate: 20 },
-  { month: "2026-07", income: 100_000, protectedIncome: 0, oneOffIncome: 0, spend: 90_000, saved: 10_000, rate: 10 },
+  { month: "2026-06", income: 100_000, protectedIncome: 0, oneOffIncome: 0, spend: 80_000, saved: 20_000, rate: 20, assetValue: 0 },
+  { month: "2026-07", income: 100_000, protectedIncome: 0, oneOffIncome: 0, spend: 90_000, saved: 10_000, rate: 10, assetValue: 0 },
 ];
 
 describe("HistoryView selected month", () => {

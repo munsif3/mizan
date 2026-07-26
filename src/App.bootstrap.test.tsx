@@ -178,7 +178,7 @@ describe("signed-in startup bootstrap", () => {
     bootstrap.repositoryLoad.mockResolvedValue(householdData());
 
     await act(async () => root.render(<App />));
-    expect(container.textContent).toContain("Could not open your household");
+    expect(container.textContent).toContain("We couldn’t open this household");
     expect(container.textContent).toContain("profile unavailable");
 
     await act(async () => button(container, "Retry household load").click());

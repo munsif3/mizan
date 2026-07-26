@@ -45,7 +45,7 @@ export type MovementKind =
   | "account_credit";
 
 /** Recurring commitments are forecast spend, but retain whether they are an ordinary bill or debt repayment. */
-export type FixedCostKind = Extract<MovementKind, "expense" | "loan_payment">;
+export type FixedCostKind = Extract<MovementKind, "expense" | "loan_payment" | "investment_transfer">;
 
 /** The default movement kind for a freshly imported/entered row, from its sign. */
 export function defaultKind(direction: "debit" | "credit"): MovementKind {
@@ -153,8 +153,8 @@ export interface IncomeReceipt {
   budgetTreatment?: IncomeBudgetTreatment;
 }
 
-/** Who pays from an account: a member id, or "joint" for shared/unknown. */
-export type AccountOwner = MemberId | "joint";
+/** Who funds an account. Unknown funding is deliberately distinct from genuinely joint funding. */
+export type AccountOwner = MemberId | "joint" | "unassigned";
 
 /** How a registered account supplies the beneficiary for otherwise unresolved spend. */
 type AccountBeneficiaryDefault = "owner" | "household" | "review";
@@ -233,6 +233,20 @@ export interface Transaction {
   kind: MovementKind;
   /** For money_lent / repayment_received / gift_or_handout: the other party. */
   counterpartyId?: string;
+  /** Asset receiving an investment transfer or the investment portion of a mixed policy payment. */
+  holdingId?: string;
+  /** Scheduled commitment this posted transaction reconciles. */
+  commitmentId?: string;
+  /**
+   * Explicit investment allocation inside an otherwise spend-like payment.
+   * The remainder counts as spend. Used only when policy evidence supports a
+   * mixed insurance/investment split.
+   */
+  investmentAmount?: number;
+  /** The other transaction in a confirmed internal-transfer pair. */
+  linkedTransferId?: string;
+  /** Candidate counterparts explicitly rejected by the household. */
+  rejectedTransferIds?: string[];
   split?: Split;
 }
 
@@ -266,8 +280,54 @@ export interface FixedCost {
   kind: FixedCostKind;
   category: CategoryKey;
   beneficiary: SpendBeneficiary;
+  /** first month this commitment applies, "YYYY-MM"; empty/undefined = all history */
+  from?: string;
   /** last month this cost applies, "YYYY-MM" inclusive; empty/undefined = ongoing */
   until?: string;
+  /** Contractual/hold total. Metadata only; never a second transaction. */
+  totalAmount?: number;
+  /** Case-insensitive merchant fragments used to reconcile posted installments. */
+  merchantMatch?: string[];
+  /** Asset receiving the investment portion of this commitment. */
+  holdingId?: string;
+  /** Per-installment investment allocation for a mixed policy payment. */
+  investmentAmount?: number;
+}
+
+export type AssetType =
+  | "cash"
+  | "fixed_deposit"
+  | "property"
+  | "shares"
+  | "managed_fund"
+  | "insurance_policy"
+  | "retirement"
+  | "gold"
+  | "other";
+
+export type AssetStatus = "active" | "matured" | "closed";
+
+interface AssetValuation {
+  id: string;
+  /** ISO date YYYY-MM-DD. */
+  date: string;
+  /** Market/statement value in the holding's native currency. */
+  amount: number;
+  note?: string;
+}
+
+export interface AssetHolding {
+  id: string;
+  label: string;
+  type: AssetType;
+  currency: string;
+  owner: AccountOwner;
+  institution?: string;
+  linkedAccountId?: string;
+  openedOn?: string;
+  maturityOn?: string;
+  status: AssetStatus;
+  valuations: AssetValuation[];
 }
 
 /** A household judgment about the real-life value received from a cost. */
@@ -422,17 +482,19 @@ export interface MerchantRule {
   beneficiary: SpendBeneficiary | { type: "account_default" };
   kind: MovementKind;
   counterpartyId?: string;
+  holdingId?: string;
 }
 
 export type MerchantRules = Record<string, MerchantRule>;
 
 export interface AppData {
-  schemaVersion: 16;
+  schemaVersion: 17;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
   merchantRules: MerchantRules;
   accounts: Account[];
   fixedCosts: FixedCost[];
+  assetHoldings: AssetHolding[];
   incomeReceipts: IncomeReceipt[];
   efficiencyPlans: EfficiencyPlan[];
   settings: HouseholdSettings;

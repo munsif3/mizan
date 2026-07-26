@@ -26,8 +26,7 @@ import { clearLegacyLocalData, hasLegacyLocalData, loadLegacyLocalData } from ".
 import type { DataRepository } from "../storage/repository";
 import { useCloudSync } from "./useCloudSync";
 import { emptyData } from "../storage/schema";
-import { CLEAR_TRANSACTIONS_CONFIRMATION } from "../ui/ClearTransactionsModal";
-import { RESET_CONFIRMATION } from "../ui/ResetHouseholdModal";
+import { CLEAR_TRANSACTIONS_CONFIRMATION, RESET_CONFIRMATION } from "./destructiveConfirmations";
 import type { BeneficiaryFilter, PayerFilter } from "../ui/TransactionsView";
 
 export type View = "home" | "transactions" | "history";

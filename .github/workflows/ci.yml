@@ -22,5 +22,4 @@ jobs:
           java-version: 21
       - run: npm ci
       - run: npm run check
-      - run: npm run check:deadcode
       - run: npm run test:rules

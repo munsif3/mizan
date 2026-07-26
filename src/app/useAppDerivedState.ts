@@ -23,7 +23,6 @@ interface DerivedStateInput {
   setMonth: (month: string) => void;
   bootstrapPhase: BootstrapPhase;
   privacy: boolean;
-  dismissedTransfers: Set<string>;
 }
 
 export function useAppDerivedState({
@@ -32,7 +31,6 @@ export function useAppDerivedState({
   setMonth,
   bootstrapPhase,
   privacy,
-  dismissedTransfers,
 }: DerivedStateInput) {
   const today = new Date();
   const todayMonth = isoDateOf(today).slice(0, 7);
@@ -53,9 +51,8 @@ export function useAppDerivedState({
   const queue = useMemo(() => reviewQueue(data.transactions), [data]);
   const history = useMemo(() => computeHistory(data, historyMonths, new Date()), [data, historyMonths]);
   const transferCandidates = useMemo(
-    () => detectTransferCandidates(data.transactions, data.accounts)
-      .filter((pair) => !dismissedTransfers.has(`${pair.debit.id}:${pair.credit.id}`)),
-    [data.transactions, data.accounts, dismissedTransfers],
+    () => detectTransferCandidates(data.transactions, data.accounts, undefined, true),
+    [data.transactions, data.accounts],
   );
   const contributionCandidates = useMemo(
     () => detectSharedContributionCandidates(

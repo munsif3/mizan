@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, RotateCcw, Scissors, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { ownerOfTransaction } from "../domain/accounts";
-import { categoryOptions } from "../domain/categories";
+import { categoryOptions, spendingCategoryOptions } from "../domain/categories";
 import { contributionReferencesTransaction } from "../domain/contributions";
 import { monthLabel } from "../domain/dates";
 import { isSpendKind, kindAllowedFor, kindNeedsCategory, kindNeedsCounterparty, movementInfo, MOVEMENT_OPTIONS } from "../domain/movements";
 import { cleanMerchant } from "../domain/rules";
 import { isSpend, needsClassificationReview, netAmount, spendTotal, type MonthSummary, type ReviewItem } from "../domain/summary";
 import type { TransferCandidate } from "../domain/transfers";
-import { defaultKind, type Account, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type SharedContribution, type SpendBeneficiary, type Transaction } from "../domain/types";
+import { defaultKind, type Account, type AssetHolding, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type SharedContribution, type SpendBeneficiary, type Transaction } from "../domain/types";
 import { Button, ConfirmDialog, EmptyState, IconButton, Modal, MoneyValue, StatusBadge } from "./bits";
-import { RuleFields, ruleBeneficiaryValue, ruleFromControls, type RuleBeneficiaryValue } from "./ruleFields";
+import { ruleBeneficiaryValue, ruleFromControls, type RuleBeneficiaryValue } from "./ruleFields";
 
 export type BeneficiaryFilter = "all" | "household" | "unassigned" | `member:${string}`;
 export type PayerFilter = "all" | "joint" | `member:${string}`;
@@ -40,6 +40,7 @@ function useTransactionsViewModel({
   summary,
   members,
   accounts,
+  assetHoldings = [],
   customCategories,
   counterparties,
   queue,
@@ -54,11 +55,13 @@ function useTransactionsViewModel({
   onSetBeneficiary,
   onSetKind,
   onSetCounterparty,
+  onSetHolding = () => undefined,
   onSetAccount,
   onCategorizeMerchant,
   onRememberMerchant,
   onUndo,
   onResetClassification,
+  onUnlinkCommitment = () => undefined,
   onConfirmTransfer,
   onDismissTransfer,
   onSplit,
@@ -74,6 +77,7 @@ function useTransactionsViewModel({
   summary: MonthSummary;
   members: Member[];
   accounts: Account[];
+  assetHoldings?: AssetHolding[];
   customCategories: CustomCategory[];
   counterparties: Counterparty[];
   queue: ReviewItem[];
@@ -88,11 +92,13 @@ function useTransactionsViewModel({
   onSetBeneficiary: (id: string, beneficiary: SpendBeneficiary) => void;
   onSetKind: (id: string, kind: MovementKind) => void;
   onSetCounterparty: (id: string, counterpartyId: string | undefined) => void;
+  onSetHolding?: (id: string, holdingId: string | undefined) => void;
   onSetAccount: (id: string, accountId: string) => void;
   onCategorizeMerchant: (merchant: string, rule: MerchantRule) => void;
   onRememberMerchant: (id: string) => void;
   onUndo: () => void;
   onResetClassification: (id: string) => void;
+  onUnlinkCommitment?: (id: string) => void;
   onConfirmTransfer: (debitId: string, creditId: string) => void;
   onDismissTransfer: (debitId: string, creditId: string) => void;
   onSplit: (txn: Transaction) => void;
@@ -131,7 +137,9 @@ function useTransactionsViewModel({
     const funded = linked.reduce((sum, item) => sum + item.amount, 0);
     const values = new Set<PayerFilter>(linked.map((item) => `member:${item.memberId}` as PayerFilter));
     const owner = ownerOfTransaction(txn, accounts);
-    if (netAmount(txn) - funded > 0.005) values.add(owner === "joint" ? "joint" : `member:${owner}`);
+    if (netAmount(txn) - funded > 0.005) {
+      values.add(owner === "joint" || owner === "unassigned" ? "joint" : `member:${owner}`);
+    }
     return [...values];
   };
   const categoryLabel = (key: CategoryKey) => allOptions.find((option) => option.key === key)?.label ?? key;
@@ -205,7 +213,8 @@ function useTransactionsViewModel({
 
   const canReset = (txn: Transaction) =>
     txn.category !== "uncategorized" || txn.beneficiary.type !== "unassigned" ||
-    txn.kind !== defaultKind(txn.direction) || Boolean(txn.counterpartyId) || Boolean(txn.classificationLocked);
+    txn.kind !== defaultKind(txn.direction) || Boolean(txn.counterpartyId) || Boolean(txn.holdingId) ||
+    Boolean(txn.commitmentId) || Boolean(txn.linkedTransferId) || Boolean(txn.classificationLocked);
   const confirmRemove = (txn: Transaction) => {
     setPendingDelete(txn);
   };
@@ -239,14 +248,14 @@ function useTransactionsViewModel({
       {isSpend(txn) && !solo && (
         <span className="beneficiary-control">
           <select
-            aria-label={`Beneficiary for ${txn.description}`}
+            aria-label={`Who it was for: ${txn.description}`}
             value={beneficiaryFilterOf(txn.beneficiary)}
             onChange={(event) => onSetBeneficiary(
               txn.id,
               beneficiaryFromFilter(event.target.value as Exclude<BeneficiaryFilter, "all">),
             )}
           >
-            <option value="unassigned">For whom?</option>
+            <option value="unassigned">Who was it for?</option>
             <option value="household">Household</option>
             {members.map((member) => (
               <option key={member.id} value={`member:${member.id}`}>{member.name}</option>
@@ -264,6 +273,18 @@ function useTransactionsViewModel({
           <option value="">Who?</option>
           {counterparties.map((cp) => (
             <option key={cp.id} value={cp.id}>{cp.name}</option>
+          ))}
+        </select>
+      )}
+      {txn.kind === "investment_transfer" && (
+        <select
+          aria-label={`Asset holding for ${txn.description}`}
+          value={txn.holdingId ?? ""}
+          onChange={(event) => onSetHolding(txn.id, event.target.value || undefined)}
+        >
+          <option value="">Choose holding</option>
+          {assetHoldings.filter((holding) => holding.status !== "closed").map((holding) => (
+            <option key={holding.id} value={holding.id}>{holding.label}</option>
           ))}
         </select>
       )}
@@ -325,9 +346,9 @@ function useTransactionsViewModel({
   };
 
   return {
-    summary, members, accounts, customCategories, counterparties, queue, transferCandidates,
+    summary, members, accounts, assetHoldings, customCategories, counterparties, queue, transferCandidates,
     undoLabel, filters, onFiltersChange, money, transactionMoney, financialValuesHidden, solo,
-    onCategorizeMerchant, onUndo, onResetClassification, onConfirmTransfer, onDismissTransfer,
+    onCategorizeMerchant, onUndo, onResetClassification, onUnlinkCommitment, onConfirmTransfer, onDismissTransfer,
     onSplit, onRemove, onOpenImport, onAddTransaction, linkedIncome,
     allOptions, accountFilter, setAccountFilter, movementFilter, setMovementFilter,
     filtersOpen, setFiltersOpen, reviewOpen, setReviewOpen, setSelectedTransactionId,
@@ -341,11 +362,15 @@ function useTransactionsViewModel({
 type TransactionsViewModel = ReturnType<typeof useTransactionsViewModel>;
 
 function TransactionReviewSections({ model }: { model: TransactionsViewModel }) {
+  const [showAllReviews, setShowAllReviews] = useState(false);
+  useEffect(() => setShowAllReviews(false), [model.summary.month]);
   const {
     undoLabel, onUndo, transferCandidates, money, financialValuesHidden, onConfirmTransfer,
-    onDismissTransfer, queue, reviewOpen, setReviewOpen, members, accounts, customCategories,
+    onDismissTransfer, queue, reviewOpen, setReviewOpen, members, accounts, assetHoldings, customCategories,
     counterparties, onCategorizeMerchant,
   } = model;
+  const visibleQueue = showAllReviews ? queue : queue.slice(0, 3);
+  const remainingReviews = Math.max(0, queue.length - visibleQueue.length);
   return (
     <>
       {undoLabel && (
@@ -400,19 +425,30 @@ function TransactionReviewSections({ model }: { model: TransactionsViewModel }) 
               <h3>{queue.length} merchant{queue.length === 1 ? "" : "s"} need a default</h3>
             </div>
             <div className="review-queue-actions">
-              <p>Set purpose and beneficiary once. Matching history and future imports follow that default.</p>
+              <p>
+                Set purpose and who it was for once. Matching history and future imports follow that default.
+                {reviewOpen && remainingReviews > 0
+                  ? ` ${remainingReviews} more merchant${remainingReviews === 1 ? "" : "s"} waiting after these three.`
+                  : ""}
+              </p>
               <Button variant="secondary" aria-expanded={reviewOpen} onClick={() => setReviewOpen((current) => !current)}>
                 {reviewOpen ? "Hide review queue" : "Review merchants"}
               </Button>
+              {reviewOpen && queue.length > 3 && (
+                <Button variant="secondary" onClick={() => setShowAllReviews((current) => !current)}>
+                  {showAllReviews ? "Show next 3 only" : `Show all ${queue.length} merchants`}
+                </Button>
+              )}
             </div>
           </div>
           {reviewOpen && <div className="review-list merchant-review-list">
-            {queue.map((item) => (
+            {visibleQueue.map((item) => (
               <ReviewCard
                 key={item.merchant}
                 item={item}
                 members={members}
                 accounts={accounts}
+                assetHoldings={assetHoldings}
                 customCategories={customCategories}
                 counterparties={counterparties}
                 money={money}
@@ -468,13 +504,13 @@ function TransactionFilterBar({ model }: { model: TransactionsViewModel }) {
               <option value="all">All purposes</option>
               {allOptions.map((option) => <option value={option.key} key={option.key}>{option.label}</option>)}
             </select></label>
-            {!solo && <label><span>Beneficiary</span><select aria-label="For whom" value={filters.beneficiary} onChange={(event) => onFiltersChange({ ...filters, beneficiary: event.target.value as BeneficiaryFilter })}>
+            {!solo && <label><span>Who it was for</span><select aria-label="Who it was for" value={filters.beneficiary} onChange={(event) => onFiltersChange({ ...filters, beneficiary: event.target.value as BeneficiaryFilter })}>
               <option value="all">Everyone</option><option value="household">Household</option>
               {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
               <option value="unassigned">Unassigned</option>
             </select></label>}
-            {!solo && <label><span>Payer</span><select aria-label="Paid from" value={filters.payer} onChange={(event) => onFiltersChange({ ...filters, payer: event.target.value as PayerFilter })}>
-              <option value="all">All payers</option>
+            {!solo && <label><span>Paid from</span><select aria-label="Paid from" value={filters.payer} onChange={(event) => onFiltersChange({ ...filters, payer: event.target.value as PayerFilter })}>
+              <option value="all">All payment sources</option>
               {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
               <option value="joint">Joint / unregistered</option>
             </select></label>}
@@ -509,7 +545,7 @@ function TransactionFilterBar({ model }: { model: TransactionsViewModel }) {
 
 function TransactionsBody({ model }: { model: TransactionsViewModel }) {
   const {
-    summary, money, transactionMoney, financialValuesHidden, onResetClassification,
+    summary, money, transactionMoney, financialValuesHidden, onResetClassification, onUnlinkCommitment,
     onSplit, onRemove, onOpenImport, onAddTransaction, linkedIncome, setSelectedTransactionId,
     pendingDelete, setPendingDelete, categoryLabel, beneficiaryLabel, counterpartyName, visible,
     selectedTransaction, clearAllFilters, canReset, confirmRemove, deleteWarning, controls,
@@ -562,7 +598,7 @@ function TransactionsBody({ model }: { model: TransactionsViewModel }) {
                 <th>Date</th>
                 <th>Description</th>
                 <th>Account</th>
-                <th>Purpose / beneficiary</th>
+                <th>Purpose / who it was for</th>
                 <th className="right">Net</th>
                 <th />
               </tr>
@@ -667,6 +703,14 @@ function TransactionsBody({ model }: { model: TransactionsViewModel }) {
             <section className="drawer-section transaction-detail-actions">
               <h3>Actions</h3>
               <Button variant="secondary" onClick={() => onSplit(selectedTransaction)}><Scissors size={17} aria-hidden="true" /> Split transaction</Button>
+              {selectedTransaction.commitmentId && (
+                <Button variant="secondary" onClick={() => {
+                  onUnlinkCommitment(selectedTransaction.id);
+                  setSelectedTransactionId(null);
+                }}>
+                  <RotateCcw size={17} aria-hidden="true" /> Unlink from commitment
+                </Button>
+              )}
               {canReset(selectedTransaction) && (
                 <Button variant="secondary" onClick={() => { onResetClassification(selectedTransaction.id); setSelectedTransactionId(null); }}>
                   <RotateCcw size={17} aria-hidden="true" /> Return to review
@@ -706,6 +750,7 @@ function ReviewCard({
   item,
   members,
   accounts,
+  assetHoldings,
   customCategories,
   counterparties,
   money,
@@ -715,6 +760,7 @@ function ReviewCard({
   item: ReviewItem;
   members: Member[];
   accounts: Account[];
+  assetHoldings: AssetHolding[];
   customCategories: CustomCategory[];
   counterparties: Counterparty[];
   money: (value: number) => string;
@@ -725,24 +771,30 @@ function ReviewCard({
   // resolves to that member, so review only asks for purpose.
   const solo = members.length === 1;
   const [kind, setKind] = useState<MovementKind>(item.suggestedKind ?? "expense");
+  const [showMovement, setShowMovement] = useState((item.suggestedKind ?? "expense") !== "expense");
   const [counterpartyId, setCounterpartyId] = useState(item.suggestedCounterpartyId ?? "");
+  const [holdingId, setHoldingId] = useState(item.suggestedHoldingId ?? "");
   const [category, setCategory] = useState<CategoryKey>(item.suggestedCategory ?? "uncategorized");
   const [beneficiary, setBeneficiary] = useState<RuleBeneficiaryValue>(
     ruleBeneficiaryValue(item.suggestedBeneficiary),
   );
   const spendKind = isSpendKind(kind);
-  const canApply = (!kindNeedsCategory(kind) || category !== "uncategorized") && (!spendKind || solo || beneficiary !== "unassigned");
+  const canApply = (!kindNeedsCategory(kind) || category !== "uncategorized")
+    && (!spendKind || solo || beneficiary !== "unassigned")
+    && (kind !== "investment_transfer" || Boolean(holdingId));
 
-  const apply = () => onCategorize(item.merchant, ruleFromControls(kind, category, beneficiary, counterpartyId, solo));
+  const apply = () => onCategorize(item.merchant, ruleFromControls(kind, category, beneficiary, counterpartyId, solo, holdingId));
 
   const transactionLabel = `${item.count} transaction${item.count === 1 ? "" : "s"}`;
   const accountContextLabel = (context: ReviewItem["accountContexts"][number]) => {
     const registered = context.accountId ? accounts.find((account) => account.id === context.accountId) : undefined;
-    const accountLabel = registered?.label.trim() || context.account || "Unknown account";
+    const accountLabel = registered?.label.trim() || context.account || "Unmatched statement account";
     if (!registered) return `${accountLabel}${context.count > 1 ? ` ×${context.count}` : ""}`;
     const owner = registered.owner === "joint"
-      ? "Joint / unknown"
-      : members.find((member) => member.id === registered.owner)?.name ?? "Former member";
+      ? "Joint"
+      : registered.owner === "unassigned"
+        ? "Paid-from owner needs review"
+        : members.find((member) => member.id === registered.owner)?.name ?? "Former member";
     return `${accountLabel} · ${owner}${context.count > 1 ? ` ×${context.count}` : ""}`;
   };
 
@@ -757,23 +809,68 @@ function ReviewCard({
         </div>
       </div>
       <div className="review-fields">
-        <RuleFields
-          context={item.merchant}
-          kind={kind}
-          category={category}
-          beneficiary={beneficiary}
-          counterpartyId={counterpartyId}
-          members={members}
-          counterparties={counterparties}
-          customCategories={customCategories}
-          solo={solo}
-          categoryLabel="What was it?"
-          beneficiaryLabel="Who was it for?"
-          onKind={setKind}
-          onCategory={setCategory}
-          onBeneficiary={setBeneficiary}
-          onCounterparty={setCounterpartyId}
-        />
+        {showMovement && (
+          <label className="review-field">
+            <span>Movement</span>
+            <select aria-label={`Movement for ${item.merchant}`} value={kind} onChange={(event) => setKind(event.target.value as MovementKind)}>
+              {MOVEMENT_OPTIONS.map((option) => <option key={option.kind} value={option.kind}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {kindNeedsCategory(kind) && (
+          <label className="review-field">
+            <span>Purpose</span>
+            <select aria-label={`Category for ${item.merchant}`} value={category} onChange={(event) => setCategory(event.target.value as CategoryKey)}>
+              <option value="uncategorized" disabled>Choose purpose</option>
+              {spendingCategoryOptions(customCategories).map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {isSpendKind(kind) && !solo && (
+          <label className="review-field">
+            <span>Who it was for</span>
+            <select
+              aria-label={`Who it was for: ${item.merchant}`}
+              value={beneficiary}
+              onChange={(event) => setBeneficiary(event.target.value as RuleBeneficiaryValue)}
+            >
+              <option value="unassigned" disabled>Choose who it was for</option>
+              <option value="account_default">Use account default</option>
+              <option value="household">Household</option>
+              {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
+            </select>
+          </label>
+        )}
+        {kindNeedsCounterparty(kind) && (
+          <label className="review-field">
+            <span>Other person</span>
+            <select aria-label={`Person for ${item.merchant}`} value={counterpartyId} onChange={(event) => setCounterpartyId(event.target.value)}>
+              <option value="">Optional</option>
+              {counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.name}</option>)}
+            </select>
+          </label>
+        )}
+        {kind === "investment_transfer" && (
+          <label className="review-field">
+            <span>Asset holding</span>
+            <select aria-label={`Asset holding for ${item.merchant}`} value={holdingId} onChange={(event) => setHoldingId(event.target.value)}>
+              <option value="">Choose holding</option>
+              {assetHoldings.filter((holding) => holding.status !== "closed").map((holding) => (
+                <option value={holding.id} key={holding.id}>{holding.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {!showMovement && (
+          <button
+            type="button"
+            className="link-button"
+            aria-label={`Change movement for ${item.merchant}`}
+            onClick={() => setShowMovement(true)}
+          >
+            Change movement
+          </button>
+        )}
       </div>
       <button
         type="button"

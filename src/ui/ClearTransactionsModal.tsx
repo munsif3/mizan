@@ -1,12 +1,15 @@
 import { useState } from "react";
+import {
+  CLEAR_TRANSACTIONS_CONFIRMATION,
+  isClearTransactionsConfirmation,
+} from "../app/destructiveConfirmations";
 import type { AppData } from "../domain/types";
 import { Button, Modal } from "./bits";
 
-export const CLEAR_TRANSACTIONS_CONFIRMATION = "CLEAR";
-
-export function isClearTransactionsConfirmation(value: string): boolean {
-  return value === CLEAR_TRANSACTIONS_CONFIRMATION;
-}
+export {
+  CLEAR_TRANSACTIONS_CONFIRMATION,
+  isClearTransactionsConfirmation,
+} from "../app/destructiveConfirmations";
 
 export function ClearTransactionsModal({
   householdName,

@@ -56,6 +56,8 @@ export function applyRules(
     const rule = matchRule(txn.description, rules);
     if (!rule || !kindAllowedFor(rule.kind, txn.direction)) return txn;
     let next: Transaction = { ...txn, category: rule.category, kind: rule.kind };
+    delete next.commitmentId;
+    delete next.investmentAmount;
     if (rule.beneficiary.type === "account_default") {
       next = withAccountBeneficiaryDefault(next, accounts, members);
     } else {
@@ -72,12 +74,17 @@ export function applyRules(
     }
     if (rule.counterpartyId) next.counterpartyId = rule.counterpartyId;
     else delete next.counterpartyId;
+    if (rule.kind === "investment_transfer" && rule.holdingId) next.holdingId = rule.holdingId;
+    else delete next.holdingId;
     if (
       next.category === txn.category
       && beneficiaryEquals(next.beneficiary, txn.beneficiary)
       && next.beneficiarySource === txn.beneficiarySource
       && next.kind === txn.kind
       && (next.counterpartyId ?? undefined) === (txn.counterpartyId ?? undefined)
+      && (next.holdingId ?? undefined) === (txn.holdingId ?? undefined)
+      && !txn.commitmentId
+      && !txn.investmentAmount
     ) return txn;
     return next;
   });

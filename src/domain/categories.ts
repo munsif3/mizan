@@ -22,7 +22,7 @@ const FIXED_CATEGORIES: Record<FixedCategoryKey, CategoryInfo> = {
   dining: { label: "Dining", color: "#e8743b" },
   lifestyle: { label: "Lifestyle", color: "#b98cff" },
   family_support: { label: "Family", color: "#5fd6e8" },
-  investments: { label: "Investments", color: "#67d66f" },
+  investments: { label: "Investment fees & costs", color: "#67d66f" },
   uncategorized: { label: "Uncategorized", color: "#7b8194" },
 };
 

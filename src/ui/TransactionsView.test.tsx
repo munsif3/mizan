@@ -104,7 +104,11 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     onRememberMerchant = vi.fn(),
     mutateData?: (data: AppData) => void,
     financialValuesHidden = false,
-    actions: { onOpenImport?: () => void; onAddTransaction?: () => void } = {},
+    actions: {
+      onOpenImport?: () => void;
+      onAddTransaction?: () => void;
+      onUnlinkCommitment?: (id: string) => void;
+    } = {},
   ) {
     const data = fixture();
     mutateData?.(data);
@@ -134,6 +138,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
         onRememberMerchant={onRememberMerchant}
         onUndo={noop}
         onResetClassification={noop}
+        onUnlinkCommitment={actions.onUnlinkCommitment}
         onConfirmTransfer={noop}
         onDismissTransfer={noop}
         onSplit={noop}
@@ -202,12 +207,12 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     await mount({ category: "all", beneficiary: "all", payer: "all" }, onCategorize, onRemember);
 
     const category = container?.querySelector<HTMLSelectElement>('select[aria-label="Category for UNKNOWN SHOP"]');
-    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary for UNKNOWN SHOP"]');
+    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Who it was for: UNKNOWN SHOP"]');
     const apply = container?.querySelector<HTMLButtonElement>(
       'button[aria-label="Save merchant default for UNKNOWN SHOP"]',
     );
-    expect(container?.textContent).toContain("What was it?");
-    expect(container?.textContent).toContain("Who was it for?");
+    expect(container?.textContent).toContain("Purpose");
+    expect(container?.textContent).toContain("Who it was for");
     expect(apply?.disabled).toBe(true);
 
     await act(async () => {
@@ -239,7 +244,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     expect(onRemember).toHaveBeenCalledWith("sam-transport");
   });
 
-  it("keeps the primary review decisions labeled and exposes movement directly", async () => {
+  it("keeps default expenses category-first and reveals movement on request", async () => {
     await mount({ category: "all", beneficiary: "all", payer: "all" });
 
     const card = container?.querySelector<HTMLElement>(
@@ -247,11 +252,17 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     )?.closest<HTMLElement>(".merchant-review-card");
     expect(card).not.toBeNull();
     expect([...card!.querySelectorAll<HTMLElement>(".review-field > span")].map((label) => label.textContent))
-      .toEqual(["Movement", "What was it?", "Who was it for?"]);
+      .toEqual(["Purpose", "Who it was for"]);
+    expect(card?.querySelector('select[aria-label="Movement for UNKNOWN SHOP"]')).toBeNull();
+
+    const changeMovement = card?.querySelector<HTMLButtonElement>('button[aria-label="Change movement for UNKNOWN SHOP"]');
+    expect(changeMovement?.textContent).toContain("Change movement");
+    await act(async () => changeMovement?.click());
 
     const movement = card?.querySelector<HTMLSelectElement>('select[aria-label="Movement for UNKNOWN SHOP"]');
     expect(movement).not.toBeNull();
-
+    expect([...card!.querySelectorAll<HTMLElement>(".review-field > span")].map((label) => label.textContent))
+      .toEqual(["Movement", "Purpose", "Who it was for"]);
     await act(async () => {
       if (movement) {
         movement.value = "gift_or_handout";
@@ -260,6 +271,52 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     });
     expect(card?.textContent).toContain("Other person");
     expect(card?.querySelector('button[aria-label="Save merchant default for UNKNOWN SHOP"]')).not.toBeNull();
+  });
+
+  it("shows a suggested non-default movement with all of its controls", async () => {
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      vi.fn(),
+      vi.fn(),
+      (data) => {
+        data.transactions = [{
+          id: "lent", date: "2026-07-12", description: "FRIEND LOAN", amount: 2_000,
+          category: "uncategorized", beneficiary: { type: "unassigned" },
+          account: "Alex Card", accountId: "alex-card", note: "", source: "imported",
+          direction: "debit", kind: "gift_or_handout",
+        }];
+      },
+    );
+
+    const card = container?.querySelector<HTMLElement>(".merchant-review-card");
+    expect(card?.querySelector<HTMLSelectElement>('select[aria-label="Movement for FRIEND LOAN"]')?.value).toBe("gift_or_handout");
+    expect(card?.querySelector('select[aria-label="Category for FRIEND LOAN"]')).not.toBeNull();
+    expect(card?.querySelector('select[aria-label="Person for FRIEND LOAN"]')).not.toBeNull();
+    expect(card?.querySelector('button[aria-label="Change movement for FRIEND LOAN"]')).toBeNull();
+  });
+
+  it("shows only the next three merchants until the full queue is requested", async () => {
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      vi.fn(),
+      vi.fn(),
+      (data) => {
+        const base = data.transactions.find((transaction) => transaction.id === "unknown")!;
+        data.transactions.push(
+          { ...base, id: "unknown-two", description: "SECOND UNKNOWN", amount: 1_500 },
+          { ...base, id: "unknown-three", description: "THIRD UNKNOWN", amount: 1_250 },
+          { ...base, id: "unknown-four", description: "FOURTH UNKNOWN", amount: 1_000 },
+        );
+      },
+    );
+
+    expect(container?.querySelectorAll(".merchant-review-card")).toHaveLength(3);
+    expect(container?.textContent).toContain("2 more merchants waiting after these three.");
+    const showAll = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((button) => button.textContent?.trim() === "Show all 5 merchants");
+    await act(async () => showAll?.click());
+    expect(container?.querySelectorAll(".merchant-review-card")).toHaveLength(5);
+    expect(container?.textContent).toContain("Show next 3 only");
   });
 
   it("shows every paying account and owner on a grouped review card", async () => {
@@ -283,7 +340,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
       '.merchant-review-card [title="UNKNOWN SHOP"]',
     )?.closest<HTMLElement>(".merchant-review-card");
     expect(card?.textContent).toContain("Paid from:");
-    expect(card?.textContent).toContain("Joint Cash · Joint / unknown ×2");
+    expect(card?.textContent).toContain("Joint Cash · Joint ×2");
     expect(card?.textContent).toContain("Alex Card · Alex");
     expect(card?.textContent).toContain("DFCC 9999");
   });
@@ -292,7 +349,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     const onCategorize = vi.fn();
     await mount({ category: "all", beneficiary: "all", payer: "all" }, onCategorize);
     const category = container?.querySelector<HTMLSelectElement>('select[aria-label="Category for COOL PLANET"]');
-    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Beneficiary for COOL PLANET"]');
+    const beneficiary = container?.querySelector<HTMLSelectElement>('select[aria-label="Who it was for: COOL PLANET"]');
     const apply = container?.querySelector<HTMLButtonElement>('button[aria-label="Save merchant default for COOL PLANET"]');
     expect(beneficiary?.value).toBe("account_default");
     await act(async () => {
@@ -326,8 +383,8 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     );
 
     // The "for whom?" field is gone; review asks only for purpose.
-    expect(container?.querySelector('select[aria-label="Beneficiary for UNKNOWN SHOP"]')).toBeNull();
-    expect(container?.textContent).not.toContain("Who was it for?");
+    expect(container?.querySelector('select[aria-label="Who it was for: UNKNOWN SHOP"]')).toBeNull();
+    expect(container?.textContent).not.toContain("Who it was for");
 
     const category = container?.querySelector<HTMLSelectElement>('select[aria-label="Category for UNKNOWN SHOP"]');
     const apply = container?.querySelector<HTMLButtonElement>('button[aria-label="Save merchant default for UNKNOWN SHOP"]');
@@ -361,6 +418,28 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     await act(async () => open?.click());
     expect(container?.querySelector('[role="dialog"]')?.textContent).toContain("Classification");
     expect(container?.querySelector('select[aria-label="Account for UBER"]')).not.toBeNull();
+  });
+
+  it("offers an explicit unlink action for a matched commitment", async () => {
+    const onUnlinkCommitment = vi.fn();
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      vi.fn(),
+      vi.fn(),
+      (data) => {
+        data.transactions[0]!.commitmentId = "rent";
+      },
+      false,
+      { onUnlinkCommitment },
+    );
+
+    await act(async () =>
+      container?.querySelector<HTMLButtonElement>('button[aria-label="Open details for KEELLS"]')?.click());
+    const unlink = [...(container?.querySelectorAll("button") ?? [])]
+      .find((item) => item.textContent?.includes("Unlink from commitment"));
+    expect(unlink).toBeDefined();
+    await act(async () => unlink?.click());
+    expect(onUnlinkCommitment).toHaveBeenCalledWith("shared-food");
   });
 
   it("limits results to a date range within the selected month", async () => {

@@ -12,17 +12,21 @@
   "scripts": {
     "dev": "vite",
     "dev:emulator": "vite --mode emulator --port 5273 --strictPort",
+    "dev:browser": "vite --mode browser-test --host 127.0.0.1 --port 5274 --strictPort",
     "emulators": "firebase emulators:start --only auth,firestore --project demo-mizan",
     "build": "tsc --noEmit && vite build",
     "check:styles": "vitest run scripts/style-system.test.mjs",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --exclude scripts/style-system.test.mjs",
     "test:watch": "vitest",
     "test:rules:emulator": "vitest run --config vitest.rules.config.ts",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-mizan \"npm run test:rules:emulator\"",
-    "typecheck": "tsc --noEmit",
+    "test:rules": "firebase emulators:exec --config firebase.rules-test.json --only firestore --project demo-mizan \"npm run test:rules:emulator\"",
+    "test:browser:emulator": "playwright test --config playwright.config.ts",
+    "test:browser": "firebase emulators:exec --config firebase.browser-test.json --only auth,firestore --project demo-mizan \"npm run test:browser:emulator\"",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.browser.json",
     "check:deadcode": "knip",
-    "check": "npm run typecheck && npm run check:styles && npm test && vite build"
+    "check": "npm run typecheck && npm run check:styles && npm test && npm run check:deadcode && vite build",
+    "verify": "npm run check && npm run test:rules && npm run test:browser"
   },
   "dependencies": {
     "firebase": "^12.16.0",
@@ -32,7 +36,9 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@firebase/rules-unit-testing": "^5.0.1",
+    "@playwright/test": "^1.62.0",
     "@types/crypto-js": "^4.2.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { AppData, Transaction } from "../domain/types";
 import type { DataRepository, RepositorySubscriptionOptions } from "../storage/repository";
 import { emptyData } from "../storage/schema";
+import type { SyncState } from "./syncState";
 import { useCloudSync } from "./useCloudSync";
 
 type SyncApi = ReturnType<typeof useCloudSync>;
@@ -36,6 +37,7 @@ function fakeRepository(overrides: Partial<DataRepository>, hooks?: SubscribeHoo
 let api: SyncApi;
 let setData: (data: AppData) => void;
 let accessRemoved: number;
+let syncStates: SyncState[];
 
 function Harness({ repository }: { repository: DataRepository | null }) {
   const [data, setDataState] = useState<AppData>(() => emptyData());
@@ -45,7 +47,7 @@ function Harness({ repository }: { repository: DataRepository | null }) {
     data,
     setData: setDataState,
     clearUndo: () => undefined,
-    setSyncStatus: () => undefined,
+    setSyncStatus: (state) => syncStates.push(state),
     onAccessRemoved: () => { accessRemoved += 1; },
   });
   return null;
@@ -62,6 +64,7 @@ describe("useCloudSync", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     accessRemoved = 0;
+    syncStates = [];
   });
 
   afterEach(async () => {
@@ -135,6 +138,35 @@ describe("useCloudSync", () => {
     expect(save.mock.calls[1]![0].transactions[0]!.id).toBe("mine");
   });
 
+  it("reopens recovery if the cloud changes again while keeping the local edit", async () => {
+    const save = vi.fn()
+      .mockRejectedValueOnce(new Error("This household changed on another device."))
+      .mockRejectedValueOnce(new Error("This household changed on another device."))
+      .mockResolvedValue(undefined);
+    const load = vi.fn()
+      .mockResolvedValueOnce(dataWith("remote-1"))
+      .mockResolvedValueOnce(dataWith("remote-2"));
+    const repo = fakeRepository({ save, load });
+    await activate(repo);
+
+    await act(async () => setData(dataWith("mine")));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(api.conflict?.remote.transactions[0]!.id).toBe("remote-1");
+
+    await act(async () => api.resolveConflict("keep-local"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(api.conflict?.local.transactions[0]!.id).toBe("mine");
+    expect(api.conflict?.remote.transactions[0]!.id).toBe("remote-2");
+
+    await act(async () => api.resolveConflict("keep-local"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    expect(api.conflict).toBeNull();
+    expect(save).toHaveBeenCalledTimes(3);
+    expect(save.mock.calls[2]![0].transactions[0]!.id).toBe("mine");
+    expect(syncStates.at(-1)).toEqual({ kind: "synced", message: "Synced to Firestore" });
+  });
+
   it("clears the conflict without re-saving when keeping the remote version", async () => {
     const save = vi.fn().mockRejectedValueOnce(new Error("This household changed on another device."));
     const repo = fakeRepository({ save, load: vi.fn().mockResolvedValue(dataWith("remote")) });
@@ -149,6 +181,29 @@ describe("useCloudSync", () => {
 
     expect(api.conflict).toBeNull();
     expect(save).toHaveBeenCalledTimes(1); // only the original failed attempt
+  });
+
+  it("reports an autosave failure and saves the next edit after connectivity returns", async () => {
+    const save = vi.fn()
+      .mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValue(undefined);
+    const repo = fakeRepository({ save });
+    await activate(repo);
+
+    await act(async () => setData(dataWith("failed-edit")));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+    expect(syncStates.at(-1)).toEqual({
+      kind: "error",
+      message: "Save failed: network unavailable",
+    });
+
+    await act(async () => setData(dataWith("recovered-edit")));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[1]![0].transactions[0]!.id).toBe("recovered-edit");
+    expect(syncStates.at(-1)).toEqual({ kind: "synced", message: "Synced to Firestore" });
   });
 
   it("tears down the household when the subscription reports lost access", async () => {

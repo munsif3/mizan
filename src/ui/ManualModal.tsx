@@ -3,7 +3,7 @@ import { beneficiaryForAccount } from "../domain/accounts";
 import { spendingCategoryOptions } from "../domain/categories";
 import { isoDateOf } from "../domain/dates";
 import { isSpendKind, kindNeedsCategory, kindNeedsCounterparty, MOVEMENT_OPTIONS } from "../domain/movements";
-import type { Account, CategoryKey, Counterparty, CustomCategory, Member, MovementKind, SpendBeneficiary } from "../domain/types";
+import type { Account, AssetHolding, CategoryKey, Counterparty, CustomCategory, Member, MovementKind, SpendBeneficiary } from "../domain/types";
 import { Button, Modal } from "./bits";
 
 export interface ManualEntry {
@@ -18,6 +18,7 @@ export interface ManualEntry {
   note: string;
   kind: MovementKind;
   counterpartyId?: string;
+  holdingId?: string;
 }
 
 const OTHER_ACCOUNT = "__other__";
@@ -27,6 +28,7 @@ export function ManualModal({
   members,
   customCategories,
   counterparties,
+  assetHoldings = [],
   onAdd,
   onClose,
 }: {
@@ -34,6 +36,7 @@ export function ManualModal({
   members: Member[];
   customCategories: CustomCategory[];
   counterparties: Counterparty[];
+  assetHoldings?: AssetHolding[];
   onAdd: (entry: ManualEntry) => void;
   onClose: () => void;
 }) {
@@ -57,6 +60,7 @@ export function ManualModal({
   const [kind, setKind] = useState<MovementKind>("expense");
   const [showType, setShowType] = useState(false);
   const [counterpartyId, setCounterpartyId] = useState("");
+  const [holdingId, setHoldingId] = useState("");
   const [error, setError] = useState("");
 
   const showCategory = kindNeedsCategory(kind);
@@ -78,6 +82,10 @@ export function ManualModal({
     }
     if (isSpendKind(kind) && !solo && beneficiary === "unassigned") {
       setError("Choose who this spending was for.");
+      return;
+    }
+    if (kind === "investment_transfer" && !holdingId) {
+      setError("Choose the asset holding receiving this investment.");
       return;
     }
     const selectedAccount = configuredAccounts.find((candidate) => candidate.id === accountChoice);
@@ -106,6 +114,7 @@ export function ManualModal({
       note: note.trim(),
       kind,
       counterpartyId: showCounterparty && counterpartyId ? counterpartyId : undefined,
+      holdingId: kind === "investment_transfer" && holdingId ? holdingId : undefined,
     });
     onClose();
   }
@@ -152,11 +161,11 @@ export function ManualModal({
       {isSpendKind(kind) && !solo && (
         <label className="field">
           <span>Who was it for?</span>
-          <select aria-label="Beneficiary" value={beneficiary} onChange={(event) => {
+          <select aria-label="Who it was for" value={beneficiary} onChange={(event) => {
             setBeneficiary(event.target.value);
             setBeneficiaryTouched(true);
           }}>
-            <option value="unassigned" disabled>Choose beneficiary</option>
+            <option value="unassigned" disabled>Choose who it was for</option>
             <option value="household">Household</option>
             {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
           </select>
@@ -168,6 +177,17 @@ export function ManualModal({
           <select aria-label="Counterparty" value={counterpartyId} onChange={(event) => setCounterpartyId(event.target.value)}>
             <option value="">Unspecified</option>
             {counterparties.map((cp) => <option key={cp.id} value={cp.id}>{cp.name}</option>)}
+          </select>
+        </label>
+      )}
+      {kind === "investment_transfer" && (
+        <label className="field">
+          <span>Asset holding</span>
+          <select aria-label="Asset holding" value={holdingId} onChange={(event) => setHoldingId(event.target.value)}>
+            <option value="">Choose holding</option>
+            {assetHoldings.filter((holding) => holding.status !== "closed").map((holding) => (
+              <option value={holding.id} key={holding.id}>{holding.label}</option>
+            ))}
           </select>
         </label>
       )}

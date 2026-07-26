@@ -1,6 +1,6 @@
 import { spendingCategoryOptions } from "../domain/categories";
 import { isSpendKind, kindNeedsCategory, kindNeedsCounterparty, MOVEMENT_OPTIONS } from "../domain/movements";
-import type { CategoryKey, Counterparty, CustomCategory, Member, MerchantRule, MovementKind } from "../domain/types";
+import type { AssetHolding, CategoryKey, Counterparty, CustomCategory, Member, MerchantRule, MovementKind } from "../domain/types";
 
 /** Select value that mirrors a rule beneficiary, including the account-default policy. */
 export type RuleBeneficiaryValue = "unassigned" | "account_default" | "household" | `member:${string}`;
@@ -28,6 +28,7 @@ export function ruleFromControls(
   beneficiary: RuleBeneficiaryValue,
   counterpartyId: string,
   solo: boolean,
+  holdingId = "",
 ): MerchantRule {
   const spend = isSpendKind(kind);
   return {
@@ -39,6 +40,7 @@ export function ruleFromControls(
       : { type: "unassigned" },
     kind,
     ...(kindNeedsCounterparty(kind) && counterpartyId ? { counterpartyId } : {}),
+    ...(kind === "investment_transfer" && holdingId ? { holdingId } : {}),
   };
 }
 
@@ -51,6 +53,7 @@ export interface RuleFieldsProps {
   counterpartyId: string;
   members: Member[];
   counterparties: Counterparty[];
+  assetHoldings: AssetHolding[];
   customCategories: CustomCategory[];
   /** Single-member households skip the beneficiary question. */
   solo: boolean;
@@ -60,6 +63,8 @@ export interface RuleFieldsProps {
   onCategory: (category: CategoryKey) => void;
   onBeneficiary: (beneficiary: RuleBeneficiaryValue) => void;
   onCounterparty: (counterpartyId: string) => void;
+  holdingId: string;
+  onHolding: (holdingId: string) => void;
 }
 
 /**
@@ -68,9 +73,9 @@ export interface RuleFieldsProps {
  * caller controls the surrounding layout.
  */
 export function RuleFields({
-  context, kind, category, beneficiary, counterpartyId, members, counterparties,
+  context, kind, category, beneficiary, counterpartyId, members, counterparties, assetHoldings,
   customCategories, solo, categoryLabel, beneficiaryLabel,
-  onKind, onCategory, onBeneficiary, onCounterparty,
+  onKind, onCategory, onBeneficiary, onCounterparty, holdingId, onHolding,
 }: RuleFieldsProps) {
   return (
     <>
@@ -92,8 +97,8 @@ export function RuleFields({
       {isSpendKind(kind) && !solo && (
         <label className="review-field">
           <span>{beneficiaryLabel}</span>
-          <select aria-label={`Beneficiary for ${context}`} value={beneficiary} onChange={(event) => onBeneficiary(event.target.value as RuleBeneficiaryValue)}>
-            <option value="unassigned" disabled>Choose beneficiary</option>
+          <select aria-label={`Who it was for: ${context}`} value={beneficiary} onChange={(event) => onBeneficiary(event.target.value as RuleBeneficiaryValue)}>
+            <option value="unassigned" disabled>Choose who it was for</option>
             <option value="account_default">Use account default</option>
             <option value="household">Household</option>
             {members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.name}</option>)}
@@ -106,6 +111,17 @@ export function RuleFields({
           <select aria-label={`Person for ${context}`} value={counterpartyId} onChange={(event) => onCounterparty(event.target.value)}>
             <option value="">Optional</option>
             {counterparties.map((cp) => <option key={cp.id} value={cp.id}>{cp.name}</option>)}
+          </select>
+        </label>
+      )}
+      {kind === "investment_transfer" && (
+        <label className="review-field">
+          <span>Asset holding</span>
+          <select aria-label={`Asset holding for ${context}`} value={holdingId} onChange={(event) => onHolding(event.target.value)}>
+            <option value="">Choose holding</option>
+            {assetHoldings.filter((holding) => holding.status !== "closed").map((holding) => (
+              <option value={holding.id} key={holding.id}>{holding.label}</option>
+            ))}
           </select>
         </label>
       )}

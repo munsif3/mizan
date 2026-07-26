@@ -14,6 +14,9 @@ import { isCsvMapping } from "../import/csvMap";
 import type {
   Account,
   AppData,
+  AssetHolding,
+  AssetStatus,
+  AssetType,
   CategoryKey,
   Counterparty,
   CsvMapping,
@@ -42,9 +45,14 @@ import type {
 } from "../domain/types";
 import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-const SCHEMA_VERSION = 16 as const;
+const SCHEMA_VERSION = 17 as const;
 
 const MOVEMENT_KINDS = new Set<MovementKind>(MOVEMENT_OPTIONS.map((option) => option.kind));
+const ASSET_TYPES = new Set<AssetType>([
+  "cash", "fixed_deposit", "property", "shares", "managed_fund",
+  "insurance_policy", "retirement", "gold", "other",
+]);
+const ASSET_STATUSES = new Set<AssetStatus>(["active", "matured", "closed"]);
 
 function asKind(value: unknown, direction: "debit" | "credit"): MovementKind {
   return typeof value === "string" && MOVEMENT_KINDS.has(value as MovementKind) ? (value as MovementKind) : defaultKind(direction);
@@ -58,6 +66,7 @@ export function emptyData(): AppData {
     merchantRules: {},
     accounts: [],
     fixedCosts: [],
+    assetHoldings: [],
     incomeReceipts: [],
     efficiencyPlans: [],
     settings: {
@@ -268,6 +277,15 @@ function asTransaction(value: unknown, splits: Record<string, unknown>, sourceVe
   const counterpartyId = typeof raw.counterpartyId === "string" && raw.counterpartyId ? raw.counterpartyId : undefined;
   const accountId = typeof raw.accountId === "string" && raw.accountId ? raw.accountId : undefined;
   const rawAccount = typeof raw.rawAccount === "string" && raw.rawAccount ? raw.rawAccount : undefined;
+  const holdingId = typeof raw.holdingId === "string" && raw.holdingId ? raw.holdingId : undefined;
+  const commitmentId = typeof raw.commitmentId === "string" && raw.commitmentId ? raw.commitmentId : undefined;
+  const linkedTransferId = typeof raw.linkedTransferId === "string" && raw.linkedTransferId && raw.linkedTransferId !== id
+    ? raw.linkedTransferId
+    : undefined;
+  const investmentAmount = Math.min(amount, Math.max(0, Number(raw.investmentAmount) || 0)) || undefined;
+  const rejectedTransferIds = Array.isArray(raw.rejectedTransferIds)
+    ? [...new Set(raw.rejectedTransferIds.map(String).filter((candidate) => candidate && candidate !== id))]
+    : [];
   const classification = asClassification(raw.category, raw.beneficiary, sourceVersion);
   return {
     id,
@@ -278,7 +296,7 @@ function asTransaction(value: unknown, splits: Record<string, unknown>, sourceVe
     ...(raw.beneficiarySource === "account_default" ? { beneficiarySource: "account_default" as const } : {}),
     ...(raw.classificationLocked === true ? { classificationLocked: true } : {}),
     // v1 stored the paying account under `card`
-    account: String(raw.account ?? raw.card ?? "Unknown"),
+    account: String(raw.account ?? raw.card ?? "Unmatched account"),
     ...(accountId ? { accountId } : {}),
     ...(rawAccount ? { rawAccount } : {}),
     note: String(raw.note ?? ""),
@@ -287,6 +305,11 @@ function asTransaction(value: unknown, splits: Record<string, unknown>, sourceVe
     // pre-v6 data has no kind: default from direction (debit → expense, credit → account_credit)
     kind: asKind(raw.kind, direction),
     ...(counterpartyId ? { counterpartyId } : {}),
+    ...(holdingId ? { holdingId } : {}),
+    ...(commitmentId ? { commitmentId } : {}),
+    ...(investmentAmount ? { investmentAmount } : {}),
+    ...(linkedTransferId ? { linkedTransferId } : {}),
+    ...(rejectedTransferIds.length ? { rejectedTransferIds } : {}),
     ...(split ? { split } : {}),
   };
 }
@@ -294,15 +317,29 @@ function asTransaction(value: unknown, splits: Record<string, unknown>, sourceVe
 function asFixedCost(value: unknown, sourceVersion: number, index = 0): FixedCost | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  const until = String(raw.until ?? "");
+  const from = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(raw.from ?? "")) ? String(raw.from) : "";
+  const until = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(raw.until ?? "")) ? String(raw.until) : "";
   const classification = asClassification(raw.category, raw.beneficiary, sourceVersion);
+  const amount = Math.max(0, Number(raw.amount) || 0);
+  const totalAmount = Math.max(0, Number(raw.totalAmount) || 0);
+  const investmentAmount = Math.min(amount, Math.max(0, Number(raw.investmentAmount) || 0));
+  const holdingId = typeof raw.holdingId === "string" && raw.holdingId ? raw.holdingId : "";
+  const merchantMatch = Array.isArray(raw.merchantMatch)
+    ? [...new Set(raw.merchantMatch.map((item) => String(item ?? "").trim()).filter(Boolean))]
+    : [];
+  const kind = raw.kind === "loan_payment" || raw.kind === "investment_transfer" ? raw.kind : "expense";
   return {
     id: String(raw.id ?? "") || stableId("fixed", raw, index),
     label: String(raw.label ?? "Fixed cost"),
-    amount: Number(raw.amount) || 0,
-    kind: (raw.kind === "loan_payment" ? "loan_payment" : "expense") satisfies FixedCostKind,
+    amount,
+    kind: kind satisfies FixedCostKind,
     ...classification,
+    ...(from ? { from } : {}),
     ...(until ? { until } : {}),
+    ...(totalAmount ? { totalAmount } : {}),
+    ...(merchantMatch.length ? { merchantMatch } : {}),
+    ...(holdingId ? { holdingId } : {}),
+    ...(investmentAmount ? { investmentAmount } : {}),
   };
 }
 
@@ -311,8 +348,8 @@ function asAccount(value: unknown, index = 0): Account | null {
   const raw = value as Record<string, unknown>;
   const label = String(raw.label ?? "").trim();
   if (!label) return null;
-  // Owner may be any member id or "joint"; validated against the member list in migrate().
-  const owner = typeof raw.owner === "string" && raw.owner.trim() ? raw.owner.trim() : "joint";
+  // Owner may be any member id, explicit joint funding, or unresolved funding.
+  const owner = typeof raw.owner === "string" && raw.owner.trim() ? raw.owner.trim() : "unassigned";
   const beneficiaryDefault = raw.beneficiaryDefault === "owner" || raw.beneficiaryDefault === "household"
     || raw.beneficiaryDefault === "review" ? raw.beneficiaryDefault : "review";
   const match = (Array.isArray(raw.match) ? raw.match : []).map((item) => String(item ?? "").trim()).filter(Boolean);
@@ -340,6 +377,50 @@ function asAccount(value: unknown, index = 0): Account | null {
     ...(inactiveFrom && (!activeFrom || inactiveFrom > activeFrom) ? { inactiveFrom } : {}),
     ...(coverage ? { coverage } : {}),
     match,
+  };
+}
+
+function asAssetHolding(value: unknown, index = 0): AssetHolding | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const label = String(raw.label ?? "").trim();
+  if (!label) return null;
+  const type = ASSET_TYPES.has(raw.type as AssetType) ? raw.type as AssetType : "other";
+  const status = ASSET_STATUSES.has(raw.status as AssetStatus) ? raw.status as AssetStatus : "active";
+  const owner = typeof raw.owner === "string" && raw.owner.trim() ? raw.owner.trim() : "unassigned";
+  const valuations = (Array.isArray(raw.valuations) ? raw.valuations : [])
+    .map((item, valuationIndex) => {
+      if (!item || typeof item !== "object") return null;
+      const valuation = item as Record<string, unknown>;
+      const date = String(valuation.date ?? "");
+      const amount = Number(valuation.amount);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amount) || amount < 0) return null;
+      const note = String(valuation.note ?? "").trim();
+      return {
+        id: String(valuation.id ?? "") || stableId("value", valuation, valuationIndex),
+        date,
+        amount,
+        ...(note ? { note } : {}),
+      };
+    })
+    .filter((item): item is AssetHolding["valuations"][number] => item !== null)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+  const linkedAccountId = String(raw.linkedAccountId ?? "").trim();
+  const institution = String(raw.institution ?? "").trim();
+  const openedOn = validLifecycleDate(raw.openedOn) ? raw.openedOn : "";
+  const maturityOn = validLifecycleDate(raw.maturityOn) ? raw.maturityOn : "";
+  return {
+    id: String(raw.id ?? "") || stableId("asset", raw, index),
+    label,
+    type,
+    currency: String(raw.currency ?? "").trim().toUpperCase(),
+    owner,
+    status,
+    valuations,
+    ...(institution ? { institution } : {}),
+    ...(linkedAccountId ? { linkedAccountId } : {}),
+    ...(openedOn ? { openedOn } : {}),
+    ...(maturityOn && (!openedOn || maturityOn >= openedOn) ? { maturityOn } : {}),
   };
 }
 
@@ -529,11 +610,18 @@ function asRule(value: unknown, sourceVersion: number, memberIds: Set<MemberId>)
     : validBeneficiary(storedBeneficiary ?? classification.beneficiary, memberIds);
   const kind = asKind(raw.kind, "debit");
   const counterpartyId = typeof raw.counterpartyId === "string" && raw.counterpartyId ? raw.counterpartyId : undefined;
+  const holdingId = typeof raw.holdingId === "string" && raw.holdingId ? raw.holdingId : undefined;
   // Drop a rule that classifies nothing (plain expense → uncategorized, no party);
   // but a non-expense kind or a counterparty is itself a meaningful classification.
   const hasClassification = hasRecognizedCategory(raw.category) || asStoredRuleBeneficiary(raw.beneficiary) !== null;
   if (!hasClassification && kind === "expense" && !counterpartyId) return null;
-  return { category: classification.category, beneficiary, kind, ...(counterpartyId ? { counterpartyId } : {}) };
+  return {
+    category: classification.category,
+    beneficiary,
+    kind,
+    ...(counterpartyId ? { counterpartyId } : {}),
+    ...(holdingId ? { holdingId } : {}),
+  };
 }
 
 function asRules(value: unknown, sourceVersion: number, memberIds: Set<MemberId>): MerchantRules {
@@ -640,6 +728,9 @@ export function migrate(raw: unknown): AppData {
   let fixedCosts = (Array.isArray(source.fixedCosts) ? source.fixedCosts : Array.isArray(source.fixedNonCard) ? source.fixedNonCard : [])
     .map((cost, index) => asFixedCost(cost, sourceVersion, index))
     .filter((cost): cost is FixedCost => cost !== null);
+  let assetHoldings = (Array.isArray(source.assetHoldings) ? source.assetHoldings : [])
+    .map((holding, index) => asAssetHolding(holding, index))
+    .filter((holding): holding is AssetHolding => holding !== null);
 
   const settingsRaw = (source.settings && typeof source.settings === "object" ? source.settings : {}) as Record<string, unknown>;
   const incomeRaw = ((settingsRaw.income ?? source.income) && typeof (settingsRaw.income ?? source.income) === "object"
@@ -673,8 +764,32 @@ export function migrate(raw: unknown): AppData {
   ).map((account) => ({
     ...account,
     currency: account.currency || currency,
-    ...(account.owner !== "joint" && !memberIds.has(account.owner) ? { owner: "joint" as const } : {}),
+    ...(account.owner !== "joint" && account.owner !== "unassigned" && !memberIds.has(account.owner)
+      ? { owner: "unassigned" as const }
+      : {}),
   }));
+  const accountIds = new Set(accounts.map((account) => account.id));
+  assetHoldings = assetHoldings.map((holding) => {
+    const next: AssetHolding = {
+      ...holding,
+      currency: holding.currency || currency,
+      ...(holding.owner !== "joint" && holding.owner !== "unassigned" && !memberIds.has(holding.owner)
+        ? { owner: "unassigned" as const }
+        : {}),
+    };
+    if (next.linkedAccountId && !accountIds.has(next.linkedAccountId)) delete next.linkedAccountId;
+    return next;
+  });
+  const holdingIds = new Set(assetHoldings.map((holding) => holding.id));
+  const fixedCostIds = new Set(fixedCosts.map((cost) => cost.id));
+  fixedCosts = fixedCosts.map((cost) => {
+    const next = { ...cost };
+    if (!next.holdingId || !holdingIds.has(next.holdingId)) {
+      delete next.holdingId;
+      delete next.investmentAmount;
+    }
+    return next;
+  });
 
   const locale = typeof settingsRaw.locale === "string" && settingsRaw.locale ? settingsRaw.locale : legacy ? "en-LK" : "";
   members = members.map((member) => ({
@@ -686,11 +801,25 @@ export function migrate(raw: unknown): AppData {
   // Account-derived beneficiaries only recompute inferred rows here (unassigned
   // rows keep their review state for multi-member households). A one-member
   // household is the exception: every spend is that member's, so backfill it.
-  const normalizedTransactions = applySoloBeneficiaryDefaults(
+  let normalizedTransactions = applySoloBeneficiaryDefaults(
     applyAccountBeneficiaryDefaults(fxNormalizedTransactions, accounts, members, { fillUnassigned: false }),
     accounts,
     members,
   );
+  const importedTransactionIds = new Set(normalizedTransactions.map((transaction) => transaction.id));
+  normalizedTransactions = normalizedTransactions.map((transaction) => {
+    const next = { ...transaction };
+    if (!next.holdingId || !holdingIds.has(next.holdingId)) {
+      delete next.holdingId;
+      delete next.investmentAmount;
+    }
+    if (!next.commitmentId || !fixedCostIds.has(next.commitmentId)) delete next.commitmentId;
+    if (!next.linkedTransferId || !importedTransactionIds.has(next.linkedTransferId)) delete next.linkedTransferId;
+    const rejected = next.rejectedTransferIds?.filter((id) => importedTransactionIds.has(id) && id !== next.id) ?? [];
+    if (rejected.length) next.rejectedTransferIds = rejected;
+    else delete next.rejectedTransferIds;
+    return next;
+  });
   const fxRates = asFxRates(settingsRaw.fxRates);
   const transactionIds = new Set(normalizedTransactions.map((txn) => txn.id));
   const normalizedReceipts = asList(source.incomeReceipts, (value) => asReceipt(value, portionOwners)).map((receipt) => {
@@ -714,13 +843,19 @@ export function migrate(raw: unknown): AppData {
     members,
   );
 
+  const merchantRules = asRules(source.merchantRules, sourceVersion, memberIds);
+  for (const rule of Object.values(merchantRules)) {
+    if (rule.holdingId && !holdingIds.has(rule.holdingId)) delete rule.holdingId;
+  }
+
   return {
     schemaVersion: SCHEMA_VERSION,
     transactions: normalizedTransactions,
     sharedContributions,
-    merchantRules: asRules(source.merchantRules, sourceVersion, memberIds),
+    merchantRules,
     accounts,
     fixedCosts,
+    assetHoldings,
     incomeReceipts,
     efficiencyPlans: asList(source.efficiencyPlans, asEfficiencyPlan),
     settings: {

@@ -33,6 +33,15 @@ describe("account coverage", () => {
     expect(computeAccountCoverage([archived], members, new Date(2026, 6, 22))).toEqual([]);
   });
 
+  it("labels unresolved funding explicitly instead of treating it as joint or a former member", () => {
+    const [row] = computeAccountCoverage(
+      [account("Cash", "unassigned")],
+      members,
+      new Date(2026, 6, 22),
+    );
+    expect(row?.ownerLabel).toBe("Funding owner unassigned");
+  });
+
   it("prefills explicit import confirmation without reviving archived accounts", () => {
     const candidates = importedAccountCoverageCandidates([
       { accountId: "card", date: "2026-07-18" },

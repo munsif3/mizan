@@ -60,7 +60,11 @@ export function computeAccountCoverage(
       const ageDays = calendarAgeDays(throughDate, today);
       return {
         account,
-        ownerLabel: account.owner === "joint" ? "Household" : names.get(account.owner) ?? "Former member",
+        ownerLabel: account.owner === "joint"
+          ? "Household"
+          : account.owner === "unassigned"
+            ? "Funding owner unassigned"
+            : names.get(account.owner) ?? "Former member",
         throughDate,
         ageDays,
         status: ageDays === null ? "missing" as const : ageDays >= staleAfterDays ? "stale" as const : "current" as const,

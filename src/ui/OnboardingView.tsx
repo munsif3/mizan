@@ -1,10 +1,9 @@
 import { useId, useState } from "react";
-import { Trash2 } from "lucide-react";
-import { MEMBER_PALETTE, nextMemberColor } from "../domain/categories";
+import { MEMBER_PALETTE } from "../domain/categories";
 import { defaultIncomePortion } from "../domain/income";
 import { uid, type Member } from "../domain/types";
 import type { SyncSettingsState } from "./SettingsModal";
-import { Button, IconButton } from "./bits";
+import { Button } from "./bits";
 import { COMMON_CURRENCIES } from "./currencies";
 
 export interface OnboardingResult {
@@ -13,8 +12,6 @@ export interface OnboardingResult {
   locale: string;
   targetSaveRate: number;
 }
-
-type OnboardingMember = Omit<Member, "portions"> & { income: number };
 
 export function OnboardingView({
   sync,
@@ -28,30 +25,28 @@ export function OnboardingView({
   onComplete: (result: OnboardingResult) => void;
 }) {
   const currenciesId = useId();
-  const [members, setMembers] = useState<OnboardingMember[]>([{ id: uid("mem"), name: "", color: MEMBER_PALETTE[0]!, income: 0 }]);
+  const [memberId] = useState(() => uid("mem"));
+  const [name, setName] = useState("");
+  const [income, setIncome] = useState(0);
   const [currency, setCurrency] = useState("");
-  const [locale, setLocale] = useState(typeof navigator !== "undefined" ? navigator.language : "en-US");
   const [targetSaveRate, setTargetSaveRate] = useState(25);
+  const locale = typeof navigator !== "undefined" && navigator.language ? navigator.language : "en-US";
 
-  const patch = (id: string, next: Partial<OnboardingMember>) =>
-    setMembers((list) => list.map((m) => (m.id === id ? { ...m, ...next } : m)));
-  const addMember = () => setMembers((list) => [...list, { id: uid("mem"), name: "", color: nextMemberColor(list.map((member) => ({ ...member, portions: [] }))), income: 0 }]);
-  const removeMember = (id: string) => setMembers((list) => (list.length > 1 ? list.filter((m) => m.id !== id) : list));
-
-  const named = members.filter((m) => m.name.trim());
-  const canFinish = named.length >= 1 && currency.trim().length >= 2;
-  const requirement = canFinish ? "Ready to start. You can adjust everything later." : "Add at least one named member and a currency code.";
+  const canFinish = Boolean(name.trim()) && currency.trim().length >= 2;
+  const requirement = canFinish ? "Ready to start. You can adjust everything later." : "Add your name and a currency code.";
 
   const finish = () => {
     if (!canFinish) return;
+    const normalizedCurrency = currency.toUpperCase().trim();
     onComplete({
-      members: named.map(({ income, ...member }) => ({
-        ...member,
-        name: member.name.trim(),
-        portions: income > 0 ? [defaultIncomePortion(member.id, income, currency.toUpperCase().trim())] : [],
-      })),
-      currency: currency.toUpperCase().trim(),
-      locale: locale.trim(),
+      members: [{
+        id: memberId,
+        name: name.trim(),
+        color: MEMBER_PALETTE[0]!,
+        portions: income > 0 ? [defaultIncomePortion(memberId, income, normalizedCurrency)] : [],
+      }],
+      currency: normalizedCurrency,
+      locale,
       targetSaveRate,
     });
   };
@@ -64,14 +59,13 @@ export function OnboardingView({
           <span className="soft-label">Household setup</span>
           <h1>Set up your household</h1>
           <p>
-            Add the people who share the budget, their monthly income, your currency, and the save-rate target.
-            Mizan uses this to judge every month.
+            Start with the essentials. You can add other household members and optional tools later.
           </p>
           <div className="sync-note">
-            <strong>{sync.auth.status === "signed-in" ? "Google connected" : "Google sign-in required"}</strong>
+            <strong>{sync.auth.status === "signed-in" ? "Cloud storage connected" : "Google sign-in required"}</strong>
             <span>{sync.status.message}</span>
             {sync.auth.status === "signed-in" ? (
-              <Button variant="secondary" onClick={onOpenSettings}>Open sync settings</Button>
+              <Button variant="secondary" onClick={onOpenSettings}>Open cloud storage</Button>
             ) : sync.auth.status !== "unconfigured" ? (
               <Button variant="secondary" onClick={onSignIn}>Sign in</Button>
             ) : null}
@@ -82,67 +76,56 @@ export function OnboardingView({
           <div className="settings-section">
             <div className="section-title">
               <div>
-                <h3>Members and income</h3>
-                <p className="muted">Start with one person. Add more if spending is shared.</p>
+                <h3>Your details</h3>
+                <p className="muted">Add other people later if you share household spending.</p>
               </div>
-              <Button variant="secondary" onClick={addMember}>Add member</Button>
             </div>
-            <div className="member-stack">
-              {members.map((member, index) => (
-                <div className="onboard-member" key={member.id}>
-                  <label className="field">
-                    <span>Name</span>
-                    <input
-                      autoFocus={index === 0}
-                      placeholder="Name"
-                      value={member.name}
-                      onChange={(event) => patch(member.id, { name: event.target.value })}
-                    />
-                  </label>
-                  <label className="field color-field">
-                    <span>Colour</span>
-                    <input type="color" value={member.color} onChange={(event) => patch(member.id, { color: event.target.value })} />
-                  </label>
-                  <label className="field">
-                    <span>Monthly income</span>
-                    <input
-                      type="number"
-                      placeholder="0"
-                      value={member.income || ""}
-                      onChange={(event) => patch(member.id, { income: Number(event.target.value) || 0 })}
-                    />
-                  </label>
-                  <IconButton label="Remove member" icon={Trash2} danger disabled={members.length <= 1} onClick={() => removeMember(member.id)} />
-                </div>
-              ))}
+            <div className="form-grid">
+              <label className="field">
+                <span>Name</span>
+                <input
+                  autoFocus
+                  autoComplete="name"
+                  placeholder="Your name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Monthly take-home</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="decimal"
+                  placeholder="0"
+                  value={income || ""}
+                  onChange={(event) => setIncome(Math.max(0, Number(event.target.value) || 0))}
+                />
+              </label>
             </div>
           </div>
 
           <div className="settings-section">
-            <h3>Currency & target</h3>
+            <h3>Currency and savings</h3>
             <div className="form-grid">
               <label className="field">
-                <span>Currency code</span>
+                <span>Currency</span>
                 <input list={currenciesId} placeholder="e.g. USD" value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} />
                 <datalist id={currenciesId}>
                   {COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}
                 </datalist>
               </label>
               <label className="field">
-                <span>Locale</span>
-                <input placeholder="e.g. en-US" value={locale} onChange={(event) => setLocale(event.target.value)} />
+                <span>Savings target (%)</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="90"
+                  value={targetSaveRate}
+                  onChange={(event) => setTargetSaveRate(Math.max(0, Math.min(90, Number(event.target.value) || 0)))}
+                />
               </label>
             </div>
-            <label className="field">
-              <span>Target save rate (%)</span>
-              <input
-                type="number"
-                min="0"
-                max="90"
-                value={targetSaveRate}
-                onChange={(event) => setTargetSaveRate(Math.max(0, Math.min(90, Number(event.target.value) || 0)))}
-              />
-            </label>
           </div>
 
           <div className="onboard-submit">

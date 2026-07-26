@@ -6,15 +6,18 @@ import {
 import { importedAccountCoverageCandidates } from "./domain/accountCoverage";
 import {
   transitionAccounts,
+  transitionAssetHoldings,
   transitionCategorizeMerchant,
   transitionClearSplit,
   transitionConfirmTransfer,
   transitionCounterparties,
   transitionCustomCategories,
-  transitionDeleteRule,
+  transitionDeleteRules,
   transitionIncomeReceipts,
+  transitionFixedCosts,
   transitionMembers,
   transitionRememberMerchant,
+  transitionRejectTransfer,
   transitionRemoveSharedContribution,
   transitionRemoveTransaction,
   transitionResetClassification,
@@ -22,7 +25,9 @@ import {
   transitionSharedContribution,
   transitionTransactionAccount,
   transitionTransactionClassification,
+  transitionUnlinkCommitment,
 } from "./domain/appDataTransitions";
+import { applyCommitments } from "./domain/commitments";
 import { isoDateOf, latestMonth, monthLabel, monthOf } from "./domain/dates";
 import {
   sharedContributionError,
@@ -44,12 +49,14 @@ import { needsClassificationReview } from "./domain/summary";
 import {
   uid,
   type AppData,
+  type AssetHolding,
   type CategoryKey,
   type Account,
   type Counterparty,
   type CustomCategory,
   type EfficiencyOpportunity,
   type EfficiencyOutcomeResult,
+  type FixedCost,
   type IncomeReceipt,
   type IncomePortion,
   type MerchantRule,
@@ -67,7 +74,7 @@ import { assertBackupFile, assertStatementFiles } from "./security/resourceLimit
 import { hasLegacyLocalData } from "./storage/legacyBrowserData";
 import { useAppDerivedState } from "./app/useAppDerivedState";
 import { EMPTY_LEDGER_FILTERS, useHouseholdSession } from "./app/useHouseholdSession";
-import { AppPresentation, type AppPresentationModel, type ModalKind } from "./app/AppPresentation";
+import { AppPresentation, type AppPresentationModel, type ModalState } from "./app/AppPresentation";
 import type { ImportResult } from "./ui/ImportModal";
 import type { AccountCoverageConfirmation } from "./ui/AccountCoverageConfirm";
 import type { ManualEntry } from "./ui/ManualModal";
@@ -100,7 +107,7 @@ interface UndoChange {
 
 export default function App() {
   const [undoChange, setUndoChange] = useState<UndoChange | null>(null);
-  const [modal, setModal] = useState<ModalKind>(null);
+  const [modal, setModal] = useState<ModalState>(null);
   const [pendingBackup, setPendingBackup] = useState<AppData | null>(null);
   const [backupPasswordRequest, setBackupPasswordRequest] = useState<
     { mode: "export" } | { mode: "import"; encryptedText: string } | null
@@ -115,7 +122,6 @@ export default function App() {
   const [efficiencyReview, setEfficiencyReview] = useState<EfficiencyOpportunity | null>(null);
   const [efficiencyVerification, setEfficiencyVerification] = useState<EfficiencyOpportunity | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [dismissedTransfers, setDismissedTransfers] = useState<Set<string>>(() => new Set());
 
   const clearUndo = useCallback(() => setUndoChange(null), []);
   const resetTransientState = useCallback(() => {
@@ -128,7 +134,6 @@ export default function App() {
     setEfficiencyReview(null);
     setEfficiencyVerification(null);
     setCsvFile(null);
-    setDismissedTransfers(new Set());
   }, []);
   const session = useHouseholdSession({ clearUndo, resetTransientState });
   const {
@@ -155,7 +160,6 @@ export default function App() {
     setMonth,
     bootstrapPhase,
     privacy,
-    dismissedTransfers,
   });
   const {
     currentMonth,
@@ -176,7 +180,7 @@ export default function App() {
   /** Apply a protected, one-transaction classification override. */
   function classifyTransaction(
     id: string,
-    patch: Partial<Pick<Transaction, "category" | "beneficiary" | "kind" | "counterpartyId">>,
+    patch: Partial<Pick<Transaction, "category" | "beneficiary" | "kind" | "counterpartyId" | "holdingId">>,
   ) {
     const current = data.transactions.find((item) => item.id === id);
     if (!current) return;
@@ -204,16 +208,20 @@ export default function App() {
     classifyTransaction(id, { counterpartyId });
   }
 
+  function setTransactionHolding(id: string, holdingId: string | undefined) {
+    classifyTransaction(id, { holdingId });
+  }
+
   function rememberTransactionMerchant(id: string) {
     const current = data.transactions.find((item) => item.id === id);
     if (!current) return;
     if (needsClassificationReview(current)) {
-      setNotice("Choose both a purpose and beneficiary before saving a merchant default.");
+      setNotice("Choose both a purpose and who it was for before saving a merchant default.");
       return;
     }
     rememberUndo(`Merchant rule for ${current.description}`);
     setData((previous) => transitionRememberMerchant(previous, id));
-    setNotice(`${current.description} will now use this purpose and beneficiary by default.`);
+    setNotice(`${current.description} will now use this purpose and who it was for by default.`);
   }
 
   function setTransactionAccount(id: string, accountId: string) {
@@ -226,6 +234,14 @@ export default function App() {
 
   function updateAccounts(accounts: Account[]) {
     setData((previous) => transitionAccounts(previous, accounts));
+  }
+
+  function updateFixedCosts(fixedCosts: FixedCost[]) {
+    setData((previous) => transitionFixedCosts(previous, fixedCosts));
+  }
+
+  function updateAssetHoldings(assetHoldings: AssetHolding[]) {
+    setData((previous) => transitionAssetHoldings(previous, assetHoldings));
   }
 
   function categorizeMerchant(merchant: string, rule: MerchantRule) {
@@ -259,7 +275,11 @@ export default function App() {
     const normalized = parsed.map((txn) => normalizeFxTransaction(txn, data.settings.currency));
     const linked = applyAccounts(normalized, data.accounts);
     const defaulted = applyAccountBeneficiaryDefaults(linked, data.accounts, data.settings.members);
-    const ruled = applyRules(defaulted, data.merchantRules, data.accounts, data.settings.members);
+    const ruled = applyCommitments(
+      applyRules(defaulted, data.merchantRules, data.accounts, data.settings.members),
+      data.fixedCosts,
+      data.assetHoldings,
+    );
     const fresh = filterNew(data.transactions, ruled);
     const needsReview = fresh.filter(needsClassificationReview).length;
     const importedMonths = importedMonthContext(fresh);
@@ -281,7 +301,7 @@ export default function App() {
     const parts = [
       `Imported ${fresh.length} transaction${fresh.length === 1 ? "" : "s"}; skipped ${ruled.length - fresh.length} duplicate${ruled.length - fresh.length === 1 ? "" : "s"}.`,
       importedMonths.spreadNotice,
-      needsReview ? `${needsReview} need a purpose or beneficiary — see the review queue under Transactions.` : "",
+      needsReview ? `${needsReview} need a purpose or who they were for — see the review queue under Transactions.` : "",
       ...extraNotes,
       ...failures,
     ].filter(Boolean);
@@ -405,10 +425,19 @@ export default function App() {
     }
   }
 
-  function deleteRule(merchant: string) {
-    rememberUndo(`Rule for ${merchant}`);
-    setData((previous) => transitionDeleteRule(previous, merchant));
-    setNotice(`Removed the rule for ${merchant}; affected rows returned to review.`);
+  function unlinkCommitment(transactionId: string) {
+    setData((previous) => transitionUnlinkCommitment(previous, transactionId));
+    setNotice("Imported payment unlinked from the commitment and returned to review.");
+  }
+
+  function deleteRules(merchants: string[]) {
+    if (!merchants.length) return;
+    const label = merchants.length === 1 ? `Rule for ${merchants[0]}` : `${merchants.length} merchant rules`;
+    rememberUndo(label);
+    setData((previous) => transitionDeleteRules(previous, merchants));
+    setNotice(merchants.length === 1
+      ? `Removed the rule for ${merchants[0]}; affected rows returned to review.`
+      : `Removed ${merchants.length} merchant rules; affected rows returned to review.`);
   }
 
   function resetTransactionClassification(id: string) {
@@ -437,6 +466,10 @@ export default function App() {
     const debit = data.transactions.find((txn) => txn.id === debitId);
     rememberUndo(`Transfer${debit ? ` for ${debit.description}` : ""}`);
     setData((previous) => transitionConfirmTransfer(previous, debitId, creditId));
+  }
+
+  function rejectTransfer(debitId: string, creditId: string) {
+    setData((previous) => transitionRejectTransfer(previous, debitId, creditId));
   }
 
   function saveSharedContribution(contribution: SharedContribution) {
@@ -596,46 +629,58 @@ export default function App() {
       setEfficiencyVerification,
       csvFile,
       setCsvFile,
-      dismissedTransfers: setDismissedTransfers,
       undoChange,
     },
     actions: {
-      updateMembers,
-      updateAccounts,
-      deleteRule,
-      updateCounterparties,
-      updateCustomCategories,
-      exportBackup,
-      completeBackupPassword,
-      importBackup,
-      confirmBackupImport,
-      clearAllData,
-      addManual,
-      importStatements,
-      ingestTransactions,
-      confirmImportedAccountCoverage,
-      setTransactionCategory,
-      setTransactionBeneficiary,
-      setTransactionKind,
-      setTransactionCounterparty,
-      setTransactionAccount,
-      categorizeMerchant,
-      rememberTransactionMerchant,
-      undoLastLedgerChange,
-      resetTransactionClassification,
-      confirmTransfer,
-      removeTransaction,
-      completeWeeklyCheckIn,
-      saveEfficiencyDecision,
-      verifyEfficiencyOutcome,
-      saveSplit,
-      clearSplit,
-      recordIncomeReceipts,
-      removeIncomeConfirmation,
-      unlinkIncomeEvidence,
-      addOneOffIncome,
-      saveSharedContribution,
-      removeSharedContribution,
+      household: {
+        updateMembers,
+        updateCounterparties,
+        updateCustomCategories,
+        completeWeeklyCheckIn,
+        addOneOffIncome,
+      },
+      budget: {
+        updateAccounts,
+        updateFixedCosts,
+        updateAssetHoldings,
+        deleteRules,
+        saveEfficiencyDecision,
+        verifyEfficiencyOutcome,
+      },
+      ledger: {
+        addManual,
+        importStatements,
+        ingestTransactions,
+        confirmImportedAccountCoverage,
+        setTransactionCategory,
+        setTransactionBeneficiary,
+        setTransactionKind,
+        setTransactionCounterparty,
+        setTransactionHolding,
+        setTransactionAccount,
+        categorizeMerchant,
+        rememberTransactionMerchant,
+        undoLastLedgerChange,
+        resetTransactionClassification,
+        unlinkCommitment,
+        confirmTransfer,
+        rejectTransfer,
+        removeTransaction,
+        saveSplit,
+        clearSplit,
+        recordIncomeReceipts,
+        removeIncomeConfirmation,
+        unlinkIncomeEvidence,
+        saveSharedContribution,
+        removeSharedContribution,
+      },
+      maintenance: {
+        exportBackup,
+        completeBackupPassword,
+        importBackup,
+        confirmBackupImport,
+        clearAllData,
+      },
     },
   };
   return <AppPresentation model={presentationModel} />;

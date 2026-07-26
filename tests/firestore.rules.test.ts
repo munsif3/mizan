@@ -51,7 +51,7 @@ function signedIn(uid: string, displayName: string, email: string) {
   }).firestore();
 }
 
-function cloudSettings(updatedBy: string, schemaVersion = 9) {
+function cloudSettings(updatedBy: string, schemaVersion = 10) {
   return {
     schemaVersion,
     targetSaveRate: 25,

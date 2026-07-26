@@ -7,8 +7,11 @@ coverage/
 # Emulator config holds no secrets and must travel with the repo so the
 # local-run workflow works on a fresh clone.
 !.env.emulator
+!.env.browser-test
 .firebase/
 firestore-debug.log
 firebase-debug.log
+playwright-report/
+test-results/
 # Personal Firebase deploy target — created per-machine via `firebase use --add`
 .firebaserc

@@ -25,6 +25,7 @@ service cloud.firestore {
         "sharedContributions",
         "accounts",
         "fixedCosts",
+        "assetHoldings",
         "incomeReceipts",
         "efficiencyPlans",
         "members",
@@ -49,7 +50,7 @@ service cloud.firestore {
     // lock every other member's client out of the household.
     function validVersionField(data) {
       return !("schemaVersion" in data)
-        || (data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 9);
+        || (data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 10);
     }
 
     // The snapshot manifest is the compare-and-swap authority for the whole
@@ -74,6 +75,7 @@ service cloud.firestore {
         "sharedContributions",
         "accounts",
         "fixedCosts",
+        "assetHoldings",
         "incomeReceipts",
         "efficiencyPlans",
         "members",
@@ -96,7 +98,7 @@ service cloud.firestore {
       return !(collectionId in ["settings", "snapshots"])
         || (
           data.keys().hasOnly(["schemaVersion", "targetSaveRate", "currency", "locale", "fxRates", "updatedAt", "updatedBy"])
-          && data.schemaVersion == 9
+          && data.schemaVersion == 10
           && data.targetSaveRate is number
           && data.currency is string && data.currency.size() <= 16
           && data.locale is string && data.locale.size() <= 32

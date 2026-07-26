@@ -1,12 +1,9 @@
 import { useState } from "react";
+import { isResetConfirmation, RESET_CONFIRMATION } from "../app/destructiveConfirmations";
 import type { AppData } from "../domain/types";
 import { Button, Modal } from "./bits";
 
-export const RESET_CONFIRMATION = "RESET";
-
-export function isResetConfirmation(value: string): boolean {
-  return value === RESET_CONFIRMATION;
-}
+export { isResetConfirmation, RESET_CONFIRMATION } from "../app/destructiveConfirmations";
 
 export function ResetHouseholdModal({
   householdName,

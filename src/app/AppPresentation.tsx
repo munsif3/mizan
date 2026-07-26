@@ -7,11 +7,13 @@ import type { EfficiencyPlanInput } from "../domain/efficiency";
 import type {
   Account,
   AppData,
+  AssetHolding,
   CategoryKey,
   Counterparty,
   CustomCategory,
   EfficiencyOpportunity,
   EfficiencyOutcomeResult,
+  FixedCost,
   IncomeReceipt,
   Member,
   MemberId,
@@ -38,6 +40,10 @@ import { TransactionsView } from "../ui/TransactionsView";
 import type { AppDerivedState } from "./useAppDerivedState";
 import type { HouseholdSession, View } from "./useHouseholdSession";
 import { EMPTY_LEDGER_FILTERS } from "./useHouseholdSession";
+import {
+  DEFAULT_SETTINGS_TARGET,
+  type SettingsTarget,
+} from "./settingsTarget";
 
 // History, Settings, import tooling, and the secondary modals are split into
 // their own chunks so their code (and heavy dependencies such as the statement
@@ -57,7 +63,12 @@ const EfficiencyOutcomeModal = lazy(() => import("../ui/EfficiencyModal").then((
 const EfficiencyReviewModal = lazy(() => import("../ui/EfficiencyModal").then((m) => ({ default: m.EfficiencyReviewModal })));
 const BackupPasswordDialog = lazy(() => import("../ui/BackupPasswordDialog").then((m) => ({ default: m.BackupPasswordDialog })));
 
-export type ModalKind = null | "import" | "manual" | "settings" | "one-off-income" | "clear-transactions" | "reset";
+type SimpleModalKind = "import" | "manual" | "one-off-income" | "clear-transactions" | "reset";
+
+export type ModalState =
+  | null
+  | { kind: SimpleModalKind }
+  | { kind: "settings"; target: SettingsTarget };
 
 interface UndoChange {
   label: string;
@@ -66,8 +77,8 @@ interface UndoChange {
 }
 
 interface PresentationUiState {
-  modal: ModalKind;
-  setModal: Dispatch<SetStateAction<ModalKind>>;
+  modal: ModalState;
+  setModal: Dispatch<SetStateAction<ModalState>>;
   pendingBackup: AppData | null;
   setPendingBackup: Dispatch<SetStateAction<AppData | null>>;
   backupPasswordRequest: { mode: "export" } | { mode: "import"; encryptedText: string } | null;
@@ -94,47 +105,59 @@ interface PresentationUiState {
   setEfficiencyVerification: Dispatch<SetStateAction<EfficiencyOpportunity | null>>;
   csvFile: File | null;
   setCsvFile: Dispatch<SetStateAction<File | null>>;
-  dismissedTransfers: Dispatch<SetStateAction<Set<string>>>;
   undoChange: UndoChange | null;
 }
 
 interface PresentationActions {
-  updateMembers: (members: Member[]) => void;
-  updateAccounts: (accounts: Account[]) => void;
-  deleteRule: (merchant: string) => void;
-  updateCounterparties: (counterparties: Counterparty[]) => void;
-  updateCustomCategories: (categories: CustomCategory[]) => void;
-  exportBackup: () => void;
-  completeBackupPassword: (password: string) => Promise<void>;
-  importBackup: (file: File) => void;
-  confirmBackupImport: () => Promise<void>;
-  clearAllData: () => void;
-  addManual: (entry: ManualEntry) => void;
-  importStatements: ComponentProps<typeof ImportModal>["onImport"];
-  ingestTransactions: (transactions: Transaction[], failures: string[], notes?: string[]) => ImportResult;
-  confirmImportedAccountCoverage: (confirmations: AccountCoverageConfirmation[]) => void;
-  setTransactionCategory: (id: string, category: CategoryKey) => void;
-  setTransactionBeneficiary: (id: string, beneficiary: SpendBeneficiary) => void;
-  setTransactionKind: (id: string, kind: MovementKind) => void;
-  setTransactionCounterparty: (id: string, counterpartyId: string | undefined) => void;
-  setTransactionAccount: (id: string, accountId: string) => void;
-  categorizeMerchant: (merchant: string, rule: MerchantRule) => void;
-  rememberTransactionMerchant: (id: string) => void;
-  undoLastLedgerChange: () => void;
-  resetTransactionClassification: (id: string) => void;
-  confirmTransfer: (debitId: string, creditId: string) => void;
-  removeTransaction: (id: string) => void;
-  completeWeeklyCheckIn: () => void;
-  saveEfficiencyDecision: (opportunity: EfficiencyOpportunity, input: EfficiencyPlanInput) => void;
-  verifyEfficiencyOutcome: (opportunity: EfficiencyOpportunity, result: EfficiencyOutcomeResult) => void;
-  saveSplit: (id: string, split: Split) => void;
-  clearSplit: (id: string) => void;
-  recordIncomeReceipts: (receipts: IncomeReceipt[]) => void;
-  removeIncomeConfirmation: (month: string, memberId: MemberId, portionId: string) => void;
-  unlinkIncomeEvidence: (transactionId: string) => void;
-  addOneOffIncome: ComponentProps<typeof OneOffIncomeModal>["onSave"];
-  saveSharedContribution: ComponentProps<typeof SharedContributionModal>["onSave"];
-  removeSharedContribution: ComponentProps<typeof SharedContributionModal>["onRemove"];
+  household: {
+    updateMembers: (members: Member[]) => void;
+    updateCounterparties: (counterparties: Counterparty[]) => void;
+    updateCustomCategories: (categories: CustomCategory[]) => void;
+    completeWeeklyCheckIn: () => void;
+    addOneOffIncome: ComponentProps<typeof OneOffIncomeModal>["onSave"];
+  };
+  budget: {
+    updateAccounts: (accounts: Account[]) => void;
+    updateFixedCosts: (fixedCosts: FixedCost[]) => void;
+    updateAssetHoldings: (holdings: AssetHolding[]) => void;
+    deleteRules: (merchants: string[]) => void;
+    saveEfficiencyDecision: (opportunity: EfficiencyOpportunity, input: EfficiencyPlanInput) => void;
+    verifyEfficiencyOutcome: (opportunity: EfficiencyOpportunity, result: EfficiencyOutcomeResult) => void;
+  };
+  ledger: {
+    addManual: (entry: ManualEntry) => void;
+    importStatements: ComponentProps<typeof ImportModal>["onImport"];
+    ingestTransactions: (transactions: Transaction[], failures: string[], notes?: string[]) => ImportResult;
+    confirmImportedAccountCoverage: (confirmations: AccountCoverageConfirmation[]) => void;
+    setTransactionCategory: (id: string, category: CategoryKey) => void;
+    setTransactionBeneficiary: (id: string, beneficiary: SpendBeneficiary) => void;
+    setTransactionKind: (id: string, kind: MovementKind) => void;
+    setTransactionCounterparty: (id: string, counterpartyId: string | undefined) => void;
+    setTransactionAccount: (id: string, accountId: string) => void;
+    setTransactionHolding: (id: string, holdingId: string | undefined) => void;
+    categorizeMerchant: (merchant: string, rule: MerchantRule) => void;
+    rememberTransactionMerchant: (id: string) => void;
+    undoLastLedgerChange: () => void;
+    resetTransactionClassification: (id: string) => void;
+    unlinkCommitment: (id: string) => void;
+    confirmTransfer: (debitId: string, creditId: string) => void;
+    rejectTransfer: (debitId: string, creditId: string) => void;
+    removeTransaction: (id: string) => void;
+    saveSplit: (id: string, split: Split) => void;
+    clearSplit: (id: string) => void;
+    recordIncomeReceipts: (receipts: IncomeReceipt[]) => void;
+    removeIncomeConfirmation: (month: string, memberId: MemberId, portionId: string) => void;
+    unlinkIncomeEvidence: (transactionId: string) => void;
+    saveSharedContribution: ComponentProps<typeof SharedContributionModal>["onSave"];
+    removeSharedContribution: ComponentProps<typeof SharedContributionModal>["onRemove"];
+  };
+  maintenance: {
+    exportBackup: () => void;
+    completeBackupPassword: (password: string) => Promise<void>;
+    importBackup: (file: File) => void;
+    confirmBackupImport: () => Promise<void>;
+    clearAllData: () => void;
+  };
 }
 
 export interface AppPresentationModel {
@@ -151,8 +174,8 @@ const VIEW_TITLES: Record<View, string> = {
 };
 
 const VIEW_DESCRIPTIONS: Record<View, string> = {
-  home: "Weekly review of what spending was for, who benefited, and who paid.",
-  transactions: "Review purpose and beneficiary, then filter the ledger by payer or account.",
+  home: "Weekly review of what spending was for, who it was for, and where it was paid from.",
+  transactions: "Review purpose and who it was for, then filter the ledger by where it was paid from.",
   history: "Save-rate trend and month-by-month movement.",
 };
 
@@ -173,13 +196,16 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
     modal, setModal, pendingBackup, setPendingBackup,
     backupPasswordRequest, setBackupPasswordRequest,
   } = model.ui;
+  const { updateMembers, updateCounterparties, updateCustomCategories } = model.actions.household;
+  const { updateAccounts, updateFixedCosts, updateAssetHoldings, deleteRules } = model.actions.budget;
+  const { categorizeMerchant } = model.actions.ledger;
   const {
-    updateMembers, updateAccounts, categorizeMerchant, deleteRule, updateCounterparties, updateCustomCategories,
     exportBackup, completeBackupPassword, importBackup, confirmBackupImport, clearAllData,
-  } = model.actions;
+  } = model.actions.maintenance;
   const canResetHousehold = auth.status === "signed-in"
     && Boolean(householdMeta)
     && householdMeta?.membersByUid[auth.user.uid]?.role === "owner";
+  const closeModal = () => setModal(null);
   const settingsProps: ComponentProps<typeof SettingsModal> = {
     data,
     onUpdateMembers: updateMembers,
@@ -189,10 +215,11 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
       setData((previous) => ({ ...previous, settings: { ...previous.settings, currency, locale } })),
     onUpdateFxRates: (fxRates) =>
       setData((previous) => ({ ...previous, settings: { ...previous.settings, fxRates } })),
-    onUpdateFixedCosts: (fixedCosts) => setData((previous) => ({ ...previous, fixedCosts })),
+    onUpdateFixedCosts: updateFixedCosts,
+    onUpdateAssetHoldings: updateAssetHoldings,
     onUpdateAccounts: updateAccounts,
     onUpsertRule: categorizeMerchant,
-    onDeleteRule: deleteRule,
+    onDeleteRules: deleteRules,
     onUpdateCounterparties: updateCounterparties,
     onUpdateCustomCategories: updateCustomCategories,
     sync: {
@@ -218,32 +245,32 @@ function SettingsOverlays({ model }: { model: AppPresentationModel }) {
     onClearData: clearAllData,
     canClearTransactions: canResetHousehold,
     hasTransactions: data.transactions.length > 0,
-    onClearTransactions: () => setModal("clear-transactions"),
+    onClearTransactions: () => setModal({ kind: "clear-transactions" }),
     canResetHousehold,
     hasResettableData: hasLocalFinancialData(data),
-    onResetHousehold: () => setModal("reset"),
-    onClose: () => setModal(null),
+    onResetHousehold: () => setModal({ kind: "reset" }),
+    onClose: closeModal,
   };
 
   return (
     <Suspense fallback={null}>
-      {modal === "settings" && repository && <SettingsModal {...settingsProps} />}
-      {modal === "clear-transactions" && householdMeta && canResetHousehold && data.transactions.length > 0 && (
+      {modal?.kind === "settings" && repository && <SettingsModal {...settingsProps} target={modal.target} />}
+      {modal?.kind === "clear-transactions" && householdMeta && canResetHousehold && data.transactions.length > 0 && (
         <ClearTransactionsModal
           householdName={householdMeta.name}
           data={data}
           onExport={exportBackup}
           onClear={clearActiveHouseholdTransactions}
-          onClose={() => setModal(null)}
+          onClose={closeModal}
         />
       )}
-      {modal === "reset" && householdMeta && canResetHousehold && (
+      {modal?.kind === "reset" && householdMeta && canResetHousehold && (
         <ResetHouseholdModal
           householdName={householdMeta.name}
           data={data}
           onExport={exportBackup}
           onReset={resetActiveHousehold}
-          onClose={() => setModal(null)}
+          onClose={closeModal}
         />
       )}
       {pendingBackup && (
@@ -281,13 +308,14 @@ function HouseholdGate({ model }: { model: AppPresentationModel }) {
   const loadingHousehold = bootstrapPhase === "loading-household";
   const needsHousehold = bootstrapPhase === "needs-household";
   const failedBootstrap = bootstrapPhase === "error";
+  const permissionFailure = failedBootstrap && /permission/i.test(bootstrapError);
 
   return (
     <main className="app onboarding">
-      <section className="home-hero tight onboard-wide auth-gate">
+      <section className={`home-hero tight onboard-wide auth-gate${failedBootstrap ? " auth-gate-failed" : ""}`}>
         <div className="onboard-intro">
           <div className="wordmark"><span className="wordmark-mark">M</span><span>Mizan</span></div>
-          <h1>{needsHousehold ? "Choose a Firestore household" : failedBootstrap ? "Could not open your household" : "Getting Mizan ready"}</h1>
+          <h1>{needsHousehold ? "Choose a Firestore household" : failedBootstrap ? "We couldn’t open this household" : "Getting Mizan ready"}</h1>
           <p>
             {needsHousehold
               ? "Mizan stores financial data in a signed-in Firestore household. Create one for this budget or join an existing household with an invite code."
@@ -301,38 +329,53 @@ function HouseholdGate({ model }: { model: AppPresentationModel }) {
               will never overwrite an existing household.
             </div>
           )}
-          {failedBootstrap && bootstrapError && <div className="notice" role="alert">{bootstrapError}</div>}
+          {failedBootstrap && bootstrapError && (
+            <div className="notice bootstrap-error" role="alert">
+              <strong>{permissionFailure ? "Firestore blocked the household request." : "The cloud request was interrupted."}</strong>
+              <span>{bootstrapError}</span>
+            </div>
+          )}
           {notice && !failedBootstrap && <div className="notice" role="status" aria-live="polite">{notice}</div>}
         </div>
         <div className="auth-panel">
-          <span className="soft-label">Firestore</span>
-          <strong>
-            {loadingProfile
-              ? "Loading cloud profile"
-              : loadingHousehold
-                ? "Loading household data"
-                : failedBootstrap ? "Household load interrupted" : syncStatus.message}
-          </strong>
-          <p className="muted">Raw statement files and passwords stay on this device while imports are processed.</p>
+          <div className="auth-panel-heading">
+            <span className="soft-label">Firestore</span>
+            <strong>
+              {loadingProfile
+                ? "Loading cloud profile"
+                : loadingHousehold
+                  ? "Loading household data"
+                  : failedBootstrap ? "Your data is still safe" : syncStatus.message}
+            </strong>
+            <p className="muted">
+              {failedBootstrap
+                ? "Retry the secure cloud connection or choose another household."
+                : "Raw statement files and passwords stay on this device while imports are processed."}
+            </p>
+          </div>
           {(loadingProfile || loadingHousehold) && (
             <Skeleton label={loadingProfile ? "Loading cloud profile" : "Loading household data"} />
           )}
           {needsHousehold && (
-            <div className="sync-actions sync-main-actions">
-              <Button variant="primary" onClick={() => setHouseholdDialog("create")}>Create household</Button>
-              <Button variant="secondary" onClick={() => setHouseholdDialog("join")}>Join with invite</Button>
+            <div className="bootstrap-actions">
+              <div className="bootstrap-secondary-actions">
+                <Button variant="primary" onClick={() => setHouseholdDialog("create")}>Create household</Button>
+                <Button variant="secondary" onClick={() => setHouseholdDialog("join")}>Join with invite</Button>
+              </div>
             </div>
           )}
           {failedBootstrap && (
-            <div className="sync-actions sync-main-actions">
+            <div className="bootstrap-actions">
               <Button variant="primary" onClick={retryBootstrap}>Retry household load</Button>
-              <Button variant="secondary" onClick={() => setHouseholdDialog("create")}>Create household</Button>
-              <Button variant="secondary" onClick={() => setHouseholdDialog("join")}>Join with invite</Button>
-              <Button variant="secondary" onClick={handleSignOut}>Sign out</Button>
+              <div className="bootstrap-secondary-actions">
+                <Button variant="secondary" onClick={() => setHouseholdDialog("create")}>Create new</Button>
+                <Button variant="secondary" onClick={() => setHouseholdDialog("join")}>Join another</Button>
+                <Button variant="ghost" onClick={handleSignOut}>Sign out</Button>
+              </div>
             </div>
           )}
           {(needsHousehold || failedBootstrap) && availableHouseholds.length > 0 && (
-            <label className="field">
+            <label className="field household-switcher">
               <span>Existing household</span>
               <select defaultValue="" onChange={(event) => switchHousehold(event.target.value)}>
                 <option value="" disabled>Choose household</option>
@@ -357,7 +400,10 @@ function OnboardingPresentation({ model }: { model: AppPresentationModel }) {
       <OnboardingView
         sync={{ auth, mode: repository!.mode, status: syncStatus, household: householdMeta, households: availableHouseholds }}
         onSignIn={handleSignIn}
-        onOpenSettings={() => model.ui.setModal("settings")}
+        onOpenSettings={() => model.ui.setModal({
+          kind: "settings",
+          target: { tab: "sync", section: "access" },
+        })}
         onComplete={(result) => setData((previous) => ({ ...previous, settings: { ...previous.settings, ...result } }))}
       />
       <SettingsOverlays model={model} />
@@ -376,15 +422,20 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
   } = model.derived;
   const {
     setModal, setSplitTxn, setIncomeConfirm, setContributionConfirm, setEfficiencyReview,
-    setEfficiencyVerification, dismissedTransfers: setDismissedTransfers, undoChange,
+    setEfficiencyVerification, undoChange,
   } = model.ui;
   const {
     setTransactionCategory, setTransactionBeneficiary, setTransactionKind, setTransactionCounterparty,
-    setTransactionAccount, categorizeMerchant, rememberTransactionMerchant, undoLastLedgerChange,
-    resetTransactionClassification, confirmTransfer, removeTransaction, completeWeeklyCheckIn,
-  } = model.actions;
+    setTransactionAccount, setTransactionHolding, categorizeMerchant, rememberTransactionMerchant,
+    undoLastLedgerChange, resetTransactionClassification, unlinkCommitment, confirmTransfer, rejectTransfer,
+    removeTransaction,
+  } = model.actions.ledger;
+  const { completeWeeklyCheckIn } = model.actions.household;
   const syncHasError = isSyncProblem(syncStatus);
   const syncLabel = syncChipLabel(syncStatus);
+  const openSettings = (target: SettingsTarget = DEFAULT_SETTINGS_TARGET) =>
+    setModal({ kind: "settings", target });
+  const openModal = (kind: SimpleModalKind) => setModal({ kind });
 
   return (
     <>
@@ -413,7 +464,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             <button
               className={`sync-chip ${syncHasError ? "sync-error" : ""}`}
               title={syncStatus.message}
-              onClick={() => setModal("settings")}
+              onClick={() => openSettings({ tab: "sync", section: "access" })}
             >
               {syncLabel}
             </button>
@@ -427,7 +478,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
               icon={privacy ? Eye : EyeOff}
               onClick={() => setPrivacy((value) => !value)}
             />
-            <IconButton label="Settings" icon={Settings} onClick={() => setModal("settings")} />
+            <IconButton label="Settings" icon={Settings} onClick={() => openSettings()} />
           </div>
         </div>
       </header>
@@ -441,14 +492,14 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
               <MonthNavigator value={currentMonth} months={navigationMonths} todayMonth={todayMonth} onChange={setMonth} />
               {view === "home" && (
                 <>
-                  <Button variant="secondary" onClick={() => setModal("manual")}>Add transaction</Button>
-                  <Button variant="primary" onClick={() => setModal("import")}>Import activity</Button>
+                  <Button variant="secondary" onClick={() => openModal("manual")}>Add transaction</Button>
+                  <Button variant="primary" onClick={() => openModal("import")}>Import activity</Button>
                 </>
               )}
               {view === "transactions" && (
                 <>
-                  <Button variant="secondary" onClick={() => setModal("import")}>Import activity</Button>
-                  <Button variant="primary" onClick={() => setModal("manual")}>Add transaction</Button>
+                  <Button variant="secondary" onClick={() => openModal("import")}>Import activity</Button>
+                  <Button variant="primary" onClick={() => openModal("manual")}>Add transaction</Button>
                 </>
               )}
             </>
@@ -467,8 +518,8 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             percent={percent}
             financialValuesHidden={privacy}
             lastCheckInAt={householdMeta ? (lastCheckInByHousehold[householdMeta.id] ?? "") : ""}
-            onOpenSettings={() => setModal("settings")}
-            onOpenImport={() => setModal("import")}
+            onOpenSettings={openSettings}
+            onOpenImport={() => openModal("import")}
             onReviewQueue={() => {
               setLedgerFilters(EMPTY_LEDGER_FILTERS);
               setView("transactions");
@@ -476,13 +527,14 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             onCompleteCheckIn={completeWeeklyCheckIn}
             incomeCandidates={incomeCandidateMap}
             onConfirmIncome={(item, candidate) => setIncomeConfirm({ item, ...(candidate ? { candidate } : {}) })}
-            onAddOneOffIncome={() => setModal("one-off-income")}
+            onAddOneOffIncome={() => openModal("one-off-income")}
             contributionCandidates={contributionCandidates.filter((candidate) =>
               candidate.expenses.some((expense) => monthOf(expense.date) === currentMonth))}
             members={data.settings.members}
             accounts={data.accounts}
             onConfirmContribution={(candidate) => setContributionConfirm({ candidate })}
             efficiency={efficiency}
+            hasActiveEfficiencyPlan={data.efficiencyPlans.some((plan) => plan.state !== "closed")}
             onReviewEfficiency={setEfficiencyReview}
             onVerifyEfficiency={setEfficiencyVerification}
             onOpenTransactions={(filters) => {
@@ -508,6 +560,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             summary={summary}
             members={data.settings.members}
             accounts={data.accounts}
+            assetHoldings={data.assetHoldings}
             customCategories={data.settings.customCategories}
             counterparties={data.settings.counterparties}
             queue={queue}
@@ -523,13 +576,14 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             onSetKind={setTransactionKind}
             onSetCounterparty={setTransactionCounterparty}
             onSetAccount={setTransactionAccount}
+            onSetHolding={setTransactionHolding}
             onCategorizeMerchant={categorizeMerchant}
             onRememberMerchant={rememberTransactionMerchant}
             onUndo={undoLastLedgerChange}
-            onResetClassification={resetTransactionClassification}
+    onResetClassification={resetTransactionClassification}
+    onUnlinkCommitment={unlinkCommitment}
             onConfirmTransfer={confirmTransfer}
-            onDismissTransfer={(debitId, creditId) =>
-              setDismissedTransfers((previous) => new Set(previous).add(`${debitId}:${creditId}`))}
+            onDismissTransfer={rejectTransfer}
             onSplit={setSplitTxn}
             onRemove={removeTransaction}
             incomeLinkedIds={incomeLinkedIds}
@@ -537,8 +591,8 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             sharedContributions={data.sharedContributions}
             onLinkContribution={(expenseId) => setContributionConfirm({ expenseId })}
             onEditContribution={(contribution) => setContributionConfirm({ contribution })}
-            onOpenImport={() => setModal("import")}
-            onAddTransaction={() => setModal("manual")}
+            onOpenImport={() => openModal("import")}
+            onAddTransaction={() => openModal("manual")}
           />
         )}
         {view === "history" && (
@@ -571,14 +625,16 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
     efficiencyVerification, setEfficiencyVerification,
   } = model.ui;
   const {
-    importStatements, ingestTransactions, confirmImportedAccountCoverage, addManual, saveEfficiencyDecision, verifyEfficiencyOutcome,
+    importStatements, ingestTransactions, confirmImportedAccountCoverage, addManual,
     saveSplit, clearSplit, recordIncomeReceipts, removeIncomeConfirmation, unlinkIncomeEvidence,
-    addOneOffIncome, saveSharedContribution, removeSharedContribution,
-  } = model.actions;
+    saveSharedContribution, removeSharedContribution,
+  } = model.actions.ledger;
+  const { saveEfficiencyDecision, verifyEfficiencyOutcome } = model.actions.budget;
+  const { addOneOffIncome } = model.actions.household;
 
   return (
     <Suspense fallback={null}>
-      {modal === "import" && (
+      {modal?.kind === "import" && (
         <ImportModal
           onImport={importStatements}
           onCsv={(file) => {
@@ -611,12 +667,13 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
           onClose={() => setCsvFile(null)}
         />
       )}
-      {modal === "manual" && (
+      {modal?.kind === "manual" && (
         <ManualModal
           accounts={data.accounts}
           members={data.settings.members}
           customCategories={data.settings.customCategories}
           counterparties={data.settings.counterparties}
+          assetHoldings={data.assetHoldings}
           onAdd={addManual}
           onClose={() => setModal(null)}
         />
@@ -676,7 +733,7 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
           onClose={() => setIncomeConfirm(null)}
         />
       )}
-      {modal === "one-off-income" && (
+      {modal?.kind === "one-off-income" && (
         <OneOffIncomeModal
           members={data.settings.members}
           month={currentMonth}

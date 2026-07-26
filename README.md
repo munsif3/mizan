@@ -27,6 +27,8 @@ Firestore household before any financial data screen is available.
   a user-specific weekly review for each household.
 - **Explainable efficiency opportunities.** Mizan compares classified recorded spending with completed-month
   baselines, asks the household what is actually valuable, and tracks planned changes without altering ledger math.
+- **Assets without fake portfolio math.** Track Cash, property, FDs, shares/funds, policies, retirement
+  assets, gold, and other holdings. Contributions are cost basis; only dated valuations become current value.
 
 ## Screens
 
@@ -39,17 +41,25 @@ Firestore household before any financial data screen is available.
 ## Prerequisites
 
 - Node.js 22.13+ and npm 11.
+- Java 21 for the local Firestore emulator.
 - Firebase project with Authentication (Google provider) and Cloud Firestore enabled.
 
 ## Run
 
 ```bash
 npm install
+npx playwright install chromium
 npm run dev        # http://localhost:5173
 npm test           # domain, import, migration, and render test suites
 npm run test:rules # Firestore authorization suite (requires Java; starts a local emulator)
+npm run check      # typecheck, styles, tests, dead-code analysis, and production build
+npm run verify     # check + Firestore rules + desktop/mobile browser journeys
 npm run build      # typecheck + production build to dist/
 ```
+
+The browser journeys start their own demo-only Auth and Firestore emulators and
+run at desktop/mobile widths in both light and dark modes. They include
+keyboard activation, axe checks, reload persistence, and screenshot attachments.
 
 ## Google Sign-In & Household Sync
 
@@ -78,17 +88,16 @@ household. The browser financial payload is cleared after the new household save
 
 After signing in and creating or joining a Firestore household, Mizan walks you through onboarding:
 
-1. **Add members** - one per person who shares the budget. Each member gets a personal spending
-   category, and settlement is calculated across all of them.
-2. **Pick your currency** - any ISO 4217 code and a locale for number formatting.
-3. **Set initial incomes and a save-rate target** - onboarding creates one portion per member; Settings
-   can split it into several deposits with currencies, tax treatments, and arrival windows.
+1. **Add your name and monthly take-home** - this creates the first household member and income source.
+2. **Pick your currency** - any ISO 4217 code; Mizan derives the display locale from the browser.
+3. **Set a savings target** - member colour and the remaining setup defaults are assigned automatically.
 
-You can change this later in Settings. There you can also add recurring fixed costs that are not
-already counted in imported transactions; Mizan flags exact category-and-amount matches that may be
-the same payment twice. The account registry has one row per card/account, whose spending it is, and
-match text so imported statements land on the right account automatically. Settlement comes from
-these account owners. Member profiles are archived with an effective date rather than deleted once
+You can add other household members and change these details later in Settings. Recurring commitments can reconcile imported monthly payments,
+including an investment or mixed insurance/investment allocation, without counting a contractual annual
+hold as another payment. Assets & investments stores holdings and dated valuations separately from expense
+classification. The account registry has one row per card/account, a clear "Paid from" assignment, and match text so
+imported statements land on the right account automatically. Settlement
+comes from resolved account owners. Member profiles are archived with an effective date rather than deleted once
 they have financial history. A temporary absence excludes that person only during the recorded interval.
 
 ## Importing Transactions
@@ -105,6 +114,8 @@ Duplicates are skipped automatically. New merchants land in the review queue; pi
 and a rule is created and applied everywhere. After a statement or CSV import, Mizan offers an explicit
 per-account coverage confirmation. The suggested date is the latest parsed transaction, so the user can
 correct it to the actual statement end; importing activity never silently claims that every account is current.
+Transfer suggestions compare the new rows with the full stored ledger, so a matching leg imported from
+another statement later can still be confirmed as one internal transfer. Confirmed and rejected pairs persist.
 
 ## Household continuity and access
 
@@ -122,7 +133,7 @@ Keep at least two owners: if the sole owner becomes unavailable, the client cann
 
 - All financial and financial-adjacent app data is stored in Firestore for signed-in household
   members: transactions, member lifecycle dates, income portions and monthly confirmations, FX rates,
-  accounts and coverage confirmations, fixed costs, rules, categories, counterparties,
+  accounts and coverage confirmations, commitments, asset holdings and valuations, rules, categories, counterparties,
   CSV presets, shared efficiency decisions/outcomes, currency/locale, and target save rate.
 - Efficiency recommendations are deterministic and derived from current household data. No financial data is sent
   to an AI or market-comparison service, and estimated or observed reductions never change actual savings figures.
