@@ -36,7 +36,7 @@ describe("ImportModal retries", () => {
 
     await act(async () => {
       root.render(
-        <ImportModal onImport={onImport} onCsv={() => {}} onReview={() => {}} onClose={() => {}} />,
+        <ImportModal onImport={onImport} onCsv={() => {}} onMapStatement={() => {}} onReview={() => {}} onClose={() => {}} />,
       );
     });
     expect(button(container, "Cancel").disabled).toBe(false);
@@ -62,6 +62,52 @@ describe("ImportModal retries", () => {
     expect(button(container, "Close").disabled).toBe(false);
     expect([...container.querySelectorAll("button")].filter((candidate) => candidate.textContent?.trim() === "Close")).toHaveLength(1);
     expect(container.textContent).not.toContain("Done");
+
+    await act(async () => root.unmount());
+  });
+
+  it("offers manual column mapping for an unrecognized format but not a wrong password", async () => {
+    const unrecognized: ImportResult = {
+      imported: 0,
+      duplicates: 0,
+      needsReview: 0,
+      failures: ["mystery.pdf: Not a statement layout Mizan recognizes yet."],
+    };
+    const wrongPassword: ImportResult = {
+      imported: 0,
+      duplicates: 0,
+      needsReview: 0,
+      failures: ["mystery.pdf: Incorrect password."],
+    };
+    const onMapStatement = vi.fn();
+    const onImport = vi.fn().mockResolvedValueOnce(wrongPassword).mockResolvedValueOnce(unrecognized);
+    container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <ImportModal onImport={onImport} onCsv={() => {}} onMapStatement={onMapStatement} onReview={() => {}} onClose={() => {}} />,
+      );
+    });
+
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(fileInput, "files", {
+      configurable: true,
+      value: [new File(["statement"], "mystery.pdf", { type: "application/pdf" })],
+    });
+    await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
+
+    // A wrong password is not a format problem: reading the table needs it too.
+    await act(async () => button(container!, "Import 1 statement").click());
+    expect(container.textContent).not.toContain("Map mystery.pdf myself");
+
+    // An unrecognized layout is a dead end without manual mapping.
+    await act(async () => button(container!, "Retry import").click());
+    expect(container.textContent).toContain("No verified parser recognized");
+    await act(async () => button(container!, "Map mystery.pdf myself").click());
+    expect(onMapStatement).toHaveBeenCalledTimes(1);
+    expect(onMapStatement.mock.calls[0]![0]).toMatchObject({ name: "mystery.pdf" });
 
     await act(async () => root.unmount());
   });

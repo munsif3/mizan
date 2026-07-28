@@ -134,6 +134,24 @@ describe("computeEfficiencySnapshot", () => {
     expect(computeEfficiencySnapshot(short, "2026-07", new Date(2026, 6, 16)).readiness).toBe("building_baseline");
   });
 
+  it("does not let the unasked review tail hold trend recommendations back", () => {
+    // The review queue deliberately stops asking about immaterial merchants, so
+    // testing every unclassified row here would block trends forever.
+    const data = household();
+    for (const month of ["2026-03", "2026-04", "2026-05", "2026-06"]) {
+      data.transactions.push(transaction(`sub-${month}`, `${month}-10`, "STREAMING", 100));
+    }
+    data.transactions.push(transaction("current", "2026-07-15", "STREAMING", 100));
+    // A large classified purchase, so the crumb below is genuinely immaterial.
+    data.transactions.push(transaction("big", "2026-07-15", "FURNITURE", 5_000));
+    // A purpose-only gap worth one unit, which Mizan never asks about.
+    data.transactions.push(transaction("crumb", "2026-07-15", "TINY SHOP", 1, "uncategorized", HOUSEHOLD));
+
+    const snapshot = computeEfficiencySnapshot(data, "2026-07", new Date(2026, 6, 16));
+
+    expect(snapshot.readiness).toBe("ready");
+  });
+
   it("suppresses a keep decision for six months but reopens it after a material increase", () => {
     const data = household();
     for (const month of ["2026-03", "2026-04", "2026-05", "2026-06"]) {

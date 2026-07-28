@@ -106,7 +106,7 @@ describe("household helpers", () => {
     }];
 
     const cloud = appDataToCloudCollections(data, "user_1", "2026-07-09T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(10);
+    expect(cloud.settings?.schemaVersion).toBe(11);
     expect(cloud.merchantRules[0]?.key).toBe("SHOP");
     expect(cloud.csvPresets[0]?.signature).toBe("signature_1");
     expect(cloud.incomeReceipts).toEqual(data.incomeReceipts);
@@ -164,7 +164,7 @@ describe("household helpers", () => {
       } as never],
     });
     expect(data.fixedCosts[0]?.kind).toBe("expense");
-    expect(data.schemaVersion).toBe(17);
+    expect(data.schemaVersion).toBe(18);
   });
 
   it("defaults cloud v6 income sources to monthly ordinary treatment", () => {
@@ -190,20 +190,20 @@ describe("household helpers", () => {
     expect(data.incomeReceipts[0]).toMatchObject({
       label: "Salary", taxRate: 0, taxWithheld: true, budgetTreatment: "ordinary",
     });
-    expect(data.schemaVersion).toBe(17);
+    expect(data.schemaVersion).toBe(18);
   });
 
   it("rejects household data written by a newer cloud schema", () => {
     const settings = appDataToCloudCollections(emptyData(), "user_1").settings!;
     expect(() => cloudCollectionsToAppData({
-      settings: { ...settings, schemaVersion: 11 as 10 },
-    })).toThrow(/cloud schema v11.*update Mizan/i);
+      settings: { ...settings, schemaVersion: 12 as 11 },
+    })).toThrow(/cloud schema v12.*update Mizan/i);
   });
 
   it("maps a full reset to empty split collections with valid settings", () => {
     const reset = emptyData();
     const cloud = appDataToCloudCollections(reset, "user_1", "2026-07-10T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(10);
+    expect(cloud.settings?.schemaVersion).toBe(11);
     expect(cloud.transactions).toEqual([]);
     expect(cloud.sharedContributions).toEqual([]);
     expect(cloud.accounts).toEqual([]);

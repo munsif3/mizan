@@ -185,11 +185,12 @@ describe("HomeView spending attribution", () => {
     expect(householdGroceries?.getAttribute("aria-label")).not.toContain("20000");
   });
 
-  it("pauses the forecast for one stale account and points to account coverage", async () => {
+  it("dates the forecast for one overdue account instead of withholding it", async () => {
     const data = fixture();
     const today = new Date();
     const todayDate = isoDateOf(today);
-    const staleDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 10);
+    // Well past a monthly statement cycle plus its grace, so genuinely overdue.
+    const staleDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 45);
     data.transactions = data.transactions.map((transaction, index) => ({
       ...transaction,
       date: todayDate,
@@ -225,7 +226,13 @@ describe("HomeView spending attribution", () => {
       />,
     ));
 
-    expect(container.textContent).toContain("Waiting for account coverage");
+    // The number stays on screen — withholding it is what makes a drifting
+    // household stop coming back. It is dated, not hidden.
+    expect(container.textContent).not.toContain("Waiting for account coverage");
+    expect(container.textContent).not.toContain("Paused");
+    expect(container.textContent).toContain("Projected save rate");
+    expect(container.textContent).toContain("projected to save");
+    // ...and the gap is still surfaced as the next action.
     expect(container.textContent).toContain("Update Sam Card");
     expect(container.textContent).not.toContain("Bring transactions up to date");
     const review = [...container.querySelectorAll("button")]

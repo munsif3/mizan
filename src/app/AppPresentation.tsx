@@ -105,6 +105,8 @@ interface PresentationUiState {
   setEfficiencyVerification: Dispatch<SetStateAction<EfficiencyOpportunity | null>>;
   csvFile: File | null;
   setCsvFile: Dispatch<SetStateAction<File | null>>;
+  statementTable: { rows: string[][]; signature: string } | null;
+  setStatementTable: Dispatch<SetStateAction<{ rows: string[][]; signature: string } | null>>;
   undoChange: UndoChange | null;
 }
 
@@ -127,6 +129,7 @@ interface PresentationActions {
   ledger: {
     addManual: (entry: ManualEntry) => void;
     importStatements: ComponentProps<typeof ImportModal>["onImport"];
+    mapStatementTable: ComponentProps<typeof ImportModal>["onMapStatement"];
     ingestTransactions: (transactions: Transaction[], failures: string[], notes?: string[]) => ImportResult;
     confirmImportedAccountCoverage: (confirmations: AccountCoverageConfirmation[]) => void;
     setTransactionCategory: (id: string, category: CategoryKey) => void;
@@ -136,6 +139,7 @@ interface PresentationActions {
     setTransactionAccount: (id: string, accountId: string) => void;
     setTransactionHolding: (id: string, holdingId: string | undefined) => void;
     categorizeMerchant: (merchant: string, rule: MerchantRule) => void;
+    categorizeMerchants: (entries: { merchant: string; rule: MerchantRule }[]) => void;
     rememberTransactionMerchant: (id: string) => void;
     undoLastLedgerChange: () => void;
     resetTransactionClassification: (id: string) => void;
@@ -426,7 +430,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
   } = model.ui;
   const {
     setTransactionCategory, setTransactionBeneficiary, setTransactionKind, setTransactionCounterparty,
-    setTransactionAccount, setTransactionHolding, categorizeMerchant, rememberTransactionMerchant,
+    setTransactionAccount, setTransactionHolding, categorizeMerchant, categorizeMerchants, rememberTransactionMerchant,
     undoLastLedgerChange, resetTransactionClassification, unlinkCommitment, confirmTransfer, rejectTransfer,
     removeTransaction,
   } = model.actions.ledger;
@@ -453,7 +457,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
                 <Icon size={18} strokeWidth={1.9} aria-hidden="true" />
                 <span>{label}</span>
                 {id === "transactions" && summary.reviewQueueCount > 0 && (
-                  <b className="nav-badge" aria-label={`${summary.reviewQueueCount} transactions need review`}>
+                  <b className="nav-badge" aria-label={`${summary.reviewQueueCount} merchants need review`}>
                     {summary.reviewQueueCount}
                   </b>
                 )}
@@ -578,6 +582,7 @@ function WorkspaceContent({ model }: { model: AppPresentationModel }) {
             onSetAccount={setTransactionAccount}
             onSetHolding={setTransactionHolding}
             onCategorizeMerchant={categorizeMerchant}
+            onCategorizeMerchants={categorizeMerchants}
             onRememberMerchant={rememberTransactionMerchant}
             onUndo={undoLastLedgerChange}
     onResetClassification={resetTransactionClassification}
@@ -620,12 +625,13 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
     todayMonth, currentMonth, summary, money, currencyMoney, transactionMoney,
   } = model.derived;
   const {
-    modal, setModal, csvFile, setCsvFile, splitTxn, setSplitTxn, incomeConfirm, setIncomeConfirm,
+    modal, setModal, csvFile, setCsvFile, statementTable, setStatementTable,
+    splitTxn, setSplitTxn, incomeConfirm, setIncomeConfirm,
     contributionConfirm, setContributionConfirm, efficiencyReview, setEfficiencyReview,
     efficiencyVerification, setEfficiencyVerification,
   } = model.ui;
   const {
-    importStatements, ingestTransactions, confirmImportedAccountCoverage, addManual,
+    importStatements, mapStatementTable, ingestTransactions, confirmImportedAccountCoverage, addManual,
     saveSplit, clearSplit, recordIncomeReceipts, removeIncomeConfirmation, unlinkIncomeEvidence,
     saveSharedContribution, removeSharedContribution,
   } = model.actions.ledger;
@@ -639,8 +645,10 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
           onImport={importStatements}
           onCsv={(file) => {
             setModal(null);
+            setStatementTable(null);
             setCsvFile(file);
           }}
+          onMapStatement={mapStatementTable}
           onReview={() => {
             setModal(null);
             setLedgerFilters(EMPTY_LEDGER_FILTERS);
@@ -653,6 +661,8 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
       {csvFile && (
         <CsvImportModal
           file={csvFile}
+          extractedRows={statementTable?.rows}
+          layoutSignature={statementTable?.signature}
           presets={data.settings.csvPresets}
           formatAmount={(transaction) =>
             `${transaction.direction === "credit" && !privacy ? "+" : ""}${transactionMoney(transaction, transaction.amount)}`}
@@ -664,7 +674,10 @@ function WorkspaceModals({ model }: { model: AppPresentationModel }) {
               settings: { ...previous.settings, csvPresets: { ...previous.settings.csvPresets, [signature]: mapping } },
             }))}
           onConfirmCoverage={confirmImportedAccountCoverage}
-          onClose={() => setCsvFile(null)}
+          onClose={() => {
+            setCsvFile(null);
+            setStatementTable(null);
+          }}
         />
       )}
       {modal?.kind === "manual" && (

@@ -4,6 +4,7 @@ import { commitmentActive, commitmentSpendAmount } from "./commitments";
 import { addMonths, daysInMonth, isoDateOf, monthOf } from "./dates";
 import { stableHash } from "./ids";
 import { cleanMerchant, matchingRuleKey } from "./rules";
+import { computeAccountCoverage, dataIsBehind } from "./accountCoverage";
 import { computeMonthSummary, isSpend, needsClassificationReview, transactionSpendAmount } from "./summary";
 import type {
   AppData,
@@ -280,9 +281,14 @@ export function computeEfficiencySnapshot(data: AppData, month: string, today: D
   const windowMonths = completedWindow(month, todayMonth);
   const monthsWithSpend = windowMonths.filter((item) => spendFacts.some((fact) => fact.month === item));
   const baselineMonths = monthsWithSpend.slice(-6);
-  const currentDataIncomplete = summary.isCurrentMonth
-    && (summary.dataAgeDays === null ? summary.dayNumber > 3 : summary.dataAgeDays >= 7);
-  const currentNeedsClassification = summary.monthTransactions.some(needsClassificationReview);
+  const currentDataIncomplete = dataIsBehind(
+    computeAccountCoverage(data.accounts, data.settings.members, today),
+    summary,
+  );
+  // Only merchants Mizan is still asking about block a comparison. The review
+  // tail is left unclassified on purpose, so testing every row here would hold
+  // trend recommendations back forever.
+  const currentNeedsClassification = summary.unresolvedCount > 0;
   const readiness: EfficiencyReadiness = currentDataIncomplete
     ? "needs_current_data"
     : currentNeedsClassification

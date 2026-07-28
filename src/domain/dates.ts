@@ -93,3 +93,20 @@ export function addMonths(month: string, count: number): string {
 export function isoDateOf(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
+
+/** "2026-07-14" + 7 -> "2026-07-21". UTC arithmetic, so DST cannot shift a day. */
+export function addDays(date: string, count: number): string {
+  const parsed = Date.parse(`${date}T00:00:00Z`);
+  if (!Number.isFinite(parsed)) return date;
+  const next = new Date(parsed + count * 86_400_000);
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`;
+}
+
+/**
+ * A day within a month, clamped to that month's length: ("2026-02", 31) is
+ * "2026-02-28". Statement cycles pinned to the 31st still land every month.
+ */
+export function dayInMonth(month: string, day: number): string {
+  const clamped = Math.min(Math.max(Math.trunc(day) || 1, 1), daysInMonth(month));
+  return `${month}-${String(clamped).padStart(2, "0")}`;
+}

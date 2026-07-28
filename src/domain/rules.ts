@@ -13,17 +13,23 @@ export function cleanMerchant(value: unknown): string {
 }
 
 /**
- * Deterministic rule lookup: an exact match on the cleaned description wins;
- * otherwise the longest rule that appears inside the description wins,
- * with alphabetical order breaking length ties. Returns null when nothing matches.
+ * Deterministic key selection: the longest key appearing inside the cleaned
+ * description wins, with alphabetical order breaking length ties. Returns null
+ * when nothing matches.
+ *
+ * Shared by household merchant rules and the starter seed table
+ * (`merchantSeeds.ts`) so Mizan has exactly one matching model. Statement text
+ * carries branch and location suffixes — "KEELLS SUPER WATTALA", "THE FAB
+ * COLOMBO 03" — so substring matching is the load-bearing behavior, and
+ * longest-wins is what lets a specific key ("UBER EATS") beat a general one
+ * ("UBER") without either needing to know about the other.
  */
-export function matchingRuleKey(description: string, rules: MerchantRules): string | null {
+export function matchingKey(description: string, keys: Iterable<string>): string | null {
   const cleaned = cleanMerchant(description);
   if (!cleaned) return null;
-  if (rules[cleaned]) return cleaned;
 
   let best: { stored: string; canonical: string } | null = null;
-  for (const key of Object.keys(rules)) {
+  for (const key of keys) {
     const candidate = cleanMerchant(key);
     if (!candidate || !cleaned.includes(candidate)) continue;
     if (!best || candidate.length > best.canonical.length
@@ -32,6 +38,17 @@ export function matchingRuleKey(description: string, rules: MerchantRules): stri
     }
   }
   return best?.stored ?? null;
+}
+
+/**
+ * Deterministic rule lookup: an exact match on the cleaned description wins;
+ * otherwise `matchingKey` selects the longest matching rule.
+ */
+export function matchingRuleKey(description: string, rules: MerchantRules): string | null {
+  const cleaned = cleanMerchant(description);
+  if (!cleaned) return null;
+  if (rules[cleaned]) return cleaned;
+  return matchingKey(cleaned, Object.keys(rules));
 }
 
 /** The rule selected by `matchingRuleKey`, or null when nothing matches. */

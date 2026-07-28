@@ -8,9 +8,13 @@ import {
   computeSpendingAttribution,
   monthsWithData,
   netAmount,
+  REVIEW_ASK_CEILING,
+  REVIEW_ASK_FLOOR,
   reviewQueue,
+  reviewTiers,
   selectableMonths,
   settleUp,
+  type ReviewItem,
 } from "./summary";
 import {
   defaultKind,
@@ -140,8 +144,38 @@ describe("computeMonthSummary", () => {
     // Same total from either month — it is the size of the queue, not of the month.
     expect(july.reviewQueueCount).toBe(2);
     expect(june.reviewQueueCount).toBe(2);
-    // ...and it agrees with the queue the badge sits above.
-    expect(reviewQueue(data.transactions).reduce((sum, item) => sum + item.count, 0)).toBe(2);
+    // ...and it agrees with the queue the badge sits above: two merchants, one decision each.
+    expect(reviewQueue(data.transactions).map((entry) => entry.merchant)).toEqual(["OLD UNKNOWN", "NEW UNKNOWN"]);
+  });
+
+  it("counts merchants to decide about, not rows, so the badge stays a day's work", () => {
+    const data = fixture();
+    // One merchant seen 40 times is still one decision.
+    for (let index = 0; index < 40; index += 1) {
+      data.transactions.push(txn(`repeat-${index}`, "2026-07-08", "SAME SHOP", 1_000, "uncategorized", "Alex Visa"));
+    }
+    const summary = computeMonthSummary(data, "2026-07", JULY_15);
+
+    expect(summary.reviewQueueCount).toBe(1);
+    expect(summary.unresolvedCount).toBe(40);
+  });
+
+  it("lets the tail go unclassified without holding the month open", () => {
+    const data = fixture();
+    // Three merchants carry the spend; thirty trivial ones must not block the check-in.
+    for (let index = 0; index < 3; index += 1) {
+      data.transactions.push(txn(`big-${index}`, "2026-07-08", `BIG ${index}`, 100_000, "uncategorized", "Alex Visa"));
+    }
+    for (let index = 0; index < 30; index += 1) {
+      data.transactions.push(txn(`small-${index}`, "2026-07-09", `SMALL ${index}`, 100, "uncategorized", "Alex Visa"));
+    }
+    const summary = computeMonthSummary(data, "2026-07", JULY_15);
+
+    // Asked about: the three that carry the money. Not: the thirty that do not.
+    expect(summary.reviewQueueCount).toBe(3);
+    expect(summary.unresolvedCount).toBe(3);
+    // The tail is still spend, and still counted.
+    expect(summary.cardSpend).toBe(120_000 + 300_000 + 3_000);
   });
 
   it("gates purpose and beneficiary ambiguity once per spend row", () => {
@@ -895,5 +929,145 @@ describe("selectableMonths", () => {
     expect(months).toHaveLength(24);
     expect(months[0]).toBe("2024-08");
     expect(months.at(-1)).toBe("2026-07");
+  });
+});
+
+describe("reviewTiers", () => {
+  /** Queue items arrive spend-sorted from `reviewQueue`; these fixtures preserve that. */
+  function item(merchant: string, total: number, options: { count?: number; unassigned?: boolean } = {}): ReviewItem {
+    return {
+      merchant,
+      count: options.count ?? 1,
+      total,
+      accountContexts: [],
+      hasUnassignedBeneficiary: options.unassigned ?? false,
+    };
+  }
+
+  function spread(count: number, amount: number, prefix = "M"): ReviewItem[] {
+    return Array.from({ length: count }, (_, index) => item(`${prefix}${index}`, amount));
+  }
+
+  it("asks only for the merchants carrying most of the unclassified spend", () => {
+    // 4 x 200 = 800 of 980 total; 80% target is 784, so the 4th is the one that clears it.
+    const queue = [...spread(4, 200, "BIG"), ...spread(36, 5, "SMALL")];
+
+    const tiers = reviewTiers(queue);
+
+    expect(tiers.worthAsking).toHaveLength(4);
+    expect(tiers.tail).toHaveLength(36);
+    expect(tiers.tailTotal).toBe(180);
+    expect(tiers.tailRowCount).toBe(36);
+  });
+
+  it("keeps asking past a single dominant merchant so the sitting is not one card", () => {
+    // The top merchant alone clears 80%, but ending there teaches almost nothing.
+    const queue = [item("DOMINANT", 900), ...spread(9, 10)];
+
+    const tiers = reviewTiers(queue);
+
+    expect(tiers.worthAsking).toHaveLength(REVIEW_ASK_FLOOR);
+    expect(tiers.tail).toHaveLength(7);
+  });
+
+  it("caps a flat distribution so a long tail cannot start an endless sitting", () => {
+    const tiers = reviewTiers(spread(20, 100));
+
+    expect(tiers.worthAsking).toHaveLength(REVIEW_ASK_CEILING);
+    expect(tiers.tail).toHaveLength(12);
+  });
+
+  it("asks for every settlement-critical merchant regardless of size, and never tails one", () => {
+    // Tiny amounts, but an unassigned beneficiary changes who owes whom.
+    const queue = [...spread(12, 500), ...Array.from({ length: 4 }, (_, i) => item(`WHO${i}`, 1, { unassigned: true }))];
+
+    const tiers = reviewTiers(queue);
+
+    expect(tiers.mustAsk).toHaveLength(4);
+    expect(tiers.worthAsking).toHaveLength(REVIEW_ASK_CEILING);
+    expect(tiers.tail.every((entry) => !entry.hasUnassignedBeneficiary)).toBe(true);
+  });
+
+  it("never asks about a solo household's beneficiary axis", () => {
+    // ADR #34: one member collapses the axis, so every gap is purpose-only.
+    const tiers = reviewTiers(spread(5, 100));
+
+    expect(tiers.mustAsk).toEqual([]);
+  });
+
+  it("partitions the queue exactly, losing and duplicating nothing", () => {
+    const queue = [
+      item("A", 900, { count: 3 }),
+      item("B", 400, { count: 2, unassigned: true }),
+      ...spread(30, 7),
+      item("C", 2, { count: 9, unassigned: true }),
+    ];
+
+    const tiers = reviewTiers(queue);
+    const recombined = [...tiers.mustAsk, ...tiers.worthAsking, ...tiers.tail];
+
+    expect(recombined).toHaveLength(queue.length);
+    expect(new Set(recombined.map((entry) => entry.merchant)).size).toBe(queue.length);
+    expect([...recombined].sort((a, b) => a.merchant.localeCompare(b.merchant)))
+      .toEqual([...queue].sort((a, b) => a.merchant.localeCompare(b.merchant)));
+  });
+
+  it("does not promote immaterial merchants as the queue gets shorter", () => {
+    // The treadmill this guards against: coverage is relative to what is left, so
+    // without an absolute floor, clearing the big merchants re-targets 80% of the
+    // crumbs and serves up the next batch forever.
+    const big = spread(4, 200, "BIG");
+    const small = spread(36, 5, "SMALL");
+    const anchorTotal = 980;
+
+    const first = reviewTiers([...big, ...small], { anchorTotal });
+    expect(first.worthAsking).toHaveLength(4);
+
+    // Answer everything asked; the crumbs are all that remain.
+    const afterAccepting = reviewTiers(small, { anchorTotal });
+    expect(afterAccepting.worthAsking).toEqual([]);
+    expect(afterAccepting.tail).toHaveLength(36);
+  });
+
+  it("still asks about material merchants that were below the first cut", () => {
+    // Terminating must not mean giving up: real merchants stay askable until answered.
+    const queue = [...spread(10, 100, "REAL")];
+    const anchorTotal = 1_000;
+
+    const first = reviewTiers(queue, { anchorTotal });
+    expect(first.worthAsking).toHaveLength(REVIEW_ASK_CEILING);
+
+    const remaining = reviewTiers(queue.slice(REVIEW_ASK_CEILING), { anchorTotal });
+    expect(remaining.worthAsking).toHaveLength(2);
+    expect(remaining.tail).toEqual([]);
+  });
+
+  it("asks about a tiny merchant when the household barely spends", () => {
+    // Materiality is relative to the household, not an absolute currency amount.
+    const queue = spread(3, 50);
+    expect(reviewTiers(queue, { anchorTotal: 150 }).worthAsking).toHaveLength(3);
+    expect(reviewTiers(queue, { anchorTotal: 5_000_000 }).worthAsking).toEqual([]);
+  });
+
+  it("handles an empty queue and an all-zero queue without asking for nothing", () => {
+    expect(reviewTiers([])).toMatchObject({ mustAsk: [], worthAsking: [], tail: [], tailTotal: 0, tailRowCount: 0 });
+
+    // Zero-value rows still deserve the floor rather than collapsing to an empty ask.
+    const zeroes = reviewTiers(spread(5, 0));
+    expect(zeroes.worthAsking).toHaveLength(REVIEW_ASK_FLOOR);
+  });
+
+  it("derives the settlement-critical flag from the real queue builder", () => {
+    const data = fixture();
+    data.transactions.push(
+      txn("purpose-gap", "2026-07-08", "UNKNOWN SHOP", 5_000, "uncategorized", "Alex Visa"),
+      txn("who-gap", "2026-07-09", "MYSTERY MART", 7_000, "transport", "Alex Visa", "debit", "expense", { type: "unassigned" }),
+    );
+
+    const queue = reviewQueue(data.transactions);
+    const tiers = reviewTiers(queue);
+
+    expect(tiers.mustAsk.map((entry) => entry.merchant)).toEqual(["MYSTERY MART"]);
+    expect(tiers.worthAsking.map((entry) => entry.merchant)).toEqual(["UNKNOWN SHOP"]);
   });
 });

@@ -122,6 +122,8 @@ export default function App() {
   const [efficiencyReview, setEfficiencyReview] = useState<EfficiencyOpportunity | null>(null);
   const [efficiencyVerification, setEfficiencyVerification] = useState<EfficiencyOpportunity | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
+  /** Rows reconstructed from a statement with no verified parser, awaiting mapping. */
+  const [statementTable, setStatementTable] = useState<{ rows: string[][]; signature: string } | null>(null);
 
   const clearUndo = useCallback(() => setUndoChange(null), []);
   const resetTransientState = useCallback(() => {
@@ -134,6 +136,7 @@ export default function App() {
     setEfficiencyReview(null);
     setEfficiencyVerification(null);
     setCsvFile(null);
+    setStatementTable(null);
   }, []);
   const session = useHouseholdSession({ clearUndo, resetTransientState });
   const {
@@ -244,9 +247,24 @@ export default function App() {
     setData((previous) => transitionAssetHoldings(previous, assetHoldings));
   }
 
+  /**
+   * Save several merchant defaults as one ledger change. Accepting a queue of
+   * suggestions is a single decision from the user's side, so it takes a single
+   * undo snapshot and a single state update rather than N of each.
+   */
+  function categorizeMerchants(entries: { merchant: string; rule: MerchantRule }[]) {
+    if (!entries.length) return;
+    rememberUndo(entries.length === 1
+      ? `Rule for ${entries[0]!.merchant}`
+      : `${entries.length} merchant rules`);
+    setData((previous) => entries.reduce(
+      (next, entry) => transitionCategorizeMerchant(next, entry.merchant, entry.rule),
+      previous,
+    ));
+  }
+
   function categorizeMerchant(merchant: string, rule: MerchantRule) {
-    rememberUndo(`Rule for ${merchant}`);
-    setData((previous) => transitionCategorizeMerchant(previous, merchant, rule));
+    categorizeMerchants([{ merchant, rule }]);
   }
 
   function addManual(entry: ManualEntry) {
@@ -344,6 +362,28 @@ export default function App() {
       }),
     }));
     setNotice(`Coverage confirmed for ${dates.size} account${dates.size === 1 ? "" : "s"}.`);
+  }
+
+  /**
+   * Read a statement no verified parser recognized as a plain table and hand it
+   * to the column mapper. The mapping step is the same explicit, user-confirmed
+   * one the CSV route uses, so an unsupported bank stops being a dead end without
+   * anything being guessed silently (ADR #12). PDF.js stays lazily imported.
+   */
+  async function mapStatementTable(file: File, password: string) {
+    try {
+      const { extractStatementTable } = await import("./import/pdfTable");
+      const table = await extractStatementTable(file, password);
+      if (!table.rows.length) {
+        setNotice(`Mizan could not read a table out of ${file.name}.`);
+        return;
+      }
+      setModal(null);
+      setStatementTable({ rows: table.rows, signature: table.signature });
+      setCsvFile(file);
+    } catch (error) {
+      setNotice(`Could not read ${file.name}: ${(error as Error).message}`);
+    }
   }
 
   async function importStatements(
@@ -629,6 +669,8 @@ export default function App() {
       setEfficiencyVerification,
       csvFile,
       setCsvFile,
+      statementTable,
+      setStatementTable,
       undoChange,
     },
     actions: {
@@ -650,6 +692,7 @@ export default function App() {
       ledger: {
         addManual,
         importStatements,
+        mapStatementTable,
         ingestTransactions,
         confirmImportedAccountCoverage,
         setTransactionCategory,
@@ -659,6 +702,7 @@ export default function App() {
         setTransactionHolding,
         setTransactionAccount,
         categorizeMerchant,
+        categorizeMerchants,
         rememberTransactionMerchant,
         undoLastLedgerChange,
         resetTransactionClassification,

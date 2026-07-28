@@ -2,7 +2,7 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { computeMonthSummary, reviewQueue } from "../domain/summary";
-import type { AppData, SpendBeneficiary } from "../domain/types";
+import type { AppData, MerchantRule, SpendBeneficiary } from "../domain/types";
 import { emptyData } from "../storage/schema";
 import { TransactionsView, type LedgerFilters } from "./TransactionsView";
 
@@ -108,8 +108,10 @@ describe("TransactionsView beneficiary and payer workflow", () => {
       onOpenImport?: () => void;
       onAddTransaction?: () => void;
       onUnlinkCommitment?: (id: string) => void;
+      onCategorizeMerchants?: (entries: { merchant: string; rule: MerchantRule }[]) => void;
     } = {},
   ) {
+    const onCategorizeMerchants = actions.onCategorizeMerchants ?? vi.fn();
     const data = fixture();
     mutateData?.(data);
     const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
@@ -135,6 +137,7 @@ describe("TransactionsView beneficiary and payer workflow", () => {
         onSetCounterparty={noop}
         onSetAccount={noop}
         onCategorizeMerchant={onCategorizeMerchant}
+        onCategorizeMerchants={onCategorizeMerchants}
         onRememberMerchant={onRememberMerchant}
         onUndo={noop}
         onResetClassification={noop}
@@ -295,12 +298,13 @@ describe("TransactionsView beneficiary and payer workflow", () => {
     expect(card?.querySelector('button[aria-label="Change movement for FRIEND LOAN"]')).toBeNull();
   });
 
-  it("shows only the next three merchants until the full queue is requested", async () => {
+  it("asks about every merchant that matters, with no artificial page size", async () => {
     await mount(
       { category: "all", beneficiary: "all", payer: "all" },
       vi.fn(),
       vi.fn(),
       (data) => {
+        // These inherit an unassigned beneficiary, so each one changes settlement.
         const base = data.transactions.find((transaction) => transaction.id === "unknown")!;
         data.transactions.push(
           { ...base, id: "unknown-two", description: "SECOND UNKNOWN", amount: 1_500 },
@@ -310,13 +314,72 @@ describe("TransactionsView beneficiary and payer workflow", () => {
       },
     );
 
-    expect(container?.querySelectorAll(".merchant-review-card")).toHaveLength(3);
-    expect(container?.textContent).toContain("2 more merchants waiting after these three.");
-    const showAll = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
-      .find((button) => button.textContent?.trim() === "Show all 5 merchants");
-    await act(async () => showAll?.click());
+    // Four settlement-critical merchants plus the one material purpose gap.
     expect(container?.querySelectorAll(".merchant-review-card")).toHaveLength(5);
-    expect(container?.textContent).toContain("Show next 3 only");
+    expect(container?.textContent).toContain("4 of these change who owes whom.");
+    const paging = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((button) => /Show all|Show next/.test(button.textContent ?? ""));
+    expect(paging).toBeUndefined();
+  });
+
+  it("stops asking about immaterial merchants and discloses them instead", async () => {
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      vi.fn(),
+      vi.fn(),
+      (data) => {
+        // Purpose-only gaps (beneficiary already resolves from the account), each
+        // far too small to be worth a decision.
+        const base = data.transactions.find((transaction) => transaction.id === "cool-planet")!;
+        for (let index = 0; index < 6; index += 1) {
+          data.transactions.push({ ...base, id: `crumb-${index}`, description: `CRUMB ${index}`, amount: 50 });
+        }
+      },
+    );
+
+    // Asked: the settlement gap and the one material purpose gap. Not: the crumbs.
+    expect(container?.querySelectorAll(".merchant-review-card")).toHaveLength(2);
+    expect(container?.textContent).toContain("6 smaller merchants");
+    expect(container?.textContent).toContain("already counted in your");
+
+    const classifyAnyway = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((button) => button.textContent?.trim() === "Classify them anyway");
+    await act(async () => classifyAnyway?.click());
+    expect(container?.querySelectorAll(".merchant-review-card")).toHaveLength(8);
+  });
+
+  it("accepts every complete suggestion as one change", async () => {
+    const onCategorizeMerchants = vi.fn();
+    await mount(
+      { category: "all", beneficiary: "all", payer: "all" },
+      vi.fn(),
+      vi.fn(),
+      (data) => {
+        // Seeded merchants: purpose comes from the starter table, and the account
+        // policy already answers who it was for, so each is a complete rule.
+        const base = data.transactions.find((transaction) => transaction.id === "cool-planet")!;
+        data.transactions.push(
+          { ...base, id: "seeded-one", description: "KEELLS SUPER WATTALA", amount: 3_000 },
+          { ...base, id: "seeded-two", description: "UBER EATS COLOMBO", amount: 3_000 },
+        );
+      },
+      false,
+      { onCategorizeMerchants },
+    );
+
+    expect(container?.textContent).toContain("Purpose suggested from Mizan's starter list");
+    const acceptAll = [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((button) => button.textContent?.trim() === "Accept all 2 suggestions");
+    expect(acceptAll).toBeDefined();
+
+    await act(async () => acceptAll?.click());
+
+    // One call, so one undo snapshot reverses the whole sitting.
+    expect(onCategorizeMerchants).toHaveBeenCalledTimes(1);
+    expect(onCategorizeMerchants.mock.calls[0]![0]).toEqual([
+      { merchant: "KEELLS SUPER WATTALA", rule: { category: "food", beneficiary: { type: "account_default" }, kind: "expense" } },
+      { merchant: "UBER EATS COLOMBO", rule: { category: "dining", beneficiary: { type: "account_default" }, kind: "expense" } },
+    ]);
   });
 
   it("shows every paying account and owner on a grouped review card", async () => {

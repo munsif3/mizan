@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { ChevronDown } from "lucide-react";
 import type { SettingsTarget } from "../app/settingsTarget";
-import { computeAccountCoverage, coverageLabel, type AccountCoverageRow } from "../domain/accountCoverage";
+import { computeAccountCoverage, coverageLabel, dataIsBehind, type AccountCoverageRow } from "../domain/accountCoverage";
 import { assetTypeLabel } from "../domain/assets";
 import { commitmentExpectedAmount, commitmentMatchedTransactions } from "../domain/commitments";
 import { monthLabel } from "../domain/dates";
@@ -731,16 +731,24 @@ function useHomeViewModel({
   const movementRows = s.movementRows.filter((row) => row.value > 0 || row.delta !== 0);
   const coverageNeedsUpdate = coverageRows.some((row) => row.status !== "current");
   const waitingForCoverage = s.isCurrentMonth && coverageRows.length > 0 && coverageNeedsUpdate;
-  const dataNeedsUpdate = s.isCurrentMonth && (coverageRows.length
-    ? coverageNeedsUpdate
-    : (s.dataAgeDays === null ? s.dayNumber > 3 : s.dataAgeDays >= 7));
+  const dataNeedsUpdate = dataIsBehind(coverageRows, s);
   const checkInTimestamp = Date.parse(lastCheckInAt);
   const checkInDays = Number.isFinite(checkInTimestamp)
     ? Math.max(0, Math.floor((Date.now() - checkInTimestamp) / 86_400_000))
     : null;
   const weeklyCheckInDue = s.isCurrentMonth && (checkInDays === null || checkInDays >= 7);
   const checkInReady = !dataNeedsUpdate && s.unresolvedCount === 0;
-  const forecastReady = hasActivity && (!s.isCurrentMonth || !dataNeedsUpdate);
+  // With no activity there is genuinely nothing to project from. Stale data is a
+  // different case: the number is computable, just based on older evidence. Hiding
+  // it there withheld the one figure that brings a drifting household back, exactly
+  // when they had drifted — so the forecast is now dated, never withheld.
+  const forecastReady = hasActivity;
+  const forecastIsDated = hasActivity && s.isCurrentMonth && dataNeedsUpdate;
+  const forecastBasis = !forecastIsDated
+    ? ""
+    : s.latestTransactionDate
+      ? `Based on activity through ${s.latestTransactionDate}`
+      : "Based on the activity recorded so far";
   const fixedCommitmentsNeedReview = s.attribution.fixedCommitments.unassigned > 0
     || s.attribution.fixedCommitments.purposeRows.some((row) => row.key === "uncategorized");
   const freshnessLabel = !s.isCurrentMonth
@@ -828,7 +836,7 @@ function useHomeViewModel({
           priority: HOME_ACTION_PRIORITY.classification,
           count: s.unresolvedCount,
           title: "Classify new spending",
-          body: `${s.unresolvedCount} transaction${s.unresolvedCount === 1 ? "" : "s"} need a purpose or who it was for before the month is trustworthy.`,
+          body: `${s.unresolvedCount} transaction${s.unresolvedCount === 1 ? "" : "s"} need a purpose or who it was for. Spend totals already include them — this sharpens the breakdown and settlement.`,
           target: { kind: "button" as const, label: "Review queue", onSelect: onReviewQueue },
         }]
       : []),
@@ -939,7 +947,7 @@ function useHomeViewModel({
     financialValuesHidden, onConfirmIncome, candidates, onAddOneOffIncome, attentionItems,
     visibleAttentionItems, showAllActions, setShowAllActions, onOpenTransactions, efficiency, onReviewEfficiency,
     onVerifyEfficiency, hasActiveEfficiencyPlan, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
-    waitingForCoverage,
+    waitingForCoverage, forecastIsDated, forecastBasis,
   };
 }
 
@@ -948,7 +956,7 @@ type HomeViewModel = ReturnType<typeof useHomeViewModel>;
 function HomeHeroSummary({ model }: { model: HomeViewModel }) {
   const {
     s, onTrack, forecastReady, money, financialValuesHidden, percent, solo,
-    waitingForCoverage, freshnessLabel,
+    waitingForCoverage, freshnessLabel, forecastIsDated, forecastBasis,
   } = model;
   return (
     <>
@@ -966,12 +974,19 @@ function HomeHeroSummary({ model }: { model: HomeViewModel }) {
             <p>
               At the current pace, you are projected to save <b><MoneyValue formatted={money(s.projectedSaved)} hidden={financialValuesHidden} /></b>. {solo ? "Your" : "The shared"} target
               is a <MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
+              {forecastIsDated && (
+                <>
+                  {" "}
+                  <span className="muted">
+                    {forecastBasis}
+                    {waitingForCoverage ? ", so it will move once every account is confirmed." : ", so it will move as you catch up."}
+                  </span>
+                </>
+              )}
             </p>
           ) : (
             <p>
-              {waitingForCoverage
-                ? "The forecast is paused until every active account has a current coverage confirmation."
-                : "The forecast is paused until this month has current transactions."} Your {solo ? "" : "shared "}target remains a
+              Import or add this month's activity and Mizan will read it. Your {solo ? "" : "shared "}target remains a
               {" "}<MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
             </p>
           )}
@@ -985,14 +1000,13 @@ function HomeHeroSummary({ model }: { model: HomeViewModel }) {
                 <span style={{ width: financialValuesHidden ? "0%" : `${Math.max(0, Math.min(100, s.projectedSaveRate))}%` }} />
                 <i style={{ left: financialValuesHidden ? "0%" : `${s.targetSaveRate}%` }} />
               </div>
+              {forecastIsDated && <p className="muted">{freshnessLabel}</p>}
             </>
           ) : (
             <>
               <span>Forecast status</span>
-              <strong className="forecast-paused">{waitingForCoverage ? "Waiting for account coverage" : "Waiting for activity"}</strong>
-              <p>{waitingForCoverage
-                ? freshnessLabel
-                : s.latestTransactionDate ? `Latest activity: ${s.latestTransactionDate}` : "No transactions recorded yet"}</p>
+              <strong className="forecast-paused">Waiting for activity</strong>
+              <p>{s.latestTransactionDate ? `Latest activity: ${s.latestTransactionDate}` : "No transactions recorded yet"}</p>
             </>
           )}
         </div>
@@ -1002,7 +1016,10 @@ function HomeHeroSummary({ model }: { model: HomeViewModel }) {
         <div><span>Available income</span><strong><MoneyValue formatted={money(s.incomeTotal)} hidden={financialValuesHidden} /></strong></div>
         <div><span>Recorded spend</span><strong><MoneyValue formatted={money(s.attribution.recordedSpend)} hidden={financialValuesHidden} /></strong></div>
         <div><span>Plan remaining</span><strong><MoneyValue formatted={money(Math.max(0, s.targetSpend - s.totalSpend))} hidden={financialValuesHidden} /></strong></div>
-        <div><span>Projected saving</span><strong>{forecastReady ? <MoneyValue formatted={money(s.projectedSaved)} hidden={financialValuesHidden} /> : "Paused"}</strong></div>
+        <div>
+          <span>Projected saving</span>
+          <strong>{forecastReady ? <MoneyValue formatted={money(s.projectedSaved)} hidden={financialValuesHidden} /> : "—"}</strong>
+        </div>
       </section>
 
     </>
@@ -1099,7 +1116,7 @@ function HomeActionControl({
 function HomeAttentionSection({ model }: { model: HomeViewModel }) {
   const {
     hasActivity, attentionItems, forecastReady, onTrack, visibleAttentionItems,
-    setShowAllActions, showAllActions,
+    setShowAllActions, showAllActions, forecastIsDated,
   } = model;
   return (
     <>
@@ -1111,10 +1128,12 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
           </div>
           <p>
             {!forecastReady
-              ? "Forecast paused until the ledger is current."
-              : onTrack
-                ? "Savings pace is currently on target."
-                : "A small adjustment keeps the month readable."}
+              ? "Add this month's activity to read the forecast."
+              : forecastIsDated
+                ? "Savings pace is read from the activity recorded so far."
+                : onTrack
+                  ? "Savings pace is currently on target."
+                  : "A small adjustment keeps the month readable."}
           </p>
         </div>
         <div className="attention-grid">

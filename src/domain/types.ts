@@ -159,6 +159,18 @@ export type AccountOwner = MemberId | "joint" | "unassigned";
 /** How a registered account supplies the beneficiary for otherwise unresolved spend. */
 type AccountBeneficiaryDefault = "owner" | "household" | "review";
 
+/**
+ * How often this account produces a statement, and so how long its coverage stays
+ * current. Judging every account against a flat week made a monthly-statement
+ * household permanently "behind" from day 8 of every month, which is a false
+ * alarm the user can do nothing about. Never inferred from history (ADR #36).
+ */
+export interface AccountCadence {
+  period: "weekly" | "monthly" | "manual";
+  /** Day of month the statement closes; defaults to the confirmed coverage day. */
+  dueDay?: number;
+}
+
 export interface Account {
   id: string;
   /** display label, e.g. "Everyday Visa", "Joint Savings" */
@@ -175,6 +187,8 @@ export interface Account {
   inactiveFrom?: string;
   /** Explicit evidence that this account has been reviewed through a date. */
   coverage?: AccountCoverage;
+  /** Statement rhythm. Absent means monthly, the common case for a bank statement. */
+  cadence?: AccountCadence;
   /**
    * case-insensitive substrings matched against the account text detected in a
    * statement (card number fragment, bank name) or the statement file name;
@@ -488,7 +502,7 @@ export interface MerchantRule {
 export type MerchantRules = Record<string, MerchantRule>;
 
 export interface AppData {
-  schemaVersion: 17;
+  schemaVersion: 18;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
   merchantRules: MerchantRules;

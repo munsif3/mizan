@@ -7,6 +7,7 @@ import { GlobalWorkerOptions, PasswordResponses, getDocument, type PDFDocumentPr
 interface PositionedTextItem {
   str: string;
   transform: number[];
+  width?: number;
 }
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import { assertPdfPageCount, assertStatementFiles } from "../security/resourceLimits";
@@ -18,10 +19,23 @@ if (typeof Worker !== "undefined") {
   GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 }
 
+/** One text run with the horizontal span it occupies, used to rebuild columns. */
+export interface PdfCell {
+  x: number;
+  width: number;
+  text: string;
+}
+
 export interface PdfLine {
   y: number;
   /** cells left-to-right; a "cell" is a run of text items that sit close together on the same line */
   cells: string[];
+  /**
+   * The same runs with their horizontal spans kept. Bank-specific parsers read
+   * `cells`; generic table reconstruction needs the geometry, because which
+   * column a run belongs to is a fact about position, not order.
+   */
+  positioned: PdfCell[];
 }
 
 function errorMessage(error: unknown): string {
@@ -96,24 +110,21 @@ export async function extractLines(doc: PDFDocumentProxy): Promise<PdfLine[]> {
       (item) => "str" in item && Boolean(item.str.trim()),
     ) as PositionedTextItem[];
 
-    const rows = new Map<number, { x: number; text: string }[]>();
+    const rows = new Map<number, PdfCell[]>();
     for (const item of items) {
       const y = Math.round(item.transform[5] ?? 0);
       const bucket = [...rows.keys()].find((existingY) => Math.abs(existingY - y) <= 2) ?? y;
       const row = rows.get(bucket) ?? [];
-      row.push({ x: item.transform[4] ?? 0, text: item.str.trim() });
+      row.push({ x: item.transform[4] ?? 0, width: Math.max(0, Number(item.width) || 0), text: item.str.trim() });
       rows.set(bucket, row);
     }
 
     const pageLines = [...rows.entries()]
       .sort((a, b) => b[0] - a[0])
-      .map(([y, entries]) => ({
-        y,
-        cells: entries
-          .sort((a, b) => a.x - b.x)
-          .map((entry) => entry.text)
-          .filter(Boolean),
-      }));
+      .map(([y, entries]) => {
+        const positioned = entries.sort((a, b) => a.x - b.x).filter((entry) => entry.text);
+        return { y, cells: positioned.map((entry) => entry.text), positioned };
+      });
     lines.push(...pageLines);
   }
   return lines;

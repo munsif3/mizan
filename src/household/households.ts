@@ -136,8 +136,8 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
     // Split-cloud v4 stored AppData v10 semantics; v5 added beneficiaries,
     // v6 recurring-commitment payment types, v7 scheduled income sources,
     // v8 household-shared efficiency plans, v9 lifecycle/coverage evidence,
-    // and v10 asset holdings plus reconciled commitments.
-    schemaVersion: cloudSchemaVersion >= 10 ? 17 : cloudSchemaVersion >= 9 ? 16 : cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
+    // v10 asset holdings plus reconciled commitments, and v11 account statement cadence.
+    schemaVersion: cloudSchemaVersion >= 11 ? 18 : cloudSchemaVersion >= 10 ? 17 : cloudSchemaVersion >= 9 ? 16 : cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
     transactions: collections.transactions ?? [],
     sharedContributions: collections.sharedContributions ?? [],
     merchantRules,

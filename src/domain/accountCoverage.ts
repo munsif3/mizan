@@ -1,12 +1,40 @@
+import { addDays, addMonths, dayInMonth, monthOf } from "./dates";
 import { accountActiveOn } from "./memberLifecycle";
-import type { Account, Member, Transaction } from "./types";
+import type { Account, AccountCadence, Member, Transaction } from "./types";
+
+/**
+ * Days after a statement cycle closes before the account counts as behind. A
+ * statement does not appear the instant its period ends, and the household still
+ * has to fetch it, so the deadline is the cycle end plus this.
+ */
+const COVERAGE_GRACE_DAYS = 5;
 
 export interface AccountCoverageRow {
   account: Account;
   ownerLabel: string;
   throughDate: string;
   ageDays: number | null;
+  /** When the next statement is expected. Null for manual accounts, which never go stale. */
+  nextExpectedDate: string | null;
   status: "current" | "stale" | "missing";
+}
+
+/**
+ * The date the next statement is expected to close, given confirmed coverage and
+ * the account's rhythm. Absent cadence means monthly — the common case for a bank
+ * statement, and the assumption that keeps existing households out of a permanent
+ * false alarm. Returns null when the account is never automatically stale.
+ */
+function nextExpectedCoverage(throughDate: string, cadence: AccountCadence | undefined): string | null {
+  if (!throughDate) return null;
+  const period = cadence?.period ?? "monthly";
+  if (period === "manual") return null;
+  if (period === "weekly") return addDays(throughDate, 7);
+  // No explicit closing day: assume the same day next month.
+  if (!cadence?.dueDay) return dayInMonth(addMonths(monthOf(throughDate), 1), Number(throughDate.slice(8, 10)));
+  // An explicit closing day: the next occurrence strictly after the covered date.
+  const thisMonth = dayInMonth(monthOf(throughDate), cadence.dueDay);
+  return thisMonth > throughDate ? thisMonth : dayInMonth(addMonths(monthOf(throughDate), 1), cadence.dueDay);
 }
 
 export interface ImportedAccountCoverageCandidate {
@@ -45,11 +73,17 @@ function calendarAgeDays(throughDate: string, today: Date): number | null {
   return Math.max(0, Math.floor((current - through) / 86_400_000));
 }
 
+/**
+ * Freshness per active account, judged against each account's own statement
+ * rhythm rather than a flat week. A monthly account confirmed through the 1st is
+ * current all month; it is only behind once its next statement is genuinely
+ * overdue. Crying wolf every month trains the household to ignore the signal.
+ */
 export function computeAccountCoverage(
   accounts: Account[],
   members: Member[],
   today: Date,
-  staleAfterDays = 7,
+  graceDays = COVERAGE_GRACE_DAYS,
 ): AccountCoverageRow[] {
   const date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
   const names = new Map(members.map((member) => [member.id, member.name]));
@@ -58,6 +92,8 @@ export function computeAccountCoverage(
     .map((account) => {
       const throughDate = account.coverage?.throughDate ?? "";
       const ageDays = calendarAgeDays(throughDate, today);
+      const nextExpectedDate = nextExpectedCoverage(throughDate, account.cadence);
+      const overdue = nextExpectedDate !== null && date > addDays(nextExpectedDate, graceDays);
       return {
         account,
         ownerLabel: account.owner === "joint"
@@ -67,7 +103,8 @@ export function computeAccountCoverage(
             : names.get(account.owner) ?? "Former member",
         throughDate,
         ageDays,
-        status: ageDays === null ? "missing" as const : ageDays >= staleAfterDays ? "stale" as const : "current" as const,
+        nextExpectedDate,
+        status: ageDays === null ? "missing" as const : overdue ? "stale" as const : "current" as const,
       };
     })
     .sort((left, right) => {
@@ -76,6 +113,22 @@ export function computeAccountCoverage(
         || (right.ageDays ?? Number.MAX_SAFE_INTEGER) - (left.ageDays ?? Number.MAX_SAFE_INTEGER)
         || left.account.label.localeCompare(right.account.label);
     });
+}
+
+/**
+ * Whether the household's evidence is behind for the selected month. Registered
+ * accounts are the authority when they exist, so freshness follows each account's
+ * own statement rhythm; without any registry, fall back to the age of the newest
+ * recorded row. One definition, so Home and the efficiency engine cannot disagree
+ * about whether the household is up to date.
+ */
+export function dataIsBehind(
+  coverageRows: AccountCoverageRow[],
+  month: { isCurrentMonth: boolean; dataAgeDays: number | null; dayNumber: number },
+): boolean {
+  if (!month.isCurrentMonth) return false;
+  if (coverageRows.length) return coverageRows.some((row) => row.status !== "current");
+  return month.dataAgeDays === null ? month.dayNumber > 3 : month.dataAgeDays >= 7;
 }
 
 export function coverageLabel(rows: AccountCoverageRow[]): string {

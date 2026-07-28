@@ -13,6 +13,7 @@ import { defaultKind, RESERVED_IDS } from "../domain/types";
 import { isCsvMapping } from "../import/csvMap";
 import type {
   Account,
+  AccountCadence,
   AppData,
   AssetHolding,
   AssetStatus,
@@ -45,7 +46,7 @@ import type {
 } from "../domain/types";
 import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-const SCHEMA_VERSION = 17 as const;
+const SCHEMA_VERSION = 18 as const;
 
 const MOVEMENT_KINDS = new Set<MovementKind>(MOVEMENT_OPTIONS.map((option) => option.kind));
 const ASSET_TYPES = new Set<AssetType>([
@@ -53,6 +54,7 @@ const ASSET_TYPES = new Set<AssetType>([
   "insurance_policy", "retirement", "gold", "other",
 ]);
 const ASSET_STATUSES = new Set<AssetStatus>(["active", "matured", "closed"]);
+const CADENCE_PERIODS = new Set<AccountCadence["period"]>(["weekly", "monthly", "manual"]);
 
 function asKind(value: unknown, direction: "debit" | "credit"): MovementKind {
   return typeof value === "string" && MOVEMENT_KINDS.has(value as MovementKind) ? (value as MovementKind) : defaultKind(direction);
@@ -367,6 +369,17 @@ function asAccount(value: unknown, index = 0): Account | null {
         source: coverageRaw?.source === "statement" ? "statement" as const : "manual" as const,
       }
     : undefined;
+  // v17 -> v18. Absent cadence means monthly, so pre-v18 accounts keep working
+  // without a rewrite; only an explicitly chosen rhythm is stored.
+  const cadenceRaw = raw.cadence && typeof raw.cadence === "object" ? raw.cadence as Record<string, unknown> : null;
+  const period = CADENCE_PERIODS.has(cadenceRaw?.period as AccountCadence["period"])
+    ? cadenceRaw!.period as AccountCadence["period"]
+    : null;
+  const dueDayNumber = Math.trunc(Number(cadenceRaw?.dueDay));
+  const dueDay = Number.isFinite(dueDayNumber) && dueDayNumber >= 1 && dueDayNumber <= 31 ? dueDayNumber : 0;
+  const cadence = period
+    ? { period, ...(period === "monthly" && dueDay ? { dueDay } : {}) }
+    : undefined;
   return {
     id: String(raw.id ?? "") || stableId("acc", raw, index),
     label,
@@ -376,6 +389,7 @@ function asAccount(value: unknown, index = 0): Account | null {
     ...(activeFrom ? { activeFrom } : {}),
     ...(inactiveFrom && (!activeFrom || inactiveFrom > activeFrom) ? { inactiveFrom } : {}),
     ...(coverage ? { coverage } : {}),
+    ...(cadence ? { cadence } : {}),
     match,
   };
 }

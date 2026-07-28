@@ -235,7 +235,7 @@ describe("migrate (v7 income portions)", () => {
       schemaVersion: 6,
       settings: { members: [{ id: "m", name: "Member", color: "#123456", income: 1000 }], currency: "LKR" },
     });
-    expect(data.schemaVersion).toBe(17);
+    expect(data.schemaVersion).toBe(18);
     expect(data.settings.members[0]?.portions).toEqual([
       { id: "por_m", label: "Monthly income", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" },
     ]);
@@ -322,7 +322,7 @@ describe("migrate (v13 -> v14 scheduled income)", () => {
       },
       incomeReceipts: [{ id: "old", month: "2026-07", memberId: "m", portionId: "salary", amount: 1100 }],
     });
-    expect(data.schemaVersion).toBe(17);
+    expect(data.schemaVersion).toBe(18);
     expect(data.settings.members[0]?.portions[0]).toMatchObject({
       schedule: { frequency: "monthly" },
       budgetTreatment: "ordinary",
@@ -425,7 +425,7 @@ describe("migrate (v11 -> v12 purpose and beneficiary classification)", () => {
 
   it("preserves purpose categories and separates valid legacy personal beneficiaries", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(17);
+    expect(data.schemaVersion).toBe(18);
     expect(data.transactions.map(({ id, category, beneficiary }) => ({ id, category, beneficiary }))).toEqual([
       { id: "shared", category: "food", beneficiary: { type: "household" } },
       { id: "personal", category: "uncategorized", beneficiary: { type: "member", memberId: "sam" } },
@@ -556,7 +556,7 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
 
   it("preserves valid statement-backed contribution links", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(17);
+    expect(data.schemaVersion).toBe(18);
     expect(data.sharedContributions).toEqual([{
       id: "c1",
       allocations: [{ expenseTransactionId: "loan", amount: 125000 }],
@@ -701,7 +701,7 @@ describe("schema v16 household continuity", () => {
         },
       }],
     });
-    expect(current.schemaVersion).toBe(17);
+    expect(current.schemaVersion).toBe(18);
     expect(current.settings.members[0]?.lifecycle).toMatchObject({ inactiveReason: "left" });
     expect(current.accounts[0]?.coverage?.throughDate).toBe("2026-07-31");
 
@@ -782,7 +782,7 @@ describe("schema v17 holdings, commitments, and transfer decisions", () => {
       ],
     });
 
-    expect(data.schemaVersion).toBe(17);
+    expect(data.schemaVersion).toBe(18);
     expect(data.assetHoldings[0]).toMatchObject({ id: "policy", owner: "unassigned" });
     expect(data.assetHoldings[0]?.linkedAccountId).toBeUndefined();
     expect(data.fixedCosts[0]).toMatchObject({ holdingId: "policy", totalAmount: 1_106_043 });
@@ -792,5 +792,59 @@ describe("schema v17 holdings, commitments, and transfer decisions", () => {
       linkedTransferId: "credit",
     });
     expect(data.transactions[0]?.rejectedTransferIds).toBeUndefined();
+  });
+});
+
+describe("schema v17 -> v18 account statement cadence", () => {
+  const v17Account = {
+    id: "ntb", label: "NTB card", owner: "owner", beneficiaryDefault: "review", match: ["NTB"],
+    coverage: { throughDate: "2026-07-01", confirmedAt: "2026-07-01T00:00:00.000Z", confirmedByUid: "u1", source: "manual" },
+  };
+  const base = {
+    schemaVersion: 17,
+    settings: { currency: "LKR", members: [{ id: "owner", name: "Owner", color: "#fff", portions: [] }] },
+  };
+
+  it("carries a v17 account forward without inventing a cadence", () => {
+    // Absence means monthly, so pre-v18 households behave correctly without a
+    // mass document rewrite on first load.
+    const data = migrate({ ...base, accounts: [v17Account] });
+    expect(data.schemaVersion).toBe(18);
+    expect(data.accounts[0]?.cadence).toBeUndefined();
+    expect(data.accounts[0]?.coverage?.throughDate).toBe("2026-07-01");
+  });
+
+  it("round-trips an explicit cadence", () => {
+    const data = migrate({
+      ...base,
+      schemaVersion: 18,
+      accounts: [{ ...v17Account, cadence: { period: "monthly", dueDay: 25 } }],
+    });
+    expect(data.accounts[0]?.cadence).toEqual({ period: "monthly", dueDay: 25 });
+    expect(migrate(data).accounts[0]?.cadence).toEqual({ period: "monthly", dueDay: 25 });
+  });
+
+  it("drops a nonsense cadence rather than trusting it", () => {
+    const data = migrate({
+      ...base,
+      accounts: [
+        { ...v17Account, id: "a", cadence: { period: "fortnightly" } },
+        { ...v17Account, id: "b", cadence: { period: "monthly", dueDay: 99 } },
+        { ...v17Account, id: "c", cadence: "monthly" },
+        // A closing day is meaningless without a monthly cycle.
+        { ...v17Account, id: "d", cadence: { period: "weekly", dueDay: 12 } },
+      ],
+    });
+    expect(data.accounts.map((account) => account.cadence)).toEqual([
+      undefined,
+      { period: "monthly" },
+      undefined,
+      { period: "weekly" },
+    ]);
+  });
+
+  it("refuses data written by a newer schema instead of dropping the new field", () => {
+    expect(() => migrate({ ...base, schemaVersion: 19, accounts: [v17Account] }))
+      .toThrow(/schema v19.*Update Mizan/i);
   });
 });

@@ -7,6 +7,7 @@ import { movementInfo } from "../../domain/movements";
 import {
   uid,
   type Account,
+  type AccountCadence,
   type AppData,
   type CategoryKey,
   type MerchantRule,
@@ -292,7 +293,29 @@ export function AccountRuleSettings({
                     })}
                   />
                 </label>
+                <label className="field">
+                  <span>Statement arrives</span>
+                  <select
+                    aria-label={`${accountDraft.label || "Account"} statement cadence`}
+                    value={accountDraft.cadence?.period ?? "monthly"}
+                    onChange={(event) => {
+                      const period = event.target.value as AccountCadence["period"];
+                      setAccountDraft({
+                        ...accountDraft,
+                        cadence: period === "monthly" ? undefined : { period },
+                      });
+                    }}
+                  >
+                    <option value="monthly">Monthly</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="manual">No statement — I add these myself</option>
+                  </select>
+                </label>
               </div>
+              <p className="muted">
+                Freshness is judged against this rhythm, so a monthly account stays current
+                all month instead of looking behind a week after every statement.
+              </p>
               <details open={Boolean(accountDraft.match.length)}>
                 <summary>Match imported payments</summary>
                 <label className="field">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, RotateCcw, Scissors, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { ownerOfTransaction } from "../domain/accounts";
 import { categoryOptions, spendingCategoryOptions } from "../domain/categories";
@@ -6,11 +6,16 @@ import { contributionReferencesTransaction } from "../domain/contributions";
 import { monthLabel } from "../domain/dates";
 import { isSpendKind, kindAllowedFor, kindNeedsCategory, kindNeedsCounterparty, movementInfo, MOVEMENT_OPTIONS } from "../domain/movements";
 import { cleanMerchant } from "../domain/rules";
-import { isSpend, needsClassificationReview, netAmount, spendTotal, type MonthSummary, type ReviewItem } from "../domain/summary";
+import { isSpend, needsClassificationReview, netAmount, reviewTiers, spendTotal, type MonthSummary, type ReviewItem } from "../domain/summary";
 import type { TransferCandidate } from "../domain/transfers";
 import { defaultKind, type Account, type AssetHolding, type CategoryKey, type Counterparty, type CustomCategory, type MerchantRule, type Member, type MovementKind, type SharedContribution, type SpendBeneficiary, type Transaction } from "../domain/types";
 import { Button, ConfirmDialog, EmptyState, IconButton, Modal, MoneyValue, StatusBadge } from "./bits";
-import { ruleBeneficiaryValue, ruleFromControls, type RuleBeneficiaryValue } from "./ruleFields";
+import {
+  reviewControlDefaults,
+  reviewControlsComplete,
+  ruleFromControls,
+  type RuleBeneficiaryValue,
+} from "./ruleFields";
 
 export type BeneficiaryFilter = "all" | "household" | "unassigned" | `member:${string}`;
 export type PayerFilter = "all" | "joint" | `member:${string}`;
@@ -58,6 +63,7 @@ function useTransactionsViewModel({
   onSetHolding = () => undefined,
   onSetAccount,
   onCategorizeMerchant,
+  onCategorizeMerchants,
   onRememberMerchant,
   onUndo,
   onResetClassification,
@@ -95,6 +101,7 @@ function useTransactionsViewModel({
   onSetHolding?: (id: string, holdingId: string | undefined) => void;
   onSetAccount: (id: string, accountId: string) => void;
   onCategorizeMerchant: (merchant: string, rule: MerchantRule) => void;
+  onCategorizeMerchants: (entries: { merchant: string; rule: MerchantRule }[]) => void;
   onRememberMerchant: (id: string) => void;
   onUndo: () => void;
   onResetClassification: (id: string) => void;
@@ -348,7 +355,8 @@ function useTransactionsViewModel({
   return {
     summary, members, accounts, assetHoldings, customCategories, counterparties, queue, transferCandidates,
     undoLabel, filters, onFiltersChange, money, transactionMoney, financialValuesHidden, solo,
-    onCategorizeMerchant, onUndo, onResetClassification, onUnlinkCommitment, onConfirmTransfer, onDismissTransfer,
+    onCategorizeMerchant, onCategorizeMerchants, onUndo, onResetClassification, onUnlinkCommitment,
+    onConfirmTransfer, onDismissTransfer,
     onSplit, onRemove, onOpenImport, onAddTransaction, linkedIncome,
     allOptions, accountFilter, setAccountFilter, movementFilter, setMovementFilter,
     filtersOpen, setFiltersOpen, reviewOpen, setReviewOpen, setSelectedTransactionId,
@@ -362,15 +370,50 @@ function useTransactionsViewModel({
 type TransactionsViewModel = ReturnType<typeof useTransactionsViewModel>;
 
 function TransactionReviewSections({ model }: { model: TransactionsViewModel }) {
-  const [showAllReviews, setShowAllReviews] = useState(false);
-  useEffect(() => setShowAllReviews(false), [model.summary.month]);
+  const [showTail, setShowTail] = useState(false);
+  useEffect(() => setShowTail(false), [model.summary.month]);
   const {
     undoLabel, onUndo, transferCandidates, money, financialValuesHidden, onConfirmTransfer,
     onDismissTransfer, queue, reviewOpen, setReviewOpen, members, accounts, assetHoldings, customCategories,
-    counterparties, onCategorizeMerchant,
+    counterparties, onCategorizeMerchant, onCategorizeMerchants, summary, solo,
   } = model;
-  const visibleQueue = showAllReviews ? queue : queue.slice(0, 3);
-  const remainingReviews = Math.max(0, queue.length - visibleQueue.length);
+
+  const tiers = useMemo(
+    () => reviewTiers(queue, { anchorTotal: summary.totalSpend }),
+    [queue, summary.totalSpend],
+  );
+  // Settlement-critical merchants first: they change who owes whom, not just a chart.
+  const asked = useMemo(() => [...tiers.mustAsk, ...tiers.worthAsking], [tiers]);
+  // Only merchants whose suggestion is already a complete rule can be accepted in bulk.
+  const acceptable = useMemo(
+    () => asked
+      .map((item) => ({ item, controls: reviewControlDefaults(item) }))
+      .filter(({ controls }) => reviewControlsComplete(controls, solo)),
+    [asked, solo],
+  );
+
+  const acceptAllSuggestions = () => onCategorizeMerchants(acceptable.map(({ item, controls }) => ({
+    merchant: item.merchant,
+    rule: ruleFromControls(
+      controls.kind, controls.category, controls.beneficiary, controls.counterpartyId, solo, controls.holdingId,
+    ),
+  })));
+
+  const reviewCardFor = (item: ReviewItem) => (
+    <ReviewCard
+      key={item.merchant}
+      item={item}
+      members={members}
+      accounts={accounts}
+      assetHoldings={assetHoldings}
+      customCategories={customCategories}
+      counterparties={counterparties}
+      money={money}
+      financialValuesHidden={financialValuesHidden}
+      onCategorize={onCategorizeMerchant}
+    />
+  );
+
   return (
     <>
       {undoLabel && (
@@ -417,45 +460,59 @@ function TransactionReviewSections({ model }: { model: TransactionsViewModel }) 
         </section>
       )}
 
-      {queue.length > 0 && (
+      {asked.length > 0 && (
         <section className="friendly-section review-strip merchant-review-strip">
           <div className="review-queue-heading">
             <div>
               <span className="soft-label">Review queue</span>
-              <h3>{queue.length} merchant{queue.length === 1 ? "" : "s"} need a default</h3>
+              <h3>{asked.length} merchant{asked.length === 1 ? "" : "s"} need a default</h3>
             </div>
             <div className="review-queue-actions">
               <p>
                 Set purpose and who it was for once. Matching history and future imports follow that default.
-                {reviewOpen && remainingReviews > 0
-                  ? ` ${remainingReviews} more merchant${remainingReviews === 1 ? "" : "s"} waiting after these three.`
+                {tiers.mustAsk.length > 0
+                  ? ` ${tiers.mustAsk.length} of these change${tiers.mustAsk.length === 1 ? "s" : ""} who owes whom.`
                   : ""}
               </p>
               <Button variant="secondary" aria-expanded={reviewOpen} onClick={() => setReviewOpen((current) => !current)}>
                 {reviewOpen ? "Hide review queue" : "Review merchants"}
               </Button>
-              {reviewOpen && queue.length > 3 && (
-                <Button variant="secondary" onClick={() => setShowAllReviews((current) => !current)}>
-                  {showAllReviews ? "Show next 3 only" : `Show all ${queue.length} merchants`}
+              {reviewOpen && acceptable.length > 1 && (
+                <Button variant="primary" onClick={acceptAllSuggestions}>
+                  Accept all {acceptable.length} suggestions
                 </Button>
               )}
             </div>
           </div>
           {reviewOpen && <div className="review-list merchant-review-list">
-            {visibleQueue.map((item) => (
-              <ReviewCard
-                key={item.merchant}
-                item={item}
-                members={members}
-                accounts={accounts}
-                assetHoldings={assetHoldings}
-                customCategories={customCategories}
-                counterparties={counterparties}
-                money={money}
-                financialValuesHidden={financialValuesHidden}
-                onCategorize={onCategorizeMerchant}
-              />
-            ))}
+            {asked.map(reviewCardFor)}
+          </div>}
+        </section>
+      )}
+
+      {tiers.tail.length > 0 && (
+        <section className="friendly-section review-strip merchant-review-strip">
+          <div className="review-queue-heading">
+            <div>
+              <span className="soft-label">Not asking about these</span>
+              <h3>
+                {tiers.tail.length} smaller merchant{tiers.tail.length === 1 ? "" : "s"}
+                {" · "}
+                <MoneyValue formatted={money(tiers.tailTotal)} hidden={financialValuesHidden} />
+              </h3>
+            </div>
+            <div className="review-queue-actions">
+              <p>
+                {tiers.tailRowCount} transaction{tiers.tailRowCount === 1 ? "" : "s"} already counted in your
+                spend and save rate. Classifying them sharpens the breakdown and nothing else, so Mizan stopped asking.
+              </p>
+              <Button variant="secondary" aria-expanded={showTail} onClick={() => setShowTail((current) => !current)}>
+                {showTail ? "Hide these" : "Classify them anyway"}
+              </Button>
+            </div>
+          </div>
+          {showTail && <div className="review-list merchant-review-list">
+            {tiers.tail.map(reviewCardFor)}
           </div>}
         </section>
       )}
@@ -770,18 +827,14 @@ function ReviewCard({
   // A one-member household has no "for whom?" question: the account default
   // resolves to that member, so review only asks for purpose.
   const solo = members.length === 1;
-  const [kind, setKind] = useState<MovementKind>(item.suggestedKind ?? "expense");
-  const [showMovement, setShowMovement] = useState((item.suggestedKind ?? "expense") !== "expense");
-  const [counterpartyId, setCounterpartyId] = useState(item.suggestedCounterpartyId ?? "");
-  const [holdingId, setHoldingId] = useState(item.suggestedHoldingId ?? "");
-  const [category, setCategory] = useState<CategoryKey>(item.suggestedCategory ?? "uncategorized");
-  const [beneficiary, setBeneficiary] = useState<RuleBeneficiaryValue>(
-    ruleBeneficiaryValue(item.suggestedBeneficiary),
-  );
-  const spendKind = isSpendKind(kind);
-  const canApply = (!kindNeedsCategory(kind) || category !== "uncategorized")
-    && (!spendKind || solo || beneficiary !== "unassigned")
-    && (kind !== "investment_transfer" || Boolean(holdingId));
+  const defaults = reviewControlDefaults(item);
+  const [kind, setKind] = useState<MovementKind>(defaults.kind);
+  const [showMovement, setShowMovement] = useState(defaults.kind !== "expense");
+  const [counterpartyId, setCounterpartyId] = useState(defaults.counterpartyId);
+  const [holdingId, setHoldingId] = useState(defaults.holdingId);
+  const [category, setCategory] = useState<CategoryKey>(defaults.category);
+  const [beneficiary, setBeneficiary] = useState<RuleBeneficiaryValue>(defaults.beneficiary);
+  const canApply = reviewControlsComplete({ kind, category, beneficiary, counterpartyId, holdingId }, solo);
 
   const apply = () => onCategorize(item.merchant, ruleFromControls(kind, category, beneficiary, counterpartyId, solo, holdingId));
 
@@ -807,6 +860,9 @@ function ReviewCard({
           <span>Paid from:</span>
           <span>{item.accountContexts.map(accountContextLabel).join("; ")}</span>
         </div>
+        {item.suggestedCategorySource === "seed" && (
+          <small className="muted">Purpose suggested from Mizan's starter list — check it before saving.</small>
+        )}
       </div>
       <div className="review-fields">
         {showMovement && (

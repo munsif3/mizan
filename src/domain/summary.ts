@@ -13,6 +13,7 @@ import { pruneSharedContributions } from "./contributions";
 import { addMonths, daysInMonth, isoDateOf, monthOf } from "./dates";
 import { resolveMonthIncome, type PortionResolution } from "./income";
 import { ledgerIndexFor } from "./ledgerIndex";
+import { seededCategory } from "./merchantSeeds";
 import { memberParticipatesInMonth, memberParticipatesOn, participatingMembersOn } from "./memberLifecycle";
 import { SPEND_KINDS } from "./movements";
 import { netAmount } from "./transactionMath";
@@ -183,9 +184,13 @@ export interface MonthSummary {
   fairShare: number;
   transfers: Transfer[];
 
-  /** Spend missing either a purpose or a beneficiary in the selected month. */
+  /**
+   * Selected-month spend rows belonging to a merchant Mizan is still asking about.
+   * Tail merchants are excluded: they are already counted in every total, so leaving
+   * them unclassified must not hold the month open (see `reviewTiers`).
+   */
   unresolvedCount: number;
-  /** Spend missing purpose or beneficiary across every month. */
+  /** Merchants still worth asking about across every month — the review badge. */
   reviewQueueCount: number;
   /** fixed costs active now whose `until` falls within the next 2 months */
   endingSoon: FixedCost[];
@@ -705,13 +710,18 @@ export function computeMonthSummary(data: AppData, month: string, today: Date): 
   const activeAtMonthEnd = members.filter((member) => memberParticipatesOn(member, monthEnd));
   const fairShare = activeAtMonthEnd.length ? householdShared / activeAtMonthEnd.length : 0;
 
-  // The check-in is month-specific. Old review debt should remain in the full
-  // review queue, but must not make the selected month's forecast look untrusted.
-  const unresolvedCount = monthSpendAll.filter(needsClassificationReview).length;
-  // The queue itself spans every month, so its count must too — a statement
-  // period straddles two months, and the badge sits directly above the queue.
-  // Same membership test as `reviewQueue`, so the two cannot drift.
-  const reviewQueueCount = data.transactions.filter(needsClassificationReview).length;
+  // The queue spans every month — a statement period straddles two — so the badge
+  // above it must too. It counts *merchants Mizan is still asking about*, not rows:
+  // one decision teaches one merchant, and a row count turns a dozen decisions into
+  // a demoralizing three-digit number for work that cannot change the verdict.
+  const askable = askableMerchants(data.transactions, totalSpend);
+  const reviewQueueCount = askable.size;
+  // The check-in is month-specific. Old review debt stays in the full queue, but
+  // must not make the selected month's forecast look untrusted — and neither may
+  // the tail, which is counted in every total already.
+  const unresolvedCount = monthSpendAll.filter(
+    (txn) => needsClassificationReview(txn) && askable.has(reviewMerchantKey(txn)),
+  ).length;
   const horizon = addMonths(month, 2);
   const endingSoon = monthFixed.filter((fixed) => fixed.until && fixed.until <= horizon);
   const possibleFixedCostDuplicates = monthFixed.filter((fixed) =>
@@ -778,8 +788,20 @@ export interface ReviewItem {
   count: number;
   total: number;
   accountContexts: ReviewAccountContext[];
+  /**
+   * True when at least one row still has an unassigned beneficiary. Purpose is a
+   * breakdown detail, but an unassigned beneficiary changes settlement — who owes
+   * whom — so the two gaps cannot be triaged at the same priority (see `reviewTiers`).
+   */
+  hasUnassignedBeneficiary: boolean;
   /** Uniform known values are retained so review asks only for the missing axis. */
   suggestedCategory?: CategoryKey;
+  /**
+   * Where `suggestedCategory` came from. `household` means the user's own rows
+   * already agree; `seed` means Mizan's starter table guessed, which the card must
+   * say out loud so a pre-filled answer is never mistaken for a known one.
+   */
+  suggestedCategorySource?: "household" | "seed";
   suggestedBeneficiary?: MerchantRule["beneficiary"];
   suggestedKind?: Transaction["kind"];
   suggestedCounterpartyId?: string;
@@ -792,12 +814,20 @@ interface ReviewAccountContext {
   count: number;
 }
 
+/**
+ * The key `reviewQueue` groups by. Shared with the badge and the check-in gate so
+ * a merchant cannot be asked about in one place and counted in another.
+ */
+function reviewMerchantKey(txn: Transaction): string {
+  return txn.description.replace(/\s+/g, " ").trim().toUpperCase();
+}
+
 /** Merchants missing a purpose or beneficiary, grouped largest spend first. */
 export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
   const groups = new Map<string, { merchant: string; count: number; total: number; rows: Transaction[] }>();
   for (const txn of transactions) {
     if (!needsClassificationReview(txn)) continue;
-    const merchant = txn.description.replace(/\s+/g, " ").trim().toUpperCase();
+    const merchant = reviewMerchantKey(txn);
     const item = groups.get(merchant) ?? { merchant, count: 0, total: 0, rows: [] };
     item.count += 1;
     item.total += transactionSpendAmount(txn);
@@ -822,6 +852,10 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
         }
       }
       const knownCategories = [...new Set(rows.map((row) => row.category).filter((category) => category !== "uncategorized"))];
+      // The household's own rows always win; the starter table only fills a blank.
+      const householdCategory = knownCategories.length === 1 ? knownCategories[0] : undefined;
+      const seeded = householdCategory ? undefined : seededCategory(item.merchant) ?? undefined;
+      const suggestedCategory = householdCategory ?? seeded;
       const knownBeneficiaries = rows
         .map((row): MerchantRule["beneficiary"] => row.beneficiarySource === "account_default"
           ? { type: "account_default" }
@@ -833,10 +867,13 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
       const holdings = [...new Set(rows.map((row) => row.holdingId).filter((id): id is string => Boolean(id)))];
       return {
         ...item,
+        hasUnassignedBeneficiary: rows.some((row) => row.beneficiary.type === "unassigned"),
         accountContexts: [...accountContexts.values()].sort(
           (a, b) => b.count - a.count || a.account.localeCompare(b.account),
         ),
-        ...(knownCategories.length === 1 ? { suggestedCategory: knownCategories[0] } : {}),
+        ...(suggestedCategory
+          ? { suggestedCategory, suggestedCategorySource: householdCategory ? "household" as const : "seed" as const }
+          : {}),
         ...(firstBeneficiary && knownBeneficiaries.every((beneficiary) => beneficiaryEquals(beneficiary, firstBeneficiary))
           ? { suggestedBeneficiary: firstBeneficiary }
           : {}),
@@ -846,6 +883,101 @@ export function reviewQueue(transactions: Transaction[]): ReviewItem[] {
       };
     })
     .sort((a, b) => b.total - a.total || a.merchant.localeCompare(b.merchant));
+}
+
+/** Share of *material* unclassified spend the asked-about merchants must cover. */
+const REVIEW_COVERAGE_TARGET = 0.8;
+/** Always ask about at least this many purpose gaps, even when one merchant dominates. */
+export const REVIEW_ASK_FLOOR = 3;
+/** Never ask about more than this many purpose gaps in one sitting. */
+export const REVIEW_ASK_CEILING = 8;
+/**
+ * A merchant below this share of the anchor spend is never asked about.
+ *
+ * This is what makes the queue finishable. Coverage alone is relative to whatever
+ * is still unclassified, so clearing the top merchants would re-target the
+ * remaining 80% and promote the next batch forever — a treadmill with no visible
+ * end, which is exactly the failure being designed out. An absolute floor means
+ * immaterial merchants can never be promoted by the queue getting shorter.
+ */
+const REVIEW_MATERIALITY_FRACTION = 0.01;
+
+export interface ReviewTiers {
+  /** Settlement-critical: an unassigned beneficiary changes who owes whom. Always asked. */
+  mustAsk: ReviewItem[];
+  /** Purpose gaps carrying most of the unclassified spend. Worth a decision. */
+  worthAsking: ReviewItem[];
+  /** The long tail. Already counted in every total; never interrupts. */
+  tail: ReviewItem[];
+  tailTotal: number;
+  tailRowCount: number;
+}
+
+/**
+ * Split an already-spend-sorted review queue by what each decision actually buys.
+ *
+ * `isSpend` is kind-based and ignores `category`, so an uncategorized row already
+ * counts in total spend, the save rate, and the Home verdict — classifying it
+ * changes the breakdown, not the answer. An unassigned beneficiary is different:
+ * it changes settlement. Pricing both at the same urgency is what turns the queue
+ * into a wall the user abandons.
+ *
+ * So: ask every settlement-critical merchant; among purpose gaps big enough to
+ * matter (`REVIEW_MATERIALITY_FRACTION` of `anchorTotal`), ask the ones carrying
+ * `REVIEW_COVERAGE_TARGET` of that material spend, bounded by a floor so a single
+ * dominant merchant does not end the sitting and a ceiling so one sitting stays
+ * finishable. Everything else is disclosed rather than asked.
+ *
+ * The materiality floor is applied before the coverage walk, so answering the
+ * asked merchants shrinks the queue toward empty instead of re-targeting 80% of
+ * the leftovers and promoting the next batch forever.
+ *
+ * `anchorTotal` is the spend the floor is measured against — the month's total
+ * spend at the call site. Omitting it disables the floor.
+ *
+ * Pure and total: the three tiers always partition the input exactly.
+ */
+export function reviewTiers(
+  queue: readonly ReviewItem[],
+  options: { floor?: number; ceiling?: number; target?: number; anchorTotal?: number } = {},
+): ReviewTiers {
+  const floor = Math.max(0, options.floor ?? REVIEW_ASK_FLOOR);
+  const ceiling = Math.max(0, options.ceiling ?? REVIEW_ASK_CEILING);
+  const target = options.target ?? REVIEW_COVERAGE_TARGET;
+  const materialityFloor = Math.max(0, options.anchorTotal ?? 0) * REVIEW_MATERIALITY_FRACTION;
+
+  const mustAsk = queue.filter((item) => item.hasUnassignedBeneficiary);
+  const remainder = queue.filter((item) => !item.hasUnassignedBeneficiary);
+  const material = remainder.filter((item) => item.total >= materialityFloor);
+  const materialTotal = material.reduce((sum, item) => sum + item.total, 0);
+
+  const coverageTarget = materialTotal * target;
+  let covered = 0;
+  let needed = 0;
+  for (const item of material) {
+    if (covered >= coverageTarget) break;
+    covered += item.total;
+    needed += 1;
+  }
+
+  const askCount = Math.min(material.length, Math.max(needed, floor), ceiling);
+  const worthAsking = material.slice(0, askCount);
+  const asked = new Set(worthAsking);
+  const tail = remainder.filter((item) => !asked.has(item));
+
+  return {
+    mustAsk,
+    worthAsking,
+    tail,
+    tailTotal: tail.reduce((sum, item) => sum + item.total, 0),
+    tailRowCount: tail.reduce((sum, item) => sum + item.count, 0),
+  };
+}
+
+/** Merchant keys in the ask tiers: what the badge counts and the check-in gates on. */
+function askableMerchants(transactions: Transaction[], anchorTotal: number): Set<string> {
+  const tiers = reviewTiers(reviewQueue(transactions), { anchorTotal });
+  return new Set([...tiers.mustAsk, ...tiers.worthAsking].map((item) => item.merchant));
 }
 
 /**

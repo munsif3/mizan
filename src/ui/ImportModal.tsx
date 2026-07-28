@@ -20,9 +20,13 @@ export interface ImportResult {
 
 type ImportMode = "statement" | "csv";
 
+/** The registry id whose password field covers PDFs, reused when mapping one manually. */
+const PDF_PARSER_ID = "dfcc-visa-pdf";
+
 export function ImportModal({
   onImport,
   onCsv,
+  onMapStatement,
   onReview,
   onConfirmCoverage = () => undefined,
   onClose,
@@ -33,6 +37,7 @@ export function ImportModal({
     onProgress: (step: string) => void,
   ) => Promise<ImportResult>;
   onCsv: (file: File) => void;
+  onMapStatement: (file: File, password: string) => void;
   onReview: () => void;
   onConfirmCoverage?: (confirmations: AccountCoverageConfirmation[]) => void;
   onClose: () => void;
@@ -73,6 +78,20 @@ export function ImportModal({
     }
     return [...byId.values()];
   }, [files]);
+
+  // Every PDF reaches a parser (the registry dispatches by extension), so an
+  // unrecognized layout shows up as a failed import rather than an unmatched
+  // file. Offer manual column mapping only once the verified parser has had its
+  // shot and failed on the *format* — a wrong password is not a format problem,
+  // and reading the table needs the right password just the same.
+  const mappablePdfs = useMemo(() => {
+    if (!result || result.imported > 0) return [];
+    return files.filter((file) => {
+      if (!/\.pdf$/i.test(file.name)) return false;
+      const failure = result.failures.find((item) => item.startsWith(`${file.name}:`)) ?? "";
+      return Boolean(failure) && !/password/i.test(failure);
+    });
+  }, [result, files]);
 
   async function run() {
     if (!files.length) return;
@@ -162,6 +181,26 @@ export function ImportModal({
             <strong>Imported {result.imported}; skipped {result.duplicates} duplicate{result.duplicates === 1 ? "" : "s"}.</strong>
             {result.needsReview ? <span>{result.needsReview} need review before the month is clean.</span> : <span>No review items from this import.</span>}
             {result.failures.map((failure) => <small key={failure}>{failure}</small>)}
+          </div>
+        )}
+
+        {mappablePdfs.length > 0 && (
+          <div className="import-result" role="status">
+            <strong>No verified parser recognized {mappablePdfs.length === 1 ? "this statement" : "these statements"}.</strong>
+            <span>
+              Mizan can read the table off the page and let you map its columns, the same way a CSV export works.
+              Nothing is imported until you confirm what each column means.
+            </span>
+            {mappablePdfs.map((file) => (
+              <Button
+                key={file.name}
+                variant="secondary"
+                disabled={!!busy}
+                onClick={() => onMapStatement(file, passwords[PDF_PARSER_ID] ?? "")}
+              >
+                Map {file.name} myself
+              </Button>
+            ))}
           </div>
         )}
 

@@ -263,6 +263,7 @@ describe("UI render smoke", () => {
         customCategories={data.settings.customCategories}
         counterparties={data.settings.counterparties}
         queue={reviewQueue(data.transactions)}
+        onCategorizeMerchants={() => {}}
         transferCandidates={[]}
         undoLabel=""
         filters={{ category: "all", beneficiary: "all", payer: "all" }}
@@ -424,6 +425,7 @@ describe("UI render smoke", () => {
       <ImportModal
         onImport={async () => ({ imported: 0, duplicates: 0, needsReview: 0, failures: [] })}
         onCsv={() => {}}
+        onMapStatement={() => {}}
         onReview={() => {}}
         onClose={() => {}}
       />,

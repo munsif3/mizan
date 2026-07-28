@@ -4,7 +4,8 @@ import { dfccPdfParser, parseLines } from "./dfccPdf";
 import type { PdfLine } from "./pdfText";
 
 function line(y: number, ...cells: string[]): PdfLine {
-  return { y, cells };
+  // This parser reads `cells`; geometry only matters to generic reconstruction.
+  return { y, cells, positioned: cells.map((text, index) => ({ x: index * 100, width: text.length * 5, text })) };
 }
 
 async function generatedLegacyStatement(): Promise<File> {

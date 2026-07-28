@@ -9,6 +9,8 @@ import type { ImportResult } from "./ImportModal";
 
 export function CsvImportModal({
   file,
+  extractedRows,
+  layoutSignature,
   presets,
   formatAmount = (transaction) => `${transaction.direction === "credit" ? "+" : ""}${transaction.amount}`,
   onImport,
@@ -17,6 +19,15 @@ export function CsvImportModal({
   onClose,
 }: {
   file: File;
+  /**
+   * Rows already extracted from a statement whose layout Mizan does not have a
+   * verified parser for. When present the file is not read as CSV: mapping a
+   * reconstructed statement table is the same interactive, user-confirmed step,
+   * so it reuses this screen rather than growing a second one.
+   */
+  extractedRows?: string[][];
+  /** Preset key for `extractedRows`, derived from the statement's column geometry. */
+  layoutSignature?: string;
   presets: Record<string, CsvMapping>;
   formatAmount?: (transaction: ReturnType<typeof mapCsvRows>["transactions"][number]) => string;
   onImport: (transactions: ReturnType<typeof mapCsvRows>["transactions"], skipped: number) => ImportResult | void;
@@ -28,9 +39,24 @@ export function CsvImportModal({
   const [error, setError] = useState("");
   const [mapping, setMapping] = useState<CsvMapping | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
-  const defaultAccount = file.name.replace(/\.csv$/i, "");
+  const fromStatement = Boolean(extractedRows?.length);
+  const defaultAccount = file.name.replace(/\.(csv|pdf|html?)$/i, "");
 
   useEffect(() => {
+    const start = (parsed: string[][], signature: string) => {
+      setRows(parsed);
+      const inferred = inferMapping(parsed);
+      const preset = presets[signature]
+        ?? presets[csvPresetSignature(parsed, inferred.hasHeader)]
+        ?? presets[headerSignature(parsed)];
+      setMapping({ ...(preset ?? inferred), accountLabel: defaultAccount });
+    };
+
+    if (extractedRows?.length) {
+      start(extractedRows, layoutSignature ?? "");
+      return;
+    }
+
     try {
       assertCsvFile(file);
     } catch (fileError) {
@@ -42,18 +68,14 @@ export function CsvImportModal({
       try {
         const parsed = parseCsv(String(reader.result));
         if (!parsed.length) throw new Error("empty file");
-        setRows(parsed);
-        const inferred = inferMapping(parsed);
-        const signature = csvPresetSignature(parsed, inferred.hasHeader);
-        const preset = presets[signature] ?? presets[headerSignature(parsed)];
-        setMapping({ ...(preset ?? inferred), accountLabel: defaultAccount });
+        start(parsed, csvPresetSignature(parsed, inferMapping(parsed).hasHeader));
       } catch {
         setError("That file could not be read as CSV.");
       }
     };
     reader.onerror = () => setError("That file could not be read.");
     reader.readAsText(file);
-  }, [defaultAccount, file, presets]);
+  }, [defaultAccount, file, presets, extractedRows, layoutSignature]);
 
   const columns = useMemo(() => {
     const header = rows[0] ?? [];
@@ -71,7 +93,7 @@ export function CsvImportModal({
     if (!mapping || !preview) return;
     const layout = { ...mapping };
     delete layout.accountLabel;
-    onSavePreset(csvPresetSignature(rows, mapping.hasHeader), layout);
+    onSavePreset(layoutSignature || csvPresetSignature(rows, mapping.hasHeader), layout);
     const next = onImport(preview.transactions, preview.skipped.length);
     if (next) setResult(next);
     else onClose();
@@ -86,11 +108,15 @@ export function CsvImportModal({
   );
 
   return (
-    <Modal title="Import CSV" onClose={onClose} wide>
+    <Modal title={fromStatement ? "Map statement columns" : "Import CSV"} onClose={onClose} wide>
       {error && <p className="notice" role="alert">{error}</p>}
       {mapping && rows.length > 0 && !result && (
         <>
-          <p className="muted">Match your file's columns to Mizan's fields. The preview updates as you choose.</p>
+          <p className="muted">
+            {fromStatement
+              ? "Mizan has no verified parser for this statement, so it read the table off the page. Check the columns below — nothing is imported until you confirm, and this layout is remembered for next month."
+              : "Match your file's columns to Mizan's fields. The preview updates as you choose."}
+          </p>
 
           <div className="settings-section">
             <label className="checkbox-row">

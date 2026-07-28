@@ -63,16 +63,22 @@ One deterministic system for a household's financial awareness.
 | 37 | Firestore access is separate from budget identity | `HouseholdMeta.membersByUid` may link an auth user to a `memberId`, but leaving/revoking access does not remove that financial profile. Any owner role can manage recovery; `ownerUid` identifies the primary owner that must exist. Primary ownership must transfer before that user leaves or is revoked, and the UI warns when no second owner exists. |
 | 38 | Holdings are assets, not expense categories | `AssetHolding` represents Cash, property, fixed deposits, shares/funds, insurance policies, retirement assets, gold, and other holdings. Investment-transfer transactions contribute cost basis and may link to a recurring commitment. Current value comes only from explicit dated valuations (with explicit FX conversion); Mizan never pretends contributed cash is the holding's current value. The legacy `investments` category key remains stable but is displayed as Investment fees & costs and is used only for actual spend. |
 | 39 | Ledger-derived views share one revision index | `ledgerIndexFor` caches indexes by transaction-array revision and validates row references before reuse. Month, commitment, holding, account, and tolerance-safe amount/date lookups feed History, commitments, asset snapshots, and transfer suggestions without repeated whole-ledger scans, while row replacements cannot return stale results. |
+| 40 | Review is tiered by what each decision changes | `isSpend` is kind-based and ignores `category` (ADR #17), so an uncategorized row already counts in spend, save rate, and the Home verdict — classifying it changes the breakdown, not the answer. An unassigned beneficiary is different: it changes settlement. `reviewTiers` splits the spend-sorted queue into `mustAsk` (settlement-critical, always asked), `worthAsking` (purpose gaps carrying 80% of *material* spend, floor 3 / ceiling 8), and `tail` (disclosed, never asked). The materiality floor is a fraction of the month's spend and is applied *before* the coverage walk, so answering the asked merchants shrinks the queue toward empty instead of re-targeting 80% of the leftovers forever. Derived only — no stored field, no schema change. |
+| 41 | The review badge counts merchants, not rows | One decision teaches one merchant, so `reviewQueueCount` is the number of merchants still being asked about. Counting rows turned a dozen decisions into a three-digit badge for work that cannot change the verdict. `reviewMerchantKey` is shared by the queue, the badge, and the check-in gate so they cannot drift, and the month's `unresolvedCount` ignores the tail so untouched crumbs never hold a month open. |
+| 42 | A shipped starter dictionary pre-fills, never decides | `merchantSeeds.ts` is a static merchant→category table matched through `matchingKey`, the same longest-substring matcher household rules use (statement text carries branch suffixes — "KEELLS SUPER WATTALA" — and longest-wins lets "UBER EATS" outrank "UBER" without either knowing about the other). It only populates `ReviewItem.suggestedCategory` when the household's own rows suggest nothing, carries `suggestedCategorySource: "seed"` so the card says so out loud, and never writes a rule or touches a transaction. ADR #5 holds: the user still teaches each merchant once — the answer is just already filled in. |
+| 43 | Freshness follows each account's statement rhythm | `Account.cadence` (`weekly`/`monthly`/`manual`, optional closing day) replaces a flat `staleAfterDays = 7`. A monthly-statement household was structurally "behind" from day 8 of every month — a false alarm it could do nothing about, which trains the household to ignore the signal. Coverage is now judged against the next expected statement plus a fetch grace. Absent cadence means monthly, so pre-v18 accounts behave correctly with no document rewrite; cadence is chosen, never inferred from history (ADR #36). `dataIsBehind` is the single definition, shared by Home and the efficiency engine so they cannot disagree. |
+| 44 | The forecast is dated, never withheld | With no activity there is genuinely nothing to project and Home says so. Stale data is a different case: the number is computable, just based on older evidence. Hiding it behind "Paused" withheld the one figure that brings a drifting household back, exactly when it had drifted — and made catching up feel like a precondition rather than a reward. Home now always shows the projection plus its basis ("Based on activity through …"). Efficiency still withholds *recommendations*, because those are advice to act on rather than a status readout, but it gates on the askable review tiers only — the deliberately unclassified tail must not block trends forever. |
+| 45 | An unrecognized statement falls back to mapping, not to a dead end | ADR #12 still holds — nothing is guessed silently — but "loud failure" was the *end* of the road for every bank without a verified parser. `pdfTable.ts` reconstructs a column matrix from positioned PDF text and hands it to the same interactive mapper the CSV route uses (ADR #13), so the user says what each column means and sees the parsed preview before anything is imported. Columns are found by counting how often each horizontal position is covered, not by merging spans: alignment is mixed (dates left, amounts right against a fixed edge) and merging is transitive, so one page-wide banner would otherwise bridge two real columns. The mapping is remembered in `settings.csvPresets` under a signature derived from the column geometry — no schema change — and is offered only after the verified parser fails on *format*, never on a wrong password. |
 
-## Data model (schema v17)
+## Data model (schema v18)
 
 ```
 AppData
-├── schemaVersion: 17
+├── schemaVersion: 18
 ├── transactions: Transaction[]   { id, date, description, amount, category, beneficiary, beneficiarySource?, classificationLocked?, account, accountId?, rawAccount?, note, source, direction, kind, counterpartyId?, holdingId?, commitmentId?, investmentAmount?, linkedTransferId?, rejectedTransferIds?, split? }
 ├── sharedContributions: SharedContribution[] { id, allocations: { expenseTransactionId, amount }[], transferDebitTransactionId, transferCreditTransactionId, contributorMemberId, amount }
 ├── merchantRules: { CLEANED_MERCHANT: { category, beneficiary | account_default, kind, counterpartyId?, holdingId? } }
-├── accounts: Account[]           { id, label, currency, owner, beneficiaryDefault, activeFrom?, inactiveFrom?, coverage?, match[] }
+├── accounts: Account[]           { id, label, currency, owner, beneficiaryDefault, activeFrom?, inactiveFrom?, coverage?, cadence?, match[] }
 ├── fixedCosts: FixedCost[]       { id, label, amount, kind, category, beneficiary, from?, until?, totalAmount?, merchantMatch?, holdingId?, investmentAmount? }
 ├── assetHoldings: AssetHolding[] { id, label, type, currency, owner, status, institution?, linkedAccountId?, openedOn?, maturityOn?, valuations[] }
 ├── incomeReceipts: IncomeReceipt[] { id, month, memberId, portionId, amount, receivedAmount?, receivedCurrency?, fxRate?, currencyReview?, date?, transactionId?, label?, taxRate?, taxWithheld?, budgetTreatment? }
@@ -96,9 +102,9 @@ currency; foreign confirmations also retain the statement-native received amount
 rate used. Confirmations snapshot label, tax, and budget treatment so later source edits cannot rewrite
 history. `settings.fxRates` converts foreign expected portions for projections and prefills confirmations.
 
-- `category` is purpose only: a fixed key (`housing`, `food`, `transport`, `lifestyle`,
-  `family_support`, `investments`, `uncategorized`) or a user-defined key
-  `custom:<id>` (resolved against `settings.customCategories`).
+- `category` is purpose only: a fixed key (`housing`, `food`, `utilities`, `transport`,
+  `health`, `dining`, `lifestyle`, `family_support`, `investments`, `uncategorized`) or a
+  user-defined key `custom:<id>` (resolved against `settings.customCategories`).
 - `beneficiary` is `{ type: "household" }`, `{ type: "member", memberId }`, or
   `{ type: "unassigned" }`. The paying member remains derived from registered account ownership
   and confirmed contribution evidence; fixed commitments have no payer evidence.
@@ -122,8 +128,11 @@ history. `settings.fxRates` converts foreign expected portions for projections a
   are inclusive at `from`/`inactiveFrom`; `resumeOn` is the first participating day after an absence.
 - `Account.coverage` is explicit evidence (`throughDate`, confirmer, confirmation timestamp, and source).
   It is independent of the latest transaction because an account may legitimately have no recent activity.
+- `Account.cadence` is the statement rhythm (`weekly`, `monthly` with an optional closing `dueDay`, or
+  `manual` for accounts with no statement at all). Absent means monthly. Coverage is stale only once the
+  next expected statement is overdue past a fetch grace, so a monthly account stays current all month.
 
-## Cloud household model (sync v10)
+## Cloud household model (sync v11)
 
 `AppData` remains the canonical in-app shape. Firestore publishes one active snapshot revision
 through a small manifest; each revision keeps the same split-collection layout:
@@ -170,7 +179,7 @@ If a legacy `mizan_v2` or `trackr_v1` browser payload is found, only an explicit
 household receives it. Joining or switching never overwrites an existing household, and the browser
 financial keys are cleared only after the Firestore save succeeds.
 
-**Migration.** `migrate()` normalizes any known shape into v17; unrelated junk degrades to empty
+**Migration.** `migrate()` normalizes any known shape into v18; unrelated junk degrades to empty
 data, while a newer schema fails loudly so an older client cannot discard unknown fields. Legacy
 data (schema v4, or a v1 "trackr" backup) seeds members from ids already present
 and pins the previous currency. v5 → v6 adds movement kinds, v6 → v7 adds income portions, v7 → v8
@@ -189,7 +198,9 @@ account coverage evidence with legacy members remaining all-time active. v16 →
 reconciled commitment metadata, explicit unresolved account ownership, and durable transfer decisions. Split-cloud v7 retains scheduled
 income and protected-budget semantics; split-cloud v8 round-trips efficiency decisions in their own revisioned
 collection, split-cloud v9 carries lifecycle and coverage fields, and split-cloud v10 carries holdings
-and reconciled commitments in the revisioned snapshot.
+and reconciled commitments in the revisioned snapshot. v17 → v18 adds optional `Account.cadence`; an
+account without one is read as monthly, so no pre-v18 document is rewritten, and split-cloud v11
+round-trips the chosen rhythm.
 The migrator preserves statement provenance, movement semantics, contribution evidence, and locked one-row
 classifications. Fresh data with no member list triggers onboarding.
 
@@ -212,7 +223,7 @@ after becoming overdue. History annotates one-off and protected amounts explicit
 ```
 src/
 ├── auth/            Firebase Auth wrapper + Google sign-in state
-├── domain/          pure, tested: types, income, incomeMatch, categories, movements, assets, commitments, money, dates, rules, dedupe, accounts, transfers, contributions, summary, efficiency
+├── domain/          pure, tested: types, income, incomeMatch, categories, movements, assets, commitments, money, dates, rules, merchantSeeds, dedupe, accounts, transfers, contributions, summary, efficiency
 ├── firebase/        Firebase client initialization from Vite env vars
 ├── household/       household metadata, invite helpers, Firestore repository
 ├── import/          pure-ish, tested: statement parser registry + CSV importer
@@ -220,6 +231,7 @@ src/
 │   ├── registry.ts       dispatches a statement file to the right parser by extension
 │   ├── csv.ts            RFC-4180 CSV parser
 │   ├── csvMap.ts         column mapping: inference, header signature, row -> Transaction
+│   ├── pdfTable.ts       rebuilds a column matrix from positioned PDF text for unrecognized statements
 │   ├── ntbCrypto.ts      generic AES-CBC/PBKDF2 WebCrypto helper
 │   ├── ntbHtml.ts        NTB plugin: decrypts once, dispatches by content marker
 │   ├── ntbAmexHtml.ts    NTB card statement parser
@@ -232,6 +244,10 @@ src/
 
 ## Adding a bank parser
 
+A verified parser is still the best experience — zero configuration, and it can use bank-specific
+structure a generic reader cannot. It is no longer the only way in: a PDF no parser recognizes falls
+back to column mapping (ADR #45), so adding a parser is an optimization rather than a prerequisite.
+
 Implement the `StatementParser` interface (`src/import/types.ts`): a `canHandle(file)` predicate, a
 `parse(file, password)` that returns `Transaction[]`, and password label/placeholder strings. Add it
 to the array in `src/import/registry.ts`. Verify it against a real statement with a test fixture
@@ -243,6 +259,6 @@ already cover you — no code needed.
 The simplicity reset deliberately leaves the Firestore save/read protocol unchanged. A separate,
 reviewable persistence tranche may redesign revision manifests, stale-write recovery, and snapshot
 read/write batching only after the Core + Optional UX has shipped and its browser journeys are stable.
-That tranche must preserve Firestore as the sole authority for live financial data, keep schema v17
-and split-cloud v10 readable throughout rollout, define rollback and mixed-client behavior, and pass
+That tranche must preserve Firestore as the sole authority for live financial data, keep schema v18
+and split-cloud v11 readable throughout rollout, define rollback and mixed-client behavior, and pass
 emulator-backed conflict, failed-save recovery, and reload-persistence tests before migration.
