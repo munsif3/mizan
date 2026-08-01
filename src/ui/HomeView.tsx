@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { ChevronDown } from "lucide-react";
 import type { SettingsTarget } from "../app/settingsTarget";
-import { computeAccountCoverage, coverageLabel, dataIsBehind, type AccountCoverageRow } from "../domain/accountCoverage";
+import { computeAccountCoverage, coverageLabel, dataIsBehind, unmeasuredExposure, type AccountCoverageRow } from "../domain/accountCoverage";
 import { assetTypeLabel } from "../domain/assets";
 import { commitmentExpectedAmount, commitmentMatchedTransactions } from "../domain/commitments";
 import { monthLabel } from "../domain/dates";
@@ -9,16 +9,18 @@ import type { PortionResolution } from "../domain/income";
 import type { IncomeCandidate } from "../domain/incomeMatch";
 import type { SharedContributionCandidate } from "../domain/contributions";
 import type { EfficiencySnapshot } from "../domain/efficiency";
-import type { MonthSummary } from "../domain/summary";
+import type { MonthSummary, Transfer } from "../domain/summary";
 import type { Account, CategoryKey, EfficiencyOpportunity, Member, MemberId } from "../domain/types";
+import type { WeeklyCloseBalanceState } from "./WeeklyClose";
 import { Button, Disclosure, DrilldownAmount, MoneyValue } from "./bits";
 import {
   HOME_ACTION_PRIORITY,
+  homeActionEstimateMinutes,
   rankHomeActions,
   type AppActionTarget,
   type HomeAction,
 } from "./homeActions";
-export interface HomeTransactionFilters {
+interface HomeTransactionFilters {
   category?: CategoryKey;
   beneficiary?: "household" | "unassigned" | MemberId;
   payer?: MemberId | "joint";
@@ -221,6 +223,16 @@ function PurposeMatrix({
       {attribution.purposeRows.map((row) => {
         const isExpanded = expanded.has(row.key);
         const driversId = `purpose-drivers-${row.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+        const splitCaption = solo
+          ? ""
+          : [
+              ["Household", row.household] as const,
+              ...members.map((member) => [member.name, row.byMember[member.id] ?? 0] as const),
+              ["Unassigned", row.unassigned] as const,
+            ]
+              .filter(([, value]) => value > 0)
+              .map(([label, value]) => `${label} ${money(value)}`)
+              .join(" · ");
         return (
           <div className={`who-purpose-group ${isExpanded ? "expanded" : ""}`} role="rowgroup" key={row.key}>
             <div className="who-matrix-row" role="row">
@@ -236,6 +248,11 @@ function PurposeMatrix({
                   <span>
                     <strong>{row.name}</strong>
                     <small>{row.merchants.length} merchant{row.merchants.length === 1 ? "" : "s"}</small>
+                    {!solo && (
+                      <small className="who-purpose-split mz-caption">
+                        {splitCaption || "No beneficiary split recorded"}
+                      </small>
+                    )}
                   </span>
                   <ChevronDown size={18} strokeWidth={2} aria-hidden="true" />
                 </button>
@@ -424,24 +441,45 @@ interface HomeDetailModel {
   coverageRows: AccountCoverageRow[];
 }
 
-function HomeDetailSections({ model }: { model: HomeDetailModel }) {
+export type HomeBooksSection =
+  | "purpose"
+  | "settlement"
+  | "coverage"
+  | "fixed"
+  | "assets"
+  | "efficiency"
+  | "waiting";
+
+type HomeDetailSection = Exclude<HomeBooksSection, "assets" | "waiting">;
+
+function HomeDetailSections({ model, section }: { model: HomeDetailModel; section: HomeDetailSection }) {
   const {
     summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency, hasActiveEfficiencyPlan,
     onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
     onOpenSettings, freshnessLabel, checkInDays, movementRows, coverageRows,
   } = model;
-  return (
-    <>
-      {efficiency
-        && (efficiency.opportunities.length > 0 || hasActiveEfficiencyPlan)
-        && onReviewEfficiency
-        && onVerifyEfficiency && (
-        <Disclosure
-          title="Efficiency opportunities"
-          summary={efficiency.opportunities.length
-            ? `${efficiency.opportunities.length} evidence-based opportunities`
-            : "Active household plan in progress"}
-        >
+
+  if (section === "efficiency") {
+    if (!efficiency
+      || (!efficiency.opportunities.length && !hasActiveEfficiencyPlan)
+      || !onReviewEfficiency
+      || !onVerifyEfficiency) {
+      return (
+        <section className="ledger-empty-state">
+          <span className="soft-label">Efficiency</span>
+          <h3>No evidence-based changes are waiting</h3>
+          <p>Mizan will add an opportunity here when the ledger has enough repeated evidence to support one.</p>
+        </section>
+      );
+    }
+    return (
+      <Disclosure
+        title="Efficiency opportunities"
+        summary={efficiency.opportunities.length
+          ? `${efficiency.opportunities.length} evidence-based opportunities`
+          : "Active household plan in progress"}
+        defaultOpen
+      >
         <EfficiencySection
           snapshot={efficiency}
           money={money}
@@ -452,33 +490,90 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
           onOpenTransactions={onOpenTransactions}
           hasActivePlan={hasActiveEfficiencyPlan}
         />
-        </Disclosure>
-      )}
+      </Disclosure>
+    );
+  }
 
-      {hasActivity ? (
-        <Disclosure
-          title={solo ? "Spending" : "Spending and settlement"}
-          summary={solo
-            ? `${money(s.attribution.recordedSpend)} recorded by purpose`
-            : `${money(s.attribution.recordedSpend)} recorded across purpose, who it was for, and paid from`}
-        >
+  if (!hasActivity) {
+    return (
+      <section className="ledger-empty-state">
+        <span className="soft-label">The ledger is ready</span>
+        <h3>Start with this month's activity</h3>
+        <p>
+          Once transactions arrive, this page will show what the household spent on, who benefited, who paid,
+          and why any settlement is needed without filling the page with zero-value panels.
+        </p>
+      </section>
+    );
+  }
+
+  const title = section === "purpose"
+    ? "Purpose"
+    : section === "settlement"
+      ? "Settle-up"
+      : section === "coverage"
+        ? "Coverage"
+        : "Fixed commitments";
+  const summary = section === "purpose"
+    ? `${money(s.attribution.recordedSpend)} recorded by purpose`
+    : section === "settlement"
+      ? `${money(s.attribution.recordedSpend)} reconciled by who benefited and who paid`
+      : section === "coverage"
+        ? freshnessLabel
+        : `${s.monthFixed.length} monthly commitment${s.monthFixed.length === 1 ? "" : "s"}`;
+
+  return (
+    <Disclosure title={title} summary={summary} defaultOpen>
+      {(section === "purpose" || section === "settlement") && (
       <section className="friendly-section attribution-section">
         <div className="friendly-heading attribution-heading">
           <div>
-            <span className="soft-label">{solo ? "Where the money went" : "Who spent what"}</span>
-            <h3>{solo ? "By purpose" : "Purpose, responsibility, and who paid"}</h3>
+            <span className="soft-label">{section === "purpose" ? "Where the money went" : "Settle-up"}</span>
+            <h3>{section === "purpose" ? "By purpose" : "Who benefited, and who actually paid"}</h3>
           </div>
           <p>Recorded activity: {money(s.attribution.recordedSpend)}</p>
         </div>
 
-        <PurposeMatrix
-          attribution={s.attribution}
-          money={money}
-          onOpenTransactions={onOpenTransactions}
-          solo={solo}
-        />
+        {section === "purpose" && (
+        <>
+          <PurposeMatrix
+            attribution={s.attribution}
+            money={money}
+            onOpenTransactions={onOpenTransactions}
+            solo={solo}
+          />
+          <div className="funding-reconciliation" aria-label="Purpose measurement gaps">
+            <div className={s.attribution.unassignedBeneficiarySpend > 0 ? "needs-review" : ""}>
+              <span>
+                <strong>Has no "who" yet</strong>
+                <small>Recorded activity that is not assigned to the household or a person yet.</small>
+              </span>
+              <DrilldownAmount
+                value={s.attribution.unassignedBeneficiarySpend}
+                money={money}
+                label="Spending with no person assigned"
+                onClick={openTarget(onOpenTransactions, { beneficiary: "unassigned" })}
+              />
+            </div>
+            <div className={`planning-only ${fixedCommitmentsNeedReview ? "needs-review" : ""}`}>
+              <span>
+                <strong>Planned, not yet seen in a statement</strong>
+                <small>Forecast commitments stay outside recorded activity until payment evidence arrives.</small>
+              </span>
+              <div className="planning-commitment-actions">
+                <b>{money(s.attribution.fixedCommitments.total)}</b>
+                {fixedCommitmentsNeedReview && (
+                  <button className="link-button" onClick={() => onOpenSettings({ tab: "budget", section: "commitments" })}>
+                    Review commitments
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+        )}
 
-        {!solo && (<>
+        {section === "settlement" && !solo && (<>
         <div className="funding-reconciliation" aria-label="Recorded activity reconciliation">
           <div>
             <span>
@@ -559,8 +654,11 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
         </div>
         </>)}
       </section>
+      )}
 
+      {(section === "fixed" || section === "coverage") && (
       <section className="home-grid plan-grid overview-grid">
+        {section === "fixed" && (
         <div className="home-panel spend-plan">
           <span className="soft-label">Spend plan</span>
           <h3>{money(Math.max(0, s.targetSpend - s.totalSpend))}</h3>
@@ -572,7 +670,9 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
             <span><b>{money(s.dailyAllowance)}</b> / day keeps the plan comfortable</span>
           </div>
         </div>
+        )}
 
+        {section === "coverage" && (
         <div className="home-panel">
           <span className="soft-label">Data freshness</span>
           <h3>{freshnessLabel}</h3>
@@ -597,10 +697,12 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
             </div>
           )}
         </div>
+        )}
       </section>
+      )}
 
-      {(movementRows.length > 0 || s.monthFixed.length > 0) && <section className="two-column">
-        {movementRows.length > 0 && (
+      {section === "purpose" && movementRows.length > 0 && (
+        <section className="two-column">
         <div className="friendly-section">
           <div className="friendly-heading">
             <div>
@@ -621,9 +723,11 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
             ))}
           </div>
         </div>
-        )}
+        </section>
+      )}
 
-        {s.monthFixed.length > 0 && (
+      {section === "fixed" && s.monthFixed.length > 0 && (
+        <section className="two-column">
         <div className="friendly-section">
           <div className="friendly-heading">
             <div>
@@ -652,86 +756,94 @@ function HomeDetailSections({ model }: { model: HomeDetailModel }) {
             ))}
           </div>
         </div>
-        )}
-      </section>}
-        </Disclosure>
-      ) : (
-        <section className="ledger-empty-state">
-          <span className="soft-label">The ledger is ready</span>
-          <h3>Start with this month's activity</h3>
-          <p>
-            Once transactions arrive, this page will show what the household spent on, who benefited, who paid,
-            and why any settlement is needed without filling the page with zero-value panels.
-          </p>
         </section>
       )}
-    </>
+    </Disclosure>
   );
 }
 
 
-function useHomeViewModel({
-  summary,
-  money,
-  currencyMoney,
-  percent = (value, digits = 1) => `${value.toFixed(digits)}%`,
-  financialValuesHidden = false,
-  lastCheckInAt,
-  onOpenSettings,
-  onOpenImport,
-  onReviewQueue,
-  onCompleteCheckIn,
-  onConfirmIncome,
-  onAddOneOffIncome,
-  incomeCandidates,
-  contributionCandidates,
-  members,
-  accounts,
-  onConfirmContribution,
-  onOpenTransactions,
-  efficiency,
-  hasActiveEfficiencyPlan = false,
-  onReviewEfficiency,
-  onVerifyEfficiency,
-}: {
+export interface HomeViewProps {
   summary: MonthSummary;
   money: (value: number) => string;
-  currencyMoney?: (value: number, currency: string) => string;
   percent?: (value: number, digits?: number) => string;
   financialValuesHidden?: boolean;
   lastCheckInAt: string;
   onOpenSettings: (target?: SettingsTarget) => void;
   onOpenImport: () => void;
+  onOpenCatchUp?: () => void;
+  weeklyClose?: WeeklyCloseBalanceState;
+  onOpenWeeklyClose?: () => void;
   onReviewQueue: () => void;
   onCompleteCheckIn: () => void;
+  onMarkSettled?: (transfer: Transfer) => void | Promise<void>;
+  onUndoLastSettlement?: () => void | Promise<void>;
+  canUndoLastSettlement?: boolean;
   onConfirmIncome: (item: PortionResolution, candidate?: IncomeCandidate) => void;
-  onAddOneOffIncome?: () => void;
   incomeCandidates?: Map<string, IncomeCandidate>;
   contributionCandidates?: SharedContributionCandidate[];
   members?: Member[];
   accounts?: Account[];
+  history?: MonthSummary[];
+  today?: Date;
+  coverageRows?: AccountCoverageRow[];
   onConfirmContribution?: (candidate: SharedContributionCandidate) => void;
   onOpenTransactions?: (filters: HomeTransactionFilters) => void;
   efficiency?: EfficiencySnapshot;
   hasActiveEfficiencyPlan?: boolean;
   onReviewEfficiency?: (opportunity: EfficiencyOpportunity) => void;
   onVerifyEfficiency?: (opportunity: EfficiencyOpportunity) => void;
-}) {
+}
+
+export function useHomeViewModel({
+  summary,
+  money,
+  percent = (value, digits = 1) => `${value.toFixed(digits)}%`,
+  financialValuesHidden = false,
+  lastCheckInAt,
+  onOpenSettings,
+  onOpenImport,
+  onOpenCatchUp,
+  weeklyClose,
+  onOpenWeeklyClose,
+  onReviewQueue,
+  onCompleteCheckIn,
+  onMarkSettled,
+  onUndoLastSettlement,
+  canUndoLastSettlement = false,
+  onConfirmIncome,
+  incomeCandidates,
+  contributionCandidates,
+  members,
+  accounts,
+  history = [],
+  today: todayProp,
+  coverageRows: coverageRowsProp,
+  onConfirmContribution,
+  onOpenTransactions,
+  efficiency,
+  hasActiveEfficiencyPlan = false,
+  onReviewEfficiency,
+  onVerifyEfficiency,
+}: HomeViewProps) {
   const s = summary;
   const [showAllActions, setShowAllActions] = useState(false);
-  const moneyIn = currencyMoney ?? ((value: number, _currency: string) => money(value));
   const candidates = incomeCandidates ?? new Map<string, IncomeCandidate>();
   const contributionSuggestions = contributionCandidates ?? [];
   const householdMembers = members ?? [];
-  const coverageRows = computeAccountCoverage(accounts ?? [], householdMembers, new Date());
+  const today = todayProp ?? new Date();
+  const coverageRows = coverageRowsProp ?? computeAccountCoverage(accounts ?? [], householdMembers, today);
   const onTrack = s.projectedSaveRate >= s.targetSaveRate;
-  const hasActivity = s.monthTransactions.length > 0 || s.totalSpend > 0;
+  const hasActivity = s.monthTransactions.length > 0;
   // One-member households have no beneficiary split or settlement to show.
   const solo = s.attribution.memberRows.length === 1;
   const movementRows = s.movementRows.filter((row) => row.value > 0 || row.delta !== 0);
   const coverageNeedsUpdate = coverageRows.some((row) => row.status !== "current");
   const waitingForCoverage = s.isCurrentMonth && coverageRows.length > 0 && coverageNeedsUpdate;
   const dataNeedsUpdate = dataIsBehind(coverageRows, s);
+  const measurementExposure = s.isCurrentMonth
+    ? unmeasuredExposure(coverageRows, history, today)
+    : { amount: 0, throughDate: "", accounts: [] };
   const checkInTimestamp = Date.parse(lastCheckInAt);
   const checkInDays = Number.isFinite(checkInTimestamp)
     ? Math.max(0, Math.floor((Date.now() - checkInTimestamp) / 86_400_000))
@@ -744,11 +856,6 @@ function useHomeViewModel({
   // when they had drifted — so the forecast is now dated, never withheld.
   const forecastReady = hasActivity;
   const forecastIsDated = hasActivity && s.isCurrentMonth && dataNeedsUpdate;
-  const forecastBasis = !forecastIsDated
-    ? ""
-    : s.latestTransactionDate
-      ? `Based on activity through ${s.latestTransactionDate}`
-      : "Based on the activity recorded so far";
   const fixedCommitmentsNeedReview = s.attribution.fixedCommitments.unassigned > 0
     || s.attribution.fixedCommitments.purposeRows.some((row) => row.key === "uncategorized");
   const freshnessLabel = !s.isCurrentMonth
@@ -769,15 +876,16 @@ function useHomeViewModel({
         id: "account-coverage",
         family: "account_coverage",
         priority: HOME_ACTION_PRIORITY.account_coverage,
+        estimateMinutes: homeActionEstimateMinutes("account_coverage", coverageNeedingUpdate.length),
         count: coverageNeedingUpdate.length,
         title: coverageNeedingUpdate.length === 1
           ? `Update ${coverageNeedingUpdate[0]!.account.label}`
           : `Update ${coverageNeedingUpdate.length} accounts`,
         body: coverageNeedingUpdate.length === 1
           ? coverageNeedingUpdate[0]!.status === "missing"
-            ? `${coverageNeedingUpdate[0]!.ownerLabel}'s account has no confirmed coverage date. Import a statement or mark what has been reviewed.`
-            : `${coverageNeedingUpdate[0]!.ownerLabel}'s account is only confirmed through ${coverageNeedingUpdate[0]!.throughDate}. The household forecast remains incomplete.`
-          : `${coverageNeedingUpdate.length} active accounts need current coverage before the household forecast is complete.`,
+            ? `${coverageNeedingUpdate[0]!.ownerLabel}'s account has never been confirmed. Add a statement or mark the date you've already checked.`
+            : `${coverageNeedingUpdate[0]!.ownerLabel}'s account stops at ${coverageNeedingUpdate[0]!.throughDate}. Bring in the next statement to close the hollow part of this month.`
+          : `${coverageNeedingUpdate.length} active accounts still have a hollow edge. Bring them up to date so this month is fully measured.`,
         details: coverageNeedingUpdate.length > 1
           ? coverageNeedingUpdate.map((row) => row.status === "missing"
               ? `${row.account.label} (${row.ownerLabel}): not confirmed`
@@ -785,12 +893,14 @@ function useHomeViewModel({
           : undefined,
         target: {
           kind: "button",
-          label: coverageNeedingUpdate.length === 1 ? "Review account" : "Review accounts",
-          onSelect: () => onOpenSettings({
+          label: onOpenCatchUp
+            ? "Go to Catch up"
+            : coverageNeedingUpdate.length === 1 ? "Review account" : "Review accounts",
+          onSelect: onOpenCatchUp ?? (() => onOpenSettings({
             tab: "accounts",
             section: "accounts",
             ...(coverageNeedingUpdate.length === 1 ? { itemId: coverageNeedingUpdate[0]!.account.id } : {}),
-          }),
+          })),
         },
       }]
     : [];
@@ -801,16 +911,18 @@ function useHomeViewModel({
       id: `income-currency-${item.memberId}-${item.portion.id}`,
       family: "income_currency_review",
       priority: HOME_ACTION_PRIORITY.income_currency_review,
+      estimateMinutes: homeActionEstimateMinutes("income_currency_review"),
       title: `Check ${item.portion.label} currency`,
-      body: "This older confirmation could not be assigned a native currency safely. Review it to verify the household total.",
+      body: "This confirmation is missing a reliable native currency. Check it once so the household total has a sound basis.",
       target: { kind: "button", label: "Check currency", onSelect: () => onConfirmIncome(item) },
     })),
     ...s.incomeItems.filter((item) => item.missingRate).map((item): HomeAction => ({
       id: `exchange-rate-${item.memberId}-${item.portion.id}`,
       family: "missing_exchange_rate",
       priority: HOME_ACTION_PRIORITY.missing_exchange_rate,
+      estimateMinutes: homeActionEstimateMinutes("missing_exchange_rate"),
       title: `Add ${item.portion.currency} exchange rate`,
-      body: `${item.portion.label} cannot be included in the projection until its exchange rate is set.`,
+      body: `${item.portion.label} is waiting for its exchange rate. Add it and Mizan can include the income without guessing.`,
       target: {
         kind: "button",
         label: "Add exchange rate",
@@ -822,10 +934,11 @@ function useHomeViewModel({
           id: "recent-activity",
           family: "recent_activity" as const,
           priority: HOME_ACTION_PRIORITY.recent_activity,
+          estimateMinutes: homeActionEstimateMinutes("recent_activity"),
           title: "Bring transactions up to date",
           body: s.latestTransactionDate
-            ? `Latest activity is ${s.latestTransactionDate}. Import or add recent transactions before trusting the forecast.`
-            : "No transactions are recorded for this month. Import or add activity before trusting the forecast.",
+            ? `The ledger stops at ${s.latestTransactionDate}. Add what came after it so this month has a measured edge.`
+            : "This month has no statement activity yet. Add the first rows and Mizan can start measuring it.",
           target: { kind: "button" as const, label: "Import activity", onSelect: onOpenImport },
         }]
       : []),
@@ -834,9 +947,10 @@ function useHomeViewModel({
           id: "classification",
           family: "classification" as const,
           priority: HOME_ACTION_PRIORITY.classification,
+          estimateMinutes: homeActionEstimateMinutes("classification", s.unresolvedCount),
           count: s.unresolvedCount,
-          title: "Classify new spending",
-          body: `${s.unresolvedCount} transaction${s.unresolvedCount === 1 ? "" : "s"} need a purpose or who it was for. Spend totals already include them — this sharpens the breakdown and settlement.`,
+          title: `${s.unresolvedCount} new thing${s.unresolvedCount === 1 ? "" : "s"} to name`,
+          body: "They already count in spending. Naming their purpose and who they were for makes the breakdown and settle-up exact.",
           target: { kind: "button" as const, label: "Review queue", onSelect: onReviewQueue },
         }]
       : []),
@@ -844,10 +958,11 @@ function useHomeViewModel({
       id: `income-confirmation-${item.memberId}-${item.portion.id}`,
       family: "income_confirmation",
       priority: HOME_ACTION_PRIORITY.income_confirmation,
+      estimateMinutes: homeActionEstimateMinutes("income_confirmation"),
       title: `Confirm ${item.portion.label}`,
       body: candidates.has(item.portion.id)
-        ? `A matching credit of ${moneyIn(candidates.get(item.portion.id)!.sourceAmount, candidates.get(item.portion.id)!.sourceCurrency)} on ${candidates.get(item.portion.id)!.transaction.date} is already in your statement.`
-        : `${item.memberName}'s expected income has passed its arrival window. Confirm what actually arrived.`,
+        ? `A matching credit dated ${candidates.get(item.portion.id)!.transaction.date} is already waiting in the statement. Confirm that it's the right one.`
+        : `${item.memberName}'s expected income has passed its arrival window. Confirm what actually landed.`,
       target: {
         kind: "button",
         label: "Confirm income",
@@ -859,26 +974,27 @@ function useHomeViewModel({
           id: "weekly-check-in",
           family: "weekly_check_in" as const,
           priority: HOME_ACTION_PRIORITY.weekly_check_in,
+          estimateMinutes: homeActionEstimateMinutes("weekly_check_in"),
           title: "Complete this week's money check-in",
           body: checkInReady
-            ? "The data is current and this month's categories are clean. Record that you reviewed the plan."
-            : "Update recent activity and resolve this month's purpose and who-it-was-for gaps, then record the check-in.",
+            ? "The statements are current and this month's categories are clean. Close the week while the picture is clear."
+            : "Answer the remaining statement and naming gaps, or close the week with those gaps stated plainly.",
           target: {
             kind: "button" as const,
-            label: checkInReady ? "Mark reviewed" : "Acknowledge gaps",
+            label: checkInReady ? "Close the week" : "Close the week anyway",
             onSelect: onCompleteCheckIn,
           },
         }]
       : []),
     ...contributionSuggestions.map((candidate): HomeAction => {
       const contributor = householdMembers.find((member) => member.id === candidate.contributorMemberId)?.name ?? "Household member";
-      const recovered = candidate.expenses.reduce((sum, expense) => sum + expense.amount, 0);
       return {
         id: `contribution-${candidate.debit.id}-${candidate.credit.id}`,
         family: "contribution_confirmation",
         priority: HOME_ACTION_PRIORITY.contribution_confirmation,
+        estimateMinutes: homeActionEstimateMinutes("contribution_confirmation"),
         title: `Confirm ${contributor}'s loan contribution`,
-        body: `${money(candidate.amount)} moved into ${candidate.credit.account} near ${candidate.expenses.length} recovery deduction${candidate.expenses.length === 1 ? "" : "s"} totalling ${money(recovered)}. Review the transfer pair and recovery group before changing settlement.`,
+        body: `The transfer into ${candidate.credit.account} sits beside ${candidate.expenses.length} recovery deduction${candidate.expenses.length === 1 ? "" : "s"}. Check the pair and its recovery group before the settle-up changes.`,
         target: onConfirmContribution
           ? { kind: "button", label: "Review contribution", onSelect: () => onConfirmContribution(candidate) }
           : { kind: "status", label: "Review" },
@@ -888,16 +1004,18 @@ function useHomeViewModel({
       id: `settlement-${transfer.fromId}-${transfer.toId}`,
       family: "settlement",
       priority: HOME_ACTION_PRIORITY.settlement,
+      estimateMinutes: homeActionEstimateMinutes("settlement"),
       title: "Settle household balance",
-      body: `${transfer.fromName} pays ${transfer.toName}: ${money(transfer.amount)}.`,
+      body: `${transfer.fromName} has a recorded balance to settle with ${transfer.toName}. The working stays in The Books.`,
       target: { kind: "status", label: "Settlement" },
     })),
     ...s.possibleFixedCostDuplicates.map((fixed): HomeAction => ({
       id: `fixed-cost-duplicate-${fixed.id}`,
       family: "fixed_cost_duplicate",
       priority: HOME_ACTION_PRIORITY.fixed_cost_duplicate,
+      estimateMinutes: homeActionEstimateMinutes("fixed_cost_duplicate"),
       title: `Check ${fixed.label} for double counting`,
-      body: `A ${money(fixed.amount)} transaction in the same category is already in this month. If it is the same payment, remove this fixed cost.`,
+      body: "A statement row in the same category already appears this month. If it's the same payment, remove the planning copy.",
       target: {
         kind: "button",
         label: "Check budget",
@@ -908,8 +1026,9 @@ function useHomeViewModel({
       id: `holding-link-${fixed.id}`,
       family: "holding_link",
       priority: HOME_ACTION_PRIORITY.holding_link,
+      estimateMinutes: homeActionEstimateMinutes("holding_link"),
       title: `Link ${fixed.label} to an asset`,
-      body: "The installment is excluded from spend, but it needs a Cash, property, FD, policy, fund, or other holding before Mizan can track its cost basis.",
+      body: "The instalment is already excluded from spend. Choose the holding it belongs to so Mizan can keep its cost basis.",
       target: {
         kind: "button",
         label: "Choose holding",
@@ -920,8 +1039,9 @@ function useHomeViewModel({
       id: `ending-commitment-${fixed.id}`,
       family: "ending_commitment",
       priority: HOME_ACTION_PRIORITY.ending_commitment,
+      estimateMinutes: homeActionEstimateMinutes("ending_commitment"),
       title: `${fixed.label} ends ${monthLabel(fixed.until ?? "")}`,
-      body: `${money(fixed.amount)} per month can be redirected once it ends.`,
+      body: "This commitment is almost finished. Decide where its monthly room should go next.",
       target: {
         kind: "button",
         label: "Plan it",
@@ -933,165 +1053,28 @@ function useHomeViewModel({
           id: "save-rate",
           family: "save_rate" as const,
           priority: HOME_ACTION_PRIORITY.save_rate,
+          estimateMinutes: homeActionEstimateMinutes("save_rate"),
           title: "Save-rate target at risk",
-          body: `Projected save rate is below the ${percent(s.targetSaveRate, 0)} target.`,
+          body: "The measured pace is below the promise you set. Open the plan before making a change.",
           target: { kind: "status" as const, label: "At risk", tone: "danger" as const },
         }]
       : []),
   ]);
-  const visibleAttentionItems = showAllActions ? attentionItems : attentionItems.slice(0, 3);
+  const booksAttentionItems = attentionItems.slice(1);
+  const visibleAttentionItems = showAllActions ? booksAttentionItems : booksAttentionItems.slice(0, 3);
 
   return {
     s, onTrack, forecastReady, onOpenImport, onOpenSettings, onReviewQueue,
-    checkInDays, money, moneyIn, percent, solo,
-    financialValuesHidden, onConfirmIncome, candidates, onAddOneOffIncome, attentionItems,
-    visibleAttentionItems, showAllActions, setShowAllActions, onOpenTransactions, efficiency, onReviewEfficiency,
-    onVerifyEfficiency, hasActiveEfficiencyPlan, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
-    waitingForCoverage, forecastIsDated, forecastBasis,
+    checkInDays, money, percent, solo,
+    financialValuesHidden, attentionItems,
+    booksAttentionItems, visibleAttentionItems, showAllActions, setShowAllActions, onOpenTransactions, efficiency, onReviewEfficiency,
+    onVerifyEfficiency, hasActiveEfficiencyPlan, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows,
+    forecastIsDated, history, today, coverageRows, dataNeedsUpdate, measurementExposure, weeklyClose, onOpenWeeklyClose,
+    onMarkSettled, onUndoLastSettlement, canUndoLastSettlement,
   };
 }
 
-type HomeViewModel = ReturnType<typeof useHomeViewModel>;
-
-function HomeHeroSummary({ model }: { model: HomeViewModel }) {
-  const {
-    s, onTrack, forecastReady, money, financialValuesHidden, percent, solo,
-    waitingForCoverage, freshnessLabel, forecastIsDated, forecastBasis,
-  } = model;
-  return (
-    <>
-      <section className={`home-hero ${!forecastReady ? "incomplete" : onTrack ? "good" : "tight"}`}>
-        <div>
-          <span className="soft-label">{monthLabel(s.month)}</span>
-          <h2>
-            {!forecastReady
-              ? "Add activity to read this month"
-              : onTrack
-                ? "You have room to stay on track"
-                : "This month needs a little care"}
-          </h2>
-          {forecastReady ? (
-            <p>
-              At the current pace, you are projected to save <b><MoneyValue formatted={money(s.projectedSaved)} hidden={financialValuesHidden} /></b>. {solo ? "Your" : "The shared"} target
-              is a <MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
-              {forecastIsDated && (
-                <>
-                  {" "}
-                  <span className="muted">
-                    {forecastBasis}
-                    {waitingForCoverage ? ", so it will move once every account is confirmed." : ", so it will move as you catch up."}
-                  </span>
-                </>
-              )}
-            </p>
-          ) : (
-            <p>
-              Import or add this month's activity and Mizan will read it. Your {solo ? "" : "shared "}target remains a
-              {" "}<MoneyValue formatted={percent(s.targetSaveRate, 0)} hidden={financialValuesHidden} /> save rate.
-            </p>
-          )}
-        </div>
-        <div className="hero-meter">
-          {forecastReady ? (
-            <>
-              <span>Projected save rate</span>
-              <strong><MoneyValue formatted={percent(s.projectedSaveRate)} hidden={financialValuesHidden} /></strong>
-              <div className="comfort-track">
-                <span style={{ width: financialValuesHidden ? "0%" : `${Math.max(0, Math.min(100, s.projectedSaveRate))}%` }} />
-                <i style={{ left: financialValuesHidden ? "0%" : `${s.targetSaveRate}%` }} />
-              </div>
-              {forecastIsDated && <p className="muted">{freshnessLabel}</p>}
-            </>
-          ) : (
-            <>
-              <span>Forecast status</span>
-              <strong className="forecast-paused">Waiting for activity</strong>
-              <p>{s.latestTransactionDate ? `Latest activity: ${s.latestTransactionDate}` : "No transactions recorded yet"}</p>
-            </>
-          )}
-        </div>
-      </section>
-
-      <section className="financial-strip" aria-label="Monthly financial summary">
-        <div><span>Available income</span><strong><MoneyValue formatted={money(s.incomeTotal)} hidden={financialValuesHidden} /></strong></div>
-        <div><span>Recorded spend</span><strong><MoneyValue formatted={money(s.attribution.recordedSpend)} hidden={financialValuesHidden} /></strong></div>
-        <div><span>Plan remaining</span><strong><MoneyValue formatted={money(Math.max(0, s.targetSpend - s.totalSpend))} hidden={financialValuesHidden} /></strong></div>
-        <div>
-          <span>Projected saving</span>
-          <strong>{forecastReady ? <MoneyValue formatted={money(s.projectedSaved)} hidden={financialValuesHidden} /> : "—"}</strong>
-        </div>
-      </section>
-
-    </>
-  );
-}
-
-function HomeIncomeSection({ model }: { model: HomeViewModel }) {
-  const {
-    s, hasActivity, money, financialValuesHidden, onAddOneOffIncome, moneyIn,
-    candidates, onConfirmIncome,
-  } = model;
-  return (
-    <>
-      <Disclosure
-        title="Income"
-        summary={`${s.incomeItems.filter((item) => item.receipt).length} of ${s.incomeItems.length} expected deposits confirmed`}
-        defaultOpen={!hasActivity}
-      >
-      <section className="friendly-section income-panel">
-        <div className="friendly-heading">
-          <div>
-            <span className="soft-label">Income</span>
-            <h3>Expected and received</h3>
-          </div>
-          <div className="income-heading-actions">
-            <p><MoneyValue formatted={money(s.incomeTotal)} hidden={financialValuesHidden} /> available after tax</p>
-            {s.protectedIncome > 0 && <small><MoneyValue formatted={money(s.protectedIncome)} hidden={financialValuesHidden} /> protected from the spending plan</small>}
-            {onAddOneOffIncome && <Button variant="secondary" onClick={onAddOneOffIncome}>Add one-off income</Button>}
-          </div>
-        </div>
-        <div className="income-checklist">
-          {s.incomeItems.map((item) => {
-            const window = item.portion.window;
-            const candidate = candidates.get(item.portion.id);
-            const oneOff = item.portion.schedule.frequency === "one_off";
-            const statusLabel = item.receipt?.currencyReview
-              ? "Check currency"
-              : item.missingRate
-              ? `Missing ${item.portion.currency} rate`
-              : item.status === "received"
-                ? item.receipt?.transactionId ? "Received · matched" : "Received"
-                : oneOff && item.status === "overdue" && !item.countsInTotal
-                  ? "Overdue · excluded"
-                : item.status === "due"
-                  ? `${oneOff ? "Expected · " : ""}Due day ${window?.startDay}-${window?.endDay}`
-                  : item.status === "overdue"
-                    ? "Overdue"
-                    : item.status === "upcoming"
-                      ? `${oneOff ? "Expected · " : ""}Upcoming day ${window?.startDay}-${window?.endDay}`
-                      : oneOff ? "Expected" : "No arrival date";
-            return <div className="income-check-row" key={`${item.memberId}-${item.portion.id}`}>
-              <span className="color-dot" style={{ background: item.memberColor }} />
-              <div>
-                <strong>{item.portion.label}</strong>
-                <small>
-                  {item.memberName}{item.portion.currency ? ` · ${item.portion.currency}` : ""}
-                  {oneOff ? ` · One-off${item.budgetTreatment === "protected" ? " · Protected" : ""}` : ""}
-                </small>
-                {candidate && <small className="income-match-hint">Matched {candidate.transaction.description} · {candidate.transaction.date}</small>}
-              </div>
-              <b>{moneyIn(item.nativeNet, item.nativeCurrency)}{!item.countsInTotal ? " expected" : ""}</b>
-              <span className={`income-status ${item.receipt?.currencyReview || item.missingRate ? "missing" : item.status}`}>{statusLabel}</span>
-              <Button variant="secondary" onClick={() => onConfirmIncome(item, candidate)}>{item.receipt ? "Edit income" : "Confirm income"}</Button>
-            </div>;
-          })}
-        </div>
-      </section>
-      </Disclosure>
-
-    </>
-  );
-}
+export type HomeViewModel = ReturnType<typeof useHomeViewModel>;
 
 function HomeActionControl({
   target,
@@ -1115,16 +1098,16 @@ function HomeActionControl({
 
 function HomeAttentionSection({ model }: { model: HomeViewModel }) {
   const {
-    hasActivity, attentionItems, forecastReady, onTrack, visibleAttentionItems,
+    hasActivity, booksAttentionItems, forecastReady, onTrack, visibleAttentionItems,
     setShowAllActions, showAllActions, forecastIsDated,
   } = model;
   return (
     <>
-      {(hasActivity || attentionItems.length > 0) && <section className="friendly-section attention-section">
+      {(hasActivity || booksAttentionItems.length > 0) && <section className="friendly-section attention-section">
         <div className="friendly-heading">
           <div>
             <span className="soft-label">Needs attention</span>
-            <h3>{attentionItems.length ? "Handle these first" : "No urgent action"}</h3>
+            <h3>{booksAttentionItems.length ? "Also waiting" : "Nothing else is waiting"}</h3>
           </div>
           <p>
             {!forecastReady
@@ -1137,9 +1120,9 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
           </p>
         </div>
         <div className="attention-grid">
-          {attentionItems.length ? (
+          {booksAttentionItems.length ? (
             visibleAttentionItems.map((item, index) => {
-              const rank = index === 0 ? "primary" : index < 3 ? "secondary" : "backlog";
+              const rank = index < 3 ? "secondary" : "backlog";
               return (
               <div
                 className="attention-card"
@@ -1149,7 +1132,6 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
                 key={item.id}
               >
                 <div>
-                  {index === 0 && <span className="soft-label">Do this next</span>}
                   {index === 3 && <span className="soft-label">Backlog</span>}
                   <strong>{item.title}</strong>
                   <p>{item.body}</p>
@@ -1166,20 +1148,20 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
           ) : (
             <div className="attention-card calm">
               <div>
-                <strong>Keep watching the pace</strong>
-                <p>No stale data, review items, possible double counts, settlement, or ending commitments need action right now.</p>
+                <strong>Nothing else is waiting.</strong>
+                <p>The next action is on Balance; no additional review, double count, settlement, or ending commitment needs attention here.</p>
               </div>
               <span className="attention-pill">Clear</span>
             </div>
           )}
         </div>
-        {attentionItems.length > 3 && (
+        {booksAttentionItems.length > 3 && (
           <button
             aria-expanded={showAllActions}
             className="link-button action-queue-toggle"
             onClick={() => setShowAllActions((current) => !current)}
           >
-            {showAllActions ? "Show priority tasks" : `Show ${attentionItems.length - 3} more`}
+            {showAllActions ? "Show priority tasks" : `Show ${booksAttentionItems.length - 3} more`}
           </button>
         )}
       </section>}
@@ -1188,16 +1170,26 @@ function HomeAttentionSection({ model }: { model: HomeViewModel }) {
   );
 }
 
-function HomeAssetSection({ model }: { model: HomeViewModel }) {
+function HomeAssetSection({ model, defaultOpen = false }: { model: HomeViewModel; defaultOpen?: boolean }) {
   const { s, money, financialValuesHidden, onOpenSettings } = model;
   const snapshot = s.assetSnapshot;
-  if (!snapshot.rows.length && s.investmentContributions <= 0 && s.plannedInvestmentContributions <= 0) return null;
+  if (!snapshot.rows.length && s.investmentContributions <= 0 && s.plannedInvestmentContributions <= 0) {
+    return defaultOpen ? (
+      <section className="ledger-empty-state">
+        <span className="soft-label">Assets</span>
+        <h3>No holdings are recorded yet</h3>
+        <p>Add a holding when you want contributions and current value to stay separate in the household record.</p>
+        <Button variant="secondary" onClick={() => onOpenSettings({ tab: "assets", section: "assets" })}>Add a holding</Button>
+      </section>
+    ) : null;
+  }
   return (
     <Disclosure
       title="Assets & investments"
       summary={snapshot.totalValue > 0
         ? `${money(snapshot.totalValue)} across ${snapshot.rows.length} holding${snapshot.rows.length === 1 ? "" : "s"}`
         : `${snapshot.rows.length} holding${snapshot.rows.length === 1 ? "" : "s"} awaiting valuation`}
+      defaultOpen={defaultOpen}
     >
       <section className="friendly-section asset-overview">
         <div className="friendly-heading">
@@ -1257,45 +1249,21 @@ function HomeAssetSection({ model }: { model: HomeViewModel }) {
   );
 }
 
-function HomeOverview({ model }: { model: HomeViewModel }) {
+function detailModel(model: HomeViewModel): HomeDetailModel {
   const {
-    s, onOpenSettings, checkInDays, money, percent, financialValuesHidden, solo,
-    onOpenTransactions, efficiency, hasActiveEfficiencyPlan, onReviewEfficiency,
-    onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, freshnessLabel, movementRows, coverageRows,
+    s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency, hasActiveEfficiencyPlan,
+    onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, onOpenSettings,
+    freshnessLabel, checkInDays, movementRows, coverageRows,
   } = model;
-  if (!s.incomeItems.length) {
-    return (
-      <section className="home-hero tight onboard">
-        <div>
-          <span className="soft-label">Setup</span>
-          <h2>Start with your income</h2>
-          <p>
-            Mizan needs each member's income to judge every month against the save-rate target. Add recurring fixed
-            costs only for commitments that are not already counted in imported transactions.
-          </p>
-        </div>
-        <div className="hero-meter">
-          <Button variant="primary" onClick={() => onOpenSettings({ tab: "household", section: "income" })}>Open income settings</Button>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <div className="household-home">
-      <HomeHeroSummary model={model} />
-      <HomeIncomeSection model={model} />
-      <HomeAttentionSection model={model} />
-      <HomeAssetSection model={model} />
-      <HomeDetailSections model={{
-        summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency, hasActiveEfficiencyPlan,
-        onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview,
-        onOpenSettings, freshnessLabel, checkInDays, movementRows, coverageRows,
-      }} />
-    </div>
-  );
+  return {
+    summary: s, money, percent, financialValuesHidden, solo, onOpenTransactions, efficiency, hasActiveEfficiencyPlan,
+    onReviewEfficiency, onVerifyEfficiency, hasActivity, fixedCommitmentsNeedReview, onOpenSettings,
+    freshnessLabel, checkInDays, movementRows, coverageRows,
+  };
 }
 
-export function HomeView(props: Parameters<typeof useHomeViewModel>[0]) {
-  return <HomeOverview model={useHomeViewModel(props)} />;
+export function HomeBooksContent({ model, section }: { model: HomeViewModel; section: HomeBooksSection }) {
+  if (section === "waiting") return <HomeAttentionSection model={model} />;
+  if (section === "assets") return <HomeAssetSection model={model} defaultOpen />;
+  return <HomeDetailSections model={detailModel(model)} section={section} />;
 }

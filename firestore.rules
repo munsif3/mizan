@@ -23,6 +23,7 @@ service cloud.firestore {
         "settings",
         "transactions",
         "sharedContributions",
+        "settlements",
         "accounts",
         "fixedCosts",
         "assetHoldings",
@@ -50,7 +51,7 @@ service cloud.firestore {
     // lock every other member's client out of the household.
     function validVersionField(data) {
       return !("schemaVersion" in data)
-        || (data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 10);
+        || (data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 12);
     }
 
     // The snapshot manifest is the compare-and-swap authority for the whole
@@ -73,6 +74,7 @@ service cloud.firestore {
       return collectionId in [
         "transactions",
         "sharedContributions",
+        "settlements",
         "accounts",
         "fixedCosts",
         "assetHoldings",
@@ -98,7 +100,7 @@ service cloud.firestore {
       return !(collectionId in ["settings", "snapshots"])
         || (
           data.keys().hasOnly(["schemaVersion", "targetSaveRate", "currency", "locale", "fxRates", "updatedAt", "updatedBy"])
-          && data.schemaVersion == 10
+          && data.schemaVersion == 12
           && data.targetSaveRate is number
           && data.currency is string && data.currency.size() <= 16
           && data.locale is string && data.locale.size() <= 32
@@ -128,13 +130,47 @@ service cloud.firestore {
       );
     }
 
-    function validHouseholdDoc(collectionId, docId, data) {
+    function validWeeklyClose(collectionId, docId, householdId, data) {
+      return collectionId != "weeklyCloses"
+        || (
+          data.keys().hasOnly(["id", "householdId", "uid", "weekIso", "closedAt", "stepsCompleted", "sortedCount", "committedPlanId"])
+          && data.id is string && data.id == docId && data.id.size() > 0 && data.id.size() <= 160
+          && data.householdId is string && data.householdId == householdId
+          && data.uid is string && data.uid == request.auth.uid
+          && data.weekIso is string && data.weekIso.size() == 8
+          && data.closedAt is string
+          && data.stepsCompleted is list
+          && data.stepsCompleted.size() <= 4
+          && data.stepsCompleted.hasOnly(["catch-up", "sort", "read", "decide"])
+          && data.sortedCount is int && data.sortedCount >= 0
+          && (!("committedPlanId" in data) || data.committedPlanId is string)
+        );
+    }
+
+    function validSettlement(collectionId, docId, householdId, data) {
+      return collectionId != "settlements"
+        || (
+          data.keys().hasOnly(["id", "householdId", "month", "fromMemberId", "toMemberId", "amount", "settledAt", "settledByUid", "__order"])
+          && data.id is string && data.id == docId && data.id.size() > 0 && data.id.size() <= 160
+          && data.householdId is string && data.householdId == householdId
+          && data.month is string && data.month.matches("^[0-9]{4}-(0[1-9]|1[0-2])$")
+          && data.fromMemberId is string && data.fromMemberId.size() > 0
+          && data.toMemberId is string && data.toMemberId.size() > 0
+          && data.fromMemberId != data.toMemberId
+          && data.amount is number && data.amount != 0
+          && data.settledAt is string && data.settledAt.size() > 0
+          && data.settledByUid is string && data.settledByUid == request.auth.uid
+        );
+    }
+
+    function validHouseholdDoc(collectionId, docId, householdId, data) {
       return withinKeyBudget(data)
         && validVersionField(data)
         && validManifest(collectionId, data)
         && validDocumentIdentity(collectionId, docId, data)
         && validCloudSettings(collectionId, data)
-        && validKeyedDocument(collectionId, data);
+        && validKeyedDocument(collectionId, data)
+        && validSettlement(collectionId, docId, householdId, data);
     }
 
     function hasVerifiedGoogleIdentity() {
@@ -247,12 +283,38 @@ service cloud.firestore {
       allow update: if false;
     }
 
+    // Weekly progress is per access identity, even though it is stored beside
+    // the household data. A member may not read or overwrite another user's
+    // ritual history.
+    match /households/{householdId}/weeklyCloses/{docId} {
+      allow read: if isMember(householdId) && resource.data.uid == request.auth.uid;
+      allow create: if isMemberAfter(householdId)
+        && request.resource.data.uid == request.auth.uid
+        && validWeeklyClose("weeklyCloses", docId, householdId, request.resource.data);
+      allow update: if isMemberAfter(householdId)
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && validWeeklyClose("weeklyCloses", docId, householdId, request.resource.data);
+      allow delete: if false;
+    }
+
+    // Settlements are immutable evidence. A correction is another record
+    // (the UI appends an inverse record for undo), never an update or delete.
+    match /households/{householdId}/settlements/{docId} {
+      allow read: if isMember(householdId);
+      allow create: if isMemberAfter(householdId)
+        && validSettlement("settlements", docId, householdId, request.resource.data);
+      allow update, delete: if false;
+    }
+
     match /households/{householdId}/{collectionId}/{docId} {
       allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
       allow create, update: if isHouseholdDataCollection(collectionId)
+        && collectionId != "settlements"
         && isMemberAfter(householdId)
-        && validHouseholdDoc(collectionId, docId, request.resource.data);
+        && validHouseholdDoc(collectionId, docId, householdId, request.resource.data);
       allow delete: if isHouseholdDataCollection(collectionId)
+        && collectionId != "settlements"
         && collectionId != "snapshotManifest"
         && isMemberAfter(householdId)
         && (
@@ -266,10 +328,34 @@ service cloud.firestore {
 
     match /households/{householdId}/snapshots/{revision}/{collectionId}/{docId} {
       allow read: if isHouseholdDataCollection(collectionId) && isMember(householdId);
-      allow create, update: if isHouseholdDataCollection(collectionId)
+      allow create: if collectionId == "settlements"
         && isMemberAfter(householdId)
-        && validHouseholdDoc(collectionId, docId, request.resource.data);
+        && validSettlement("settlements", docId, householdId, request.resource.data);
+      allow update: if collectionId != "settlements"
+        && isHouseholdDataCollection(collectionId)
+        && isMemberAfter(householdId)
+        && validHouseholdDoc(collectionId, docId, householdId, request.resource.data);
+      allow delete: if collectionId == "settlements"
+        && isHouseholdDataCollection(collectionId)
+        && isMemberAfter(householdId)
+        && (
+          (exists(manifestPath(householdId))
+            && get(manifestPath(householdId)).data.activeRevision != revision)
+          || (
+            exists(manifestPath(householdId))
+            && existsAfter(manifestPath(householdId))
+            && get(manifestPath(householdId)).data.activeRevision == revision
+            && getAfter(manifestPath(householdId)).data.activeRevision == revision
+            && getAfter(manifestPath(householdId)).data.versionToken != get(manifestPath(householdId)).data.versionToken
+            && getAfter(manifestPath(householdId)).data.updatedBy == request.auth.uid
+          )
+        );
+      allow create, update: if isHouseholdDataCollection(collectionId)
+        && collectionId != "settlements"
+        && isMemberAfter(householdId)
+        && validHouseholdDoc(collectionId, docId, householdId, request.resource.data);
       allow delete: if isHouseholdDataCollection(collectionId)
+        && collectionId != "settlements"
         && isMemberAfter(householdId)
         && (
           (

@@ -25,6 +25,16 @@ describe("encrypted backups", () => {
       direction: "debit",
       kind: "expense",
     });
+    data.settlements.push({
+      id: "settlement_1",
+      householdId: "hh_1",
+      month: "2026-07",
+      fromMemberId: "alex",
+      toMemberId: "sam",
+      amount: 100,
+      settledAt: "2026-07-15T12:00:00.000Z",
+      settledByUid: "user_1",
+    });
 
     const encoded = await serializeBackup(data, "correct horse battery staple");
     expect(backupRequiresPassword(encoded)).toBe(true);
@@ -32,6 +42,7 @@ describe("encrypted backups", () => {
     expect(encoded).not.toContain("secret-transaction");
     const restored = await parseEncryptedBackup(encoded, "correct horse battery staple");
     expect(restored.transactions).toEqual(data.transactions);
+    expect(restored.settlements).toEqual(data.settlements);
     expect(restored.settings.currency).toBe("LKR");
   });
 

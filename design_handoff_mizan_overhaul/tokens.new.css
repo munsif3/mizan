@@ -1,0 +1,172 @@
+/*
+ * Mizan overhaul — replacement for src/styles/tokens.css
+ *
+ * Keeps the existing --ql-* variable NAMES so nothing downstream breaks, and
+ * adds the new roles the redesign needs (measurement confidence, the balance
+ * instrument, the ritual surface). Drop this in, then delete rules from
+ * views.css as each screen is rebuilt.
+ *
+ * Font loading (index.html <head>):
+ * <link rel="preconnect" href="https://fonts.googleapis.com">
+ * <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ * <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Instrument Sans replaces Inter for all UI text. */
+  font-family: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Instrument Serif replaces Georgia for every display figure and headline. */
+  --ql-font-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  /* --- surfaces ------------------------------------------------------- */
+  --ql-canvas: #f4efe6;          /* was #f6f5f1 — warmer, more paper */
+  --ql-surface: #ffffff;
+  --ql-subtle: #eae4d8;
+  --ql-sunken: #faf8f3;          /* NEW: inset rows inside a card */
+  --ql-ink-surface: #10201a;     /* NEW: the ritual / instrument surface */
+  --ql-ink-surface-2: #1c2b24;   /* NEW: raised element on ink */
+  --ql-ink-line: #2a3630;        /* NEW: hairline on ink */
+  --ql-on-ink: #dcd7c9;
+  --ql-on-ink-strong: #f4efe6;
+  --ql-on-ink-muted: #9ea79f;
+
+  /* --- text ----------------------------------------------------------- */
+  --ql-text: #10201a;            /* was #1b2620 */
+  --ql-muted: #5a6862;
+  --ql-faint: #8a7f6e;           /* NEW: eyebrows, captions on paper */
+  --ql-border: #e0dace;          /* was #d7d9d4 */
+  --ql-border-strong: #d6cfc1;
+
+  /* --- brand ---------------------------------------------------------- */
+  --ql-brand: #14483a;           /* was #1f5b46 — deeper */
+  --ql-brand-hover: #0f3a2e;
+  --ql-on-brand: #ffffff;
+  --ql-brand-soft: #e8f0ea;
+  --ql-brand-tint: #8fbfa4;      /* NEW: brand on ink surfaces */
+
+  /* --- status --------------------------------------------------------- */
+  --ql-success: #14483a;
+  --ql-success-surface: #e8f0ea;
+  --ql-warning: #8a6a18;
+  --ql-warning-surface: #f6ecda;
+  --ql-danger: #a94e28;          /* clay, not red — attention, not alarm */
+  --ql-danger-surface: #f7ebe3;
+  --ql-danger-border: #e8cdbb;
+  --ql-info: #2f6074;
+  --ql-info-surface: #eaf0f3;
+
+  /* --- measurement confidence (NEW, load-bearing) --------------------- */
+  /* Anything Mizan has READ is filled. Anything it BELIEVES EXISTS but has
+     not read is drawn hollow with --ql-unmeasured. It is never filled with
+     an estimate. See README §"The measurement contract". */
+  --ql-measured: var(--ql-brand);
+  --ql-unmeasured: #a94e28;
+  --ql-unmeasured-stroke: 1.5px dashed var(--ql-unmeasured);
+  --ql-plan-hatch: repeating-linear-gradient(135deg, #ede7db 0 7px, #e3dccd 7px 14px);
+
+  /* --- the balance instrument (NEW) ----------------------------------- */
+  --ql-beam: #c9a227;            /* gold beam + fulcrum */
+  --ql-beam-post: #4a554e;
+  --ql-beam-max-tilt: 7deg;      /* clamp; see README §"Balance instrument" */
+
+  /* --- member colours ------------------------------------------------- */
+  /* Unchanged: member.color is user data, keep reading it from AppData. */
+
+  /* --- spacing / radius ----------------------------------------------- */
+  --ql-space-1: 4px;
+  --ql-space-2: 8px;
+  --ql-space-3: 12px;
+  --ql-space-4: 16px;
+  --ql-space-6: 24px;
+  --ql-space-8: 32px;
+  --ql-space-12: 48px;
+  --ql-radius-control: 10px;     /* was 6px */
+  --ql-radius-panel: 16px;       /* was 8px */
+  --ql-radius-pill: 999px;
+  --ql-rail-width: 88px;         /* NEW */
+  --ql-page-width: 1200px;
+
+  /* --- elevation ------------------------------------------------------ */
+  --ql-shadow-card: 0 1px 2px rgba(16, 32, 26, .04), 0 14px 32px rgba(16, 32, 26, .05);
+  --ql-shadow-raised: 0 1px 2px rgba(16, 32, 26, .05), 0 16px 36px rgba(16, 32, 26, .07);
+  --ql-shadow-overlay: 0 24px 72px rgba(16, 32, 26, .2);
+  --ql-overlay: rgba(16, 32, 26, .62);
+  --ql-soft-border: rgba(16, 32, 26, .22);
+  --ql-focus-ring: color-mix(in srgb, var(--ql-brand) 62%, transparent);
+  --ql-hover-surface: color-mix(in srgb, var(--ql-brand) 7%, transparent);
+  --ql-selected-surface: var(--ql-subtle);
+
+  background: var(--ql-canvas);
+  color: var(--ql-text);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ql-canvas: #0d1713;
+  --ql-surface: #14201b;
+  --ql-subtle: #1c2b24;
+  --ql-sunken: #101a16;
+  --ql-ink-surface: #060d0a;
+  --ql-ink-surface-2: #14201b;
+  --ql-ink-line: #24312b;
+  --ql-on-ink: #dcd7c9;
+  --ql-on-ink-strong: #f4efe6;
+  --ql-on-ink-muted: #8e9690;
+
+  --ql-text: #f1f3ef;
+  --ql-muted: #b0b8b2;
+  --ql-faint: #8b8578;
+  --ql-border: #2a352e;
+  --ql-border-strong: #3a463e;
+
+  --ql-brand: #8fbfa4;
+  --ql-brand-hover: #a7ddbb;
+  --ql-on-brand: #08150f;
+  --ql-brand-soft: #16281f;
+  --ql-brand-tint: #8fbfa4;
+
+  --ql-success: #8fbfa4;
+  --ql-success-surface: #16281f;
+  --ql-warning: #e0b36b;
+  --ql-warning-surface: #2e2517;
+  --ql-danger: #e0a07a;
+  --ql-danger-surface: #2b1a12;
+  --ql-danger-border: #4a3527;
+  --ql-info: #86c3d3;
+  --ql-info-surface: #142a31;
+
+  --ql-unmeasured: #e0a07a;
+  --ql-plan-hatch: repeating-linear-gradient(135deg, #1e2a24 0 7px, #182219 7px 14px);
+  --ql-beam: #e4c351;
+  --ql-beam-post: #3c4741;
+
+  --ql-shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 14px 32px rgba(0, 0, 0, .28);
+  --ql-shadow-raised: 0 1px 2px rgba(0, 0, 0, .35), 0 16px 36px rgba(0, 0, 0, .34);
+  --ql-shadow-overlay: 0 28px 90px rgba(0, 0, 0, .5);
+  --ql-overlay: rgba(2, 6, 4, .78);
+  --ql-soft-border: rgba(241, 243, 239, .22);
+}
+
+/* Type scale used by the redesign — apply with these exact values. */
+.mz-display-xl { font-family: var(--ql-font-display); font-weight: 400; font-size: 60px; line-height: 1.03; letter-spacing: -.01em; }
+.mz-display-l  { font-family: var(--ql-font-display); font-weight: 400; font-size: 44px; line-height: 1.06; letter-spacing: -.01em; }
+.mz-display-m  { font-family: var(--ql-font-display); font-weight: 400; font-size: 31px; line-height: 1.12; }
+.mz-display-s  { font-family: var(--ql-font-display); font-weight: 400; font-size: 26px; line-height: 1.20; }
+.mz-figure     { font-family: var(--ql-font-display); font-weight: 400; font-size: 27px; font-variant-numeric: tabular-nums; }
+.mz-body-l     { font-size: 17px; line-height: 1.6; }
+.mz-body       { font-size: 15px; line-height: 1.6; }
+.mz-body-s     { font-size: 14px; line-height: 1.55; }
+.mz-caption    { font-size: 13px; line-height: 1.5; }
+.mz-eyebrow    { font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--ql-faint); }
+
+/* Mobile: display sizes step down one rung. */
+@media (max-width: 720px) {
+  .mz-display-xl { font-size: 34px; line-height: 1.12; }
+  .mz-display-l  { font-size: 30px; }
+  .mz-display-m  { font-size: 26px; }
+  .mz-display-s  { font-size: 22px; }
+}

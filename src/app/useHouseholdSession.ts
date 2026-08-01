@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { authErrorMessage, signInWithGoogle, signOutUser, useAuthState } from "../auth/authStore";
 import { clearTransactionHistory } from "../domain/dataCleanup";
-import type { AppData, CategoryKey } from "../domain/types";
+import type { AppData, CategoryKey, WeeklyClose } from "../domain/types";
 import { getFirebaseServices } from "../firebase/client";
 import {
   FirestoreHouseholdRepository,
@@ -19,7 +19,7 @@ import {
 } from "../household/firestoreRepository";
 import { hasLocalFinancialData } from "../household/households";
 import { sync, type SyncState } from "./syncState";
-import { readLocalConvenience, writeLocalConvenience } from "./localConvenience";
+import { migrateView, readLocalConvenience, writeLocalConvenience, type PersistedView } from "./localConvenience";
 import { EMPTY_LEDGER_FILTERS, useBrowserPreferences } from "./useBrowserPreferences";
 import type { HouseholdMeta, UserHouseholdLink } from "../household/types";
 import { clearLegacyLocalData, hasLegacyLocalData, loadLegacyLocalData } from "../storage/legacyBrowserData";
@@ -29,7 +29,7 @@ import { emptyData } from "../storage/schema";
 import { CLEAR_TRANSACTIONS_CONFIRMATION, RESET_CONFIRMATION } from "./destructiveConfirmations";
 import type { BeneficiaryFilter, PayerFilter } from "../ui/TransactionsView";
 
-export type View = "home" | "transactions" | "history";
+export type View = PersistedView;
 export type BootstrapPhase = "idle" | "loading-profile" | "loading-household" | "needs-household" | "ready" | "error";
 
 export type { ConflictResolution, HouseholdConflict } from "./useCloudSync";
@@ -52,10 +52,6 @@ function beneficiaryFilterValue(value: string | undefined): BeneficiaryFilter {
 
 function payerFilterValue(value: string | undefined): PayerFilter {
   return value === "joint" || value?.startsWith("member:") ? value as PayerFilter : "all";
-}
-
-function isView(value: string): value is View {
-  return value === "home" || value === "transactions" || value === "history";
 }
 
 function startupMark(name: (typeof STARTUP_MARKS)[number]) {
@@ -97,9 +93,10 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
   const [data, setData] = useState<AppData>(() => emptyData());
   const [legacyData, setLegacyData] = useState<AppData | null>(() => loadLegacyLocalData());
   const [legacyPresent, setLegacyPresent] = useState(() => hasLegacyLocalData());
-  const [view, setView] = useState<View>("home");
+  const [view, setView] = useState<View>("balance");
   const [month, setMonth] = useState("");
   const [lastCheckInByHousehold, setLastCheckInByHousehold] = useState<Record<string, string>>({});
+  const [weeklyCloses, setWeeklyCloses] = useState<WeeklyClose[]>([]);
   const [notice, setNotice] = useState("");
   const [householdMeta, setHouseholdMeta] = useState<HouseholdMeta | null>(null);
   const [availableHouseholds, setAvailableHouseholds] = useState<UserHouseholdLink[]>([]);
@@ -116,6 +113,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     setRepository(null);
     setHouseholdMeta(null);
     setData(emptyData());
+    setWeeklyCloses([]);
     writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, "");
     setAvailableHouseholds((current) => current.filter((item) => item.householdId !== removedId));
     setBootstrapPhase("needs-household");
@@ -129,6 +127,8 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     adoptLoadedData,
     flushPendingAutosave,
     saveAuthoritativeSnapshot,
+    saveWeeklyClose: writeWeeklyClose,
+    saveSettlement: writeSettlement,
   } = useCloudSync({ repository, data, setData, clearUndo, setSyncStatus, onAccessRemoved });
 
   useEffect(() => {
@@ -165,6 +165,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     setRepository(null);
     setHouseholdMeta(null);
     setData(emptyData());
+    setWeeklyCloses([]);
     setBootstrapPhase("loading-profile");
     setBootstrapError("");
     setSyncStatus(sync.syncing("Loading cloud profile"));
@@ -179,7 +180,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
         startupMeasure("profile", "profile-start", "profile-ready");
         setPrivacy(profile.privacy);
         if (profile.theme) setTheme(profile.theme);
-        if (isView(profile.lastView)) setView(profile.lastView);
+        setView(migrateView(profile.lastView));
         if (profile.lastMonth) setMonth(profile.lastMonth);
         setLedgerFilters({
           category: (profile.categoryFilter || "all") as CategoryKey | "all",
@@ -210,7 +211,8 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
           startupMeasure("household-data", "household-start", "data-ready");
           return cloudData;
         });
-        const [meta, cloudData] = await Promise.all([metaRequest, dataRequest]);
+        const weeklyClosesRequest = repo.loadWeeklyCloses?.() ?? Promise.resolve([]);
+        const [meta, cloudData, loadedWeeklyCloses] = await Promise.all([metaRequest, dataRequest, weeklyClosesRequest]);
         if (cancelled) return;
         const activated = await activateHousehold(
           meta,
@@ -221,7 +223,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
             isCancelled: () => cancelled,
             rethrow: true,
           },
-          { repo, cloudData },
+          { repo, cloudData, weeklyCloses: loadedWeeklyCloses },
         );
         if (!cancelled && activated) profileLoaded.current = true;
       } catch (error) {
@@ -313,7 +315,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       resetTransientState();
       setMonth("");
       setLedgerFilters(EMPTY_LEDGER_FILTERS);
-      setView("home");
+      setView("balance");
       setLastCheckInByHousehold((previous) => {
         const next = { ...previous };
         delete next[householdMeta.id];
@@ -338,7 +340,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       isCancelled?: () => boolean;
       rethrow?: boolean;
     },
-    prepared?: { repo: FirestoreHouseholdRepository; cloudData: AppData },
+    prepared?: { repo: FirestoreHouseholdRepository; cloudData: AppData; weeklyCloses?: WeeklyClose[] },
   ) {
     if (auth.status !== "signed-in" || !services) return false;
     const activation = options.activation ?? ++activationVersion.current;
@@ -346,8 +348,10 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     try {
       const repo = prepared?.repo ?? new FirestoreHouseholdRepository(services.db, meta.id, auth.user.uid);
       const cloudData = prepared?.cloudData ?? await repo.load();
+      const loadedWeeklyCloses = prepared?.weeklyCloses ?? await repo.loadWeeklyCloses?.() ?? [];
       if (isCancelled()) return false;
       adoptLoadedData(cloudData);
+      setWeeklyCloses(loadedWeeklyCloses);
       clearUndo();
       resetTransientState();
       if (!options.preserveViewState) {
@@ -478,6 +482,7 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
       setRepository(null);
       setHouseholdMeta(null);
       setData(emptyData());
+      setWeeklyCloses([]);
       writeLocalConvenience(ACTIVE_HOUSEHOLD_KEY, "");
       setAvailableHouseholds((current) => current.filter((item) => item.householdId !== leavingId));
       setBootstrapPhase("needs-household");
@@ -512,9 +517,10 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     setHouseholdMeta(null);
     setAvailableHouseholds([]);
     setData(emptyData());
+    setWeeklyCloses([]);
     setLastCheckInByHousehold({});
     setMonth("");
-    setView("home");
+    setView("balance");
     setLedgerFilters(EMPTY_LEDGER_FILTERS);
     clearUndo();
     resetTransientState();
@@ -545,6 +551,10 @@ export function useHouseholdSession({ clearUndo, resetTransientState }: SessionC
     setLedgerFilters,
     lastCheckInByHousehold,
     setLastCheckInByHousehold,
+    weeklyCloses,
+    setWeeklyCloses,
+    saveWeeklyClose: writeWeeklyClose,
+    saveSettlement: writeSettlement,
     notice,
     setNotice,
     householdMeta,

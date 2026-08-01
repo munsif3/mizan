@@ -1,1 +1,3 @@
-{}
+{
+  "ignoreFiles": ["design_handoff_mizan_overhaul/**"]
+}

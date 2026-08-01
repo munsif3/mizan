@@ -42,6 +42,7 @@ function isRecognizedLegacyBackup(value: unknown): value is Record<string, unkno
   return Array.isArray(value.transactions)
     || Array.isArray(value.fixedCosts)
     || Array.isArray(value.fixedNonCard)
+    || Array.isArray(value.settlements)
     || isRecord(value.settings)
     || isRecord(value.splits)
     || isRecord(value.income);

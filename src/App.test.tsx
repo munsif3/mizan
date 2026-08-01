@@ -2,13 +2,13 @@ import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import App, { importedMonthContext } from "./App";
 import { sync } from "./app/syncState";
-import { computeMonthSummary, reviewQueue } from "./domain/summary";
+import { computeMonthSummary } from "./domain/summary";
 import type { AppData } from "./domain/types";
 import { emptyData } from "./storage/schema";
 import { AuthGate } from "./ui/AuthGate";
+import { BalanceView } from "./ui/BalanceView";
 import { ClearTransactionsModal, isClearTransactionsConfirmation } from "./ui/ClearTransactionsModal";
 import { CsvImportModal } from "./ui/CsvImportModal";
-import { HomeView } from "./ui/HomeView";
 import { ImportModal } from "./ui/ImportModal";
 import { IncomeConfirmModal } from "./ui/IncomeConfirmModal";
 import { ManualModal } from "./ui/ManualModal";
@@ -91,11 +91,11 @@ describe("UI render smoke", () => {
     expect(html).toContain("Google sign-in is not enabled");
   });
 
-  it("renders the home view with N-member settlement", () => {
+  it("renders the streamlined Balance view without dropping the Books entry", () => {
     const data = threeMemberData();
     const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     const html = renderToString(
-      <HomeView
+      <BalanceView
         summary={summary}
         money={(v) => `USD ${v}`}
         lastCheckInAt=""
@@ -104,15 +104,15 @@ describe("UI render smoke", () => {
         onReviewQueue={() => {}}
         onCompleteCheckIn={() => {}}
         onConfirmIncome={() => {}}
+        onOpenBooks={() => {}}
       />,
     );
-    expect(html).toContain("Monthly financial summary");
-    expect(html).toContain("Spending and settlement");
-    expect(html).toContain("Needs attention");
-    expect(html).toContain("Income");
-    expect(html).toContain("0 of 3 expected deposits confirmed");
+    expect(html).toContain("You&#x27;ve saved");
+    expect(html).toContain("income, accounted for");
     expect(html).toContain("Bring transactions up to date");
-    expect(html).toContain("Review queue");
+    expect(html).toContain("Open the books");
+    expect(html).toContain("Between you");
+    expect(html).not.toContain("Monthly financial summary");
   });
 
   it("renders the income confirmation modal with self-paid tax guidance", () => {
@@ -179,19 +179,18 @@ describe("UI render smoke", () => {
     }];
     const confirmed = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     const home = renderToString(
-      <HomeView
+      <BalanceView
         summary={confirmed}
         money={(value) => `LKR ${Math.round(value).toLocaleString("en-US")}`}
-        currencyMoney={(value, currency) => `${currency} ${Math.round(value).toLocaleString("en-US")}`}
         lastCheckInAt=""
         onOpenSettings={() => {}}
         onOpenImport={() => {}}
         onReviewQueue={() => {}}
         onCompleteCheckIn={() => {}}
         onConfirmIncome={() => {}}
+        onOpenBooks={() => {}}
       />,
     );
-    expect(home).toContain("1 of 1 expected deposits confirmed");
     expect(home).toContain("LKR 595,386");
   });
 
@@ -200,7 +199,7 @@ describe("UI render smoke", () => {
     data.transactions = [];
     const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 10));
     const html = renderToString(
-      <HomeView
+      <BalanceView
         summary={summary}
         money={(v) => `USD ${v}`}
         lastCheckInAt=""
@@ -209,15 +208,15 @@ describe("UI render smoke", () => {
         onReviewQueue={() => {}}
         onCompleteCheckIn={() => {}}
         onConfirmIncome={() => {}}
+        onOpenBooks={() => {}}
       />,
     );
-    expect(html).toContain("Add activity to read this month");
-    expect(html).toContain("Waiting for activity");
-    expect(html).not.toContain("You are on track");
-    expect(html).not.toContain("Monthly categories");
+    expect(html).toContain("hasn&#x27;t been measured yet");
+    expect(html).toContain("entirely-unmeasured");
+    expect(html).not.toContain("You&#x27;ve saved");
   });
 
-  it("offers a weekly completion action only after current data is clean", () => {
+  it("renders the weekly ritual alongside the highest-ranked action on Balance", () => {
     const data = threeMemberData();
     data.transactions = data.transactions
       .filter((txn) => txn.category !== "uncategorized")
@@ -236,7 +235,7 @@ describe("UI render smoke", () => {
       });
     const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     const html = renderToString(
-      <HomeView
+      <BalanceView
         summary={summary}
         money={(v) => `USD ${v}`}
         lastCheckInAt=""
@@ -245,14 +244,27 @@ describe("UI render smoke", () => {
         onReviewQueue={() => {}}
         onCompleteCheckIn={() => {}}
         onConfirmIncome={() => {}}
+        onOpenBooks={() => {}}
+        weeklyClose={{
+          weekIso: "2026-W31",
+          weekNumber: 31,
+          record: null,
+          streak: 2,
+          accountsCurrent: 2,
+          accountsTotal: 3,
+          sortCount: 0,
+          movementCount: 2,
+          opportunityCount: 1,
+        }}
+        onOpenWeeklyClose={() => {}}
       />,
     );
-    expect(html).toContain("Complete this week&#x27;s money check-in");
-    expect(html).toContain("Mark reviewed");
-    expect(html).not.toContain("Update first");
+    expect(html).toContain("The weekly close");
+    expect(html).toContain("Close week 31");
+    expect(html.match(/balance-action-card/g)).toHaveLength(1);
   });
 
-  it("renders transactions with review placement and accessible row actions", () => {
+  it("renders the ledger without the sort queue and keeps accessible row actions", () => {
     const data = threeMemberData();
     const summary = computeMonthSummary(data, "2026-07", new Date(2026, 6, 15));
     const html = renderToString(
@@ -262,10 +274,6 @@ describe("UI render smoke", () => {
         accounts={data.accounts}
         customCategories={data.settings.customCategories}
         counterparties={data.settings.counterparties}
-        queue={reviewQueue(data.transactions)}
-        onCategorizeMerchants={() => {}}
-        transferCandidates={[]}
-        undoLabel=""
         filters={{ category: "all", beneficiary: "all", payer: "all" }}
         onFiltersChange={() => {}}
         money={(v) => `USD ${v}`}
@@ -275,19 +283,15 @@ describe("UI render smoke", () => {
         onSetKind={() => {}}
         onSetCounterparty={() => {}}
         onSetAccount={() => {}}
-        onCategorizeMerchant={() => {}}
         onRememberMerchant={() => {}}
-        onUndo={() => {}}
         onResetClassification={() => {}}
-        onConfirmTransfer={() => {}}
-        onDismissTransfer={() => {}}
         onSplit={() => {}}
         onRemove={() => {}}
       />,
     );
-    expect(html).toContain("need a default");
-    expect(html).toContain('aria-label="Save merchant default for UNKNOWN SHOP"');
-    expect(html).toContain("aria-label=\"Category for UNKNOWN SHOP\"");
+    expect(html).not.toContain("need a default");
+    expect(html).not.toContain('aria-label="Save merchant default for UNKNOWN SHOP"');
+    expect(html).not.toContain("aria-label=\"Category for UNKNOWN SHOP\"");
     expect(html).toContain("aria-label=\"Open details for UNKNOWN SHOP\"");
     expect(html).toContain("Search transactions");
     expect(html).toContain("transaction-cards");

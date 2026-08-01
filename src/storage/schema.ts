@@ -39,6 +39,7 @@ import type {
   MerchantRules,
   MovementKind,
   SharedContribution,
+  Settlement,
   ChangeEffort,
   SpendBeneficiary,
   Split,
@@ -46,7 +47,7 @@ import type {
 } from "../domain/types";
 import { legacyCategory, legacyMemberIds, legacyMembers } from "./legacy";
 
-const SCHEMA_VERSION = 18 as const;
+const SCHEMA_VERSION = 19 as const;
 
 const MOVEMENT_KINDS = new Set<MovementKind>(MOVEMENT_OPTIONS.map((option) => option.kind));
 const ASSET_TYPES = new Set<AssetType>([
@@ -65,6 +66,7 @@ export function emptyData(): AppData {
     schemaVersion: SCHEMA_VERSION,
     transactions: [],
     sharedContributions: [],
+    settlements: [],
     merchantRules: {},
     accounts: [],
     fixedCosts: [],
@@ -361,12 +363,17 @@ function asAccount(value: unknown, index = 0): Account | null {
   const throughDate = coverageRaw && validLifecycleDate(coverageRaw.throughDate) ? coverageRaw.throughDate : "";
   const confirmedAt = String(coverageRaw?.confirmedAt ?? "").trim();
   const confirmedByUid = String(coverageRaw?.confirmedByUid ?? "").trim();
+  const confirmedDates = coverageRaw && Array.isArray(coverageRaw.confirmedDates)
+    ? [...new Set(coverageRaw.confirmedDates.filter((date): date is string => validLifecycleDate(date)))]
+    : [];
+  if (throughDate && !confirmedDates.includes(throughDate)) confirmedDates.push(throughDate);
   const coverage = throughDate && confirmedAt && confirmedByUid
     ? {
         throughDate,
         confirmedAt,
         confirmedByUid,
         source: coverageRaw?.source === "statement" ? "statement" as const : "manual" as const,
+        ...(confirmedDates.length ? { confirmedDates } : {}),
       }
     : undefined;
   // v17 -> v18. Absent cadence means monthly, so pre-v18 accounts keep working
@@ -380,6 +387,13 @@ function asAccount(value: unknown, index = 0): Account | null {
   const cadence = period
     ? { period, ...(period === "monthly" && dueDay ? { dueDay } : {}) }
     : undefined;
+  const statementDayNumber = Math.trunc(Number(raw.statementDay));
+  const statementDay = Number.isFinite(statementDayNumber) && statementDayNumber >= 1 && statementDayNumber <= 28
+    ? statementDayNumber
+    : 0;
+  const statementDaySource = raw.statementDaySource === "inferred" || raw.statementDaySource === "manual"
+    ? raw.statementDaySource
+    : statementDay ? "manual" as const : undefined;
   return {
     id: String(raw.id ?? "") || stableId("acc", raw, index),
     label,
@@ -390,6 +404,8 @@ function asAccount(value: unknown, index = 0): Account | null {
     ...(inactiveFrom && (!activeFrom || inactiveFrom > activeFrom) ? { inactiveFrom } : {}),
     ...(coverage ? { coverage } : {}),
     ...(cadence ? { cadence } : {}),
+    ...(statementDay ? { statementDay } : {}),
+    ...(statementDaySource && statementDay ? { statementDaySource } : {}),
     match,
   };
 }
@@ -658,6 +674,24 @@ function asCounterparty(value: unknown, index = 0): Counterparty | null {
   return { id: String(raw.id ?? "") || stableId("cp", raw, index), name };
 }
 
+function asSettlement(value: unknown, index = 0): Settlement | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const id = String(raw.id ?? "").trim() || stableId("settlement", raw, index);
+  const householdId = String(raw.householdId ?? "").trim();
+  const month = String(raw.month ?? "").trim();
+  const fromMemberId = String(raw.fromMemberId ?? "").trim();
+  const toMemberId = String(raw.toMemberId ?? "").trim();
+  const amount = Number(raw.amount);
+  const settledAt = String(raw.settledAt ?? "").trim();
+  const settledByUid = String(raw.settledByUid ?? "").trim();
+  if (!householdId || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || !fromMemberId || !toMemberId
+    || fromMemberId === toMemberId || !Number.isFinite(amount) || amount === 0 || !settledAt || !settledByUid) {
+    return null;
+  }
+  return { id, householdId, month, fromMemberId, toMemberId, amount, settledAt, settledByUid };
+}
+
 function asCustomCategory(value: unknown, index = 0): CustomCategory | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
@@ -856,6 +890,7 @@ export function migrate(raw: unknown): AppData {
     accounts,
     members,
   );
+  const settlements = asList(source.settlements, asSettlement);
 
   const merchantRules = asRules(source.merchantRules, sourceVersion, memberIds);
   for (const rule of Object.values(merchantRules)) {
@@ -866,6 +901,7 @@ export function migrate(raw: unknown): AppData {
     schemaVersion: SCHEMA_VERSION,
     transactions: normalizedTransactions,
     sharedContributions,
+    settlements,
     merchantRules,
     accounts,
     fixedCosts,

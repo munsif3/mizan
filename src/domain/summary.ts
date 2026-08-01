@@ -532,7 +532,7 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
       }
     }
   }
-  const memberRows: SpendingAttributionMemberRow[] = members.map((member) => {
+  let memberRows: SpendingAttributionMemberRow[] = members.map((member) => {
     const personalSpend = recordedTotals.byMember[member.id] ?? 0;
     const sharedResponsibility = sharedResponsibilityByMember.get(member.id) ?? 0;
     return {
@@ -545,7 +545,19 @@ export function computeSpendingAttribution(data: AppData, month: string): Spendi
       personalFrontedForOthers: personalFrontedForOthers.get(member.id) ?? 0,
       settlementNet: settlementNet.get(member.id) ?? 0,
     };
-  }).filter((row) => memberParticipatesInMonth(row.member, month)
+  });
+  // Settlements are append-only evidence and only offset the computed
+  // responsibility position. They never enter recorded spend or any month
+  // total. A negative record is the inverse appended by "undo last settlement".
+  for (const settlement of data.settlements) {
+    if (settlement.month !== month) continue;
+    const from = memberRows.find((row) => row.member.id === settlement.fromMemberId);
+    const to = memberRows.find((row) => row.member.id === settlement.toMemberId);
+    if (!from || !to) continue;
+    from.settlementNet += settlement.amount;
+    to.settlementNet -= settlement.amount;
+  }
+  memberRows = memberRows.filter((row) => memberParticipatesInMonth(row.member, month)
     || row.personalSpend !== 0
     || row.amountFronted !== 0
     || row.sharedResponsibility !== 0

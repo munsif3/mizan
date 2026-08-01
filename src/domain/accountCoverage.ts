@@ -1,5 +1,6 @@
 import { addDays, addMonths, dayInMonth, monthOf } from "./dates";
 import { accountActiveOn } from "./memberLifecycle";
+import { spendTotal, type MonthSummary } from "./summary";
 import type { Account, AccountCadence, Member, Transaction } from "./types";
 
 /**
@@ -19,19 +20,36 @@ export interface AccountCoverageRow {
   status: "current" | "stale" | "missing";
 }
 
+export interface UnmeasuredExposure {
+  amount: number;
+  throughDate: string;
+  /**
+   * The non-current accounts included in the bound. A missing row is also the
+   * flag that the bound has no confirmed starting date, so callers must say
+   * "at least" rather than presenting the amount as an upper limit.
+   */
+  accounts: AccountCoverageRow[];
+}
+
 /**
  * The date the next statement is expected to close, given confirmed coverage and
  * the account's rhythm. Absent cadence means monthly — the common case for a bank
  * statement, and the assumption that keeps existing households out of a permanent
  * false alarm. Returns null when the account is never automatically stale.
  */
-function nextExpectedCoverage(throughDate: string, cadence: AccountCadence | undefined): string | null {
+function nextExpectedCoverage(
+  throughDate: string,
+  cadence: AccountCadence | undefined,
+  statementDay: number | undefined,
+): string | null {
   if (!throughDate) return null;
   const period = cadence?.period ?? "monthly";
   if (period === "manual") return null;
   if (period === "weekly") return addDays(throughDate, 7);
   // No explicit closing day: assume the same day next month.
-  if (!cadence?.dueDay) return dayInMonth(addMonths(monthOf(throughDate), 1), Number(throughDate.slice(8, 10)));
+  if (!cadence?.dueDay) {
+    return dayInMonth(addMonths(monthOf(throughDate), 1), statementDay ?? Number(throughDate.slice(8, 10)));
+  }
   // An explicit closing day: the next occurrence strictly after the covered date.
   const thisMonth = dayInMonth(monthOf(throughDate), cadence.dueDay);
   return thisMonth > throughDate ? thisMonth : dayInMonth(addMonths(monthOf(throughDate), 1), cadence.dueDay);
@@ -73,6 +91,94 @@ function calendarAgeDays(throughDate: string, today: Date): number | null {
   return Math.max(0, Math.floor((current - through) / 86_400_000));
 }
 
+function median(values: number[]): number {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2
+    ? ordered[middle] ?? 0
+    : ((ordered[middle - 1] ?? 0) + (ordered[middle] ?? 0)) / 2;
+}
+
+function validStatementDay(value: number): number | undefined {
+  return Number.isInteger(value) && value >= 1 && value <= 28 ? value : undefined;
+}
+
+/** Infer the usual arrival day from confirmed coverage edges. */
+export function inferStatementDay(confirmedDates: string[]): number | undefined {
+  const days = confirmedDates
+    .map((date) => Number(date.slice(8, 10)))
+    .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31);
+  const inferred = median(days);
+  return inferred ? Math.min(28, Math.max(1, Math.round(inferred))) : undefined;
+}
+
+/** The effective statement day, honoring an explicit Settings override. */
+export function statementDayForAccount(account: Account): number | undefined {
+  const explicit = validStatementDay(account.statementDay ?? 0);
+  if (explicit) return explicit;
+  const dates = account.coverage?.confirmedDates
+    ?? (account.coverage?.source === "manual"
+      ? []
+      : account.coverage?.throughDate
+        ? [account.coverage.throughDate]
+        : []);
+  return inferStatementDay(dates);
+}
+
+/**
+ * Conservative, presentational-only bound for spending that may sit beyond the
+ * confirmed edge of active account coverage.
+ *
+ * This deliberately returns a separate value instead of changing a
+ * MonthSummary. It must never be added to recorded spend, projections, save
+ * rates, or settlement.
+ */
+export function unmeasuredExposure(
+  rows: AccountCoverageRow[],
+  history: MonthSummary[],
+  today: Date,
+): UnmeasuredExposure {
+  const accounts = rows.filter((row) => row.status !== "current");
+  if (!accounts.length) return { amount: 0, throughDate: "", accounts: [] };
+
+  const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+  const completedMonths = history
+    .filter((summary) => summary.month < currentMonth)
+    .sort((left, right) => right.month.localeCompare(left.month))
+    .slice(0, 3);
+
+  const amount = accounts.reduce((total, row) => {
+    const accountLabel = row.account.label.trim().toLocaleLowerCase();
+    const dailySpend = median(completedMonths.map((summary) => {
+      const accountTransactions = summary.monthTransactions.filter((transaction) =>
+        transaction.accountId
+          ? transaction.accountId === row.account.id
+          : transaction.account.trim().toLocaleLowerCase() === accountLabel);
+      return spendTotal(accountTransactions) / Math.max(1, summary.daysInMonth);
+    }));
+
+    const exposedDays = row.status === "missing"
+      // With no confirmed edge there is no honest upper bound. Use only the
+      // elapsed current month as a conservative floor; the returned missing row
+      // tells the UI to label the result "at least".
+      ? Math.max(1, today.getDate())
+      : calendarAgeDays(row.throughDate, today) ?? 0;
+    return total + dailySpend * exposedDays;
+  }, 0);
+
+  const throughDate = accounts
+    .map((row) => row.throughDate)
+    .filter(Boolean)
+    .sort()[0] ?? "";
+
+  return {
+    amount: amount > 0 ? Math.ceil(amount / 1_000) * 1_000 : 0,
+    throughDate,
+    accounts,
+  };
+}
+
 /**
  * Freshness per active account, judged against each account's own statement
  * rhythm rather than a flat week. A monthly account confirmed through the 1st is
@@ -92,7 +198,7 @@ export function computeAccountCoverage(
     .map((account) => {
       const throughDate = account.coverage?.throughDate ?? "";
       const ageDays = calendarAgeDays(throughDate, today);
-      const nextExpectedDate = nextExpectedCoverage(throughDate, account.cadence);
+       const nextExpectedDate = nextExpectedCoverage(throughDate, account.cadence, statementDayForAccount(account));
       const overdue = nextExpectedDate !== null && date > addDays(nextExpectedDate, graceDays);
       return {
         account,

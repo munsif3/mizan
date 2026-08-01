@@ -4,18 +4,18 @@ One deterministic system for a household's financial awareness.
 
 ## Product principles
 
-1. **Three screens, no more.** Home (weekly review of the current month), Transactions (incl. review queue), History.
-   Every new feature must fit inside one of these or it doesn't ship.
+1. **Four primary views, no more.** Balance, Sort, Ledger, and Trend are the primary navigation views.
+   The Books, Catch up, and Weekly Close surfaces are pushed workflows from Balance; Settings and import tools
+   remain modal or pushed surfaces. Every new feature must fit inside this boundary or it doesn't ship.
 2. **Deterministic.** No AI and no hidden financial-data services beyond Firebase Auth and Firestore.
    The app requires Google sign-in before use. Categorization is a rules engine the user teaches
    by categorizing a merchant once; the rule applies forever after.
 3. **The statement is the source of truth.** Bank statements and CSV exports are unlocked, parsed,
    and mapped entirely in the browser. Raw files and passwords never leave the device; accepted app
    data is persisted to the active Firestore household.
-4. **Informed, not gamified.** The Home screen answers three questions: are we on pace for the
-   save-rate target, what needs a two-minute conversation, and what changed since last month.
-   It also makes data age explicit and records a user-specific weekly check-in; it does not award
-   points, streaks, or badges.
+4. **Informed, not gamified.** Balance answers whether the household is on pace for the
+   save-rate target, what needs attention, and what changed. It makes measurement age explicit and
+   records a user-specific weekly close; the close streak is a continuity signal, not a reward system.
 5. **Core first, optional by activation.** The normal weekly path shows only the next financial
    action. Advanced capabilities such as holdings and efficiency planning stay out of Home and
    Settings until existing data makes them relevant or the user explicitly activates them.
@@ -70,13 +70,14 @@ One deterministic system for a household's financial awareness.
 | 44 | The forecast is dated, never withheld | With no activity there is genuinely nothing to project and Home says so. Stale data is a different case: the number is computable, just based on older evidence. Hiding it behind "Paused" withheld the one figure that brings a drifting household back, exactly when it had drifted — and made catching up feel like a precondition rather than a reward. Home now always shows the projection plus its basis ("Based on activity through …"). Efficiency still withholds *recommendations*, because those are advice to act on rather than a status readout, but it gates on the askable review tiers only — the deliberately unclassified tail must not block trends forever. |
 | 45 | An unrecognized statement falls back to mapping, not to a dead end | ADR #12 still holds — nothing is guessed silently — but "loud failure" was the *end* of the road for every bank without a verified parser. `pdfTable.ts` reconstructs a column matrix from positioned PDF text and hands it to the same interactive mapper the CSV route uses (ADR #13), so the user says what each column means and sees the parsed preview before anything is imported. Columns are found by counting how often each horizontal position is covered, not by merging spans: alignment is mixed (dates left, amounts right against a fixed edge) and merging is transitive, so one page-wide banner would otherwise bridge two real columns. The mapping is remembered in `settings.csvPresets` under a signature derived from the column geometry — no schema change — and is offered only after the verified parser fails on *format*, never on a wrong password. |
 
-## Data model (schema v18)
+## Data model (schema v19)
 
 ```
 AppData
 ├── schemaVersion: 18
 ├── transactions: Transaction[]   { id, date, description, amount, category, beneficiary, beneficiarySource?, classificationLocked?, account, accountId?, rawAccount?, note, source, direction, kind, counterpartyId?, holdingId?, commitmentId?, investmentAmount?, linkedTransferId?, rejectedTransferIds?, split? }
 ├── sharedContributions: SharedContribution[] { id, allocations: { expenseTransactionId, amount }[], transferDebitTransactionId, transferCreditTransactionId, contributorMemberId, amount }
+├── settlements: Settlement[] { id, householdId, month, fromMemberId, toMemberId, amount, settledAt, settledByUid }
 ├── merchantRules: { CLEANED_MERCHANT: { category, beneficiary | account_default, kind, counterpartyId?, holdingId? } }
 ├── accounts: Account[]           { id, label, currency, owner, beneficiaryDefault, activeFrom?, inactiveFrom?, coverage?, cadence?, match[] }
 ├── fixedCosts: FixedCost[]       { id, label, amount, kind, category, beneficiary, from?, until?, totalAmount?, merchantMatch?, holdingId?, investmentAmount? }
@@ -132,7 +133,7 @@ history. `settings.fxRates` converts foreign expected portions for projections a
   `manual` for accounts with no statement at all). Absent means monthly. Coverage is stale only once the
   next expected statement is overdue past a fetch grace, so a monthly account stays current all month.
 
-## Cloud household model (sync v11)
+## Cloud household model (sync v12)
 
 `AppData` remains the canonical in-app shape. Firestore publishes one active snapshot revision
 through a small manifest; each revision keeps the same split-collection layout:
@@ -144,6 +145,7 @@ households/{householdId}/snapshotManifest/current  { activeRevision, versionToke
 households/{householdId}/snapshots/{revision}  CloudSettings
 households/{householdId}/snapshots/{revision}/transactions/{transactionId}
 households/{householdId}/snapshots/{revision}/sharedContributions/{contributionId}
+households/{householdId}/snapshots/{revision}/settlements/{settlementId}
 households/{householdId}/snapshots/{revision}/accounts/{accountId}
 households/{householdId}/snapshots/{revision}/fixedCosts/{fixedCostId}
 households/{householdId}/snapshots/{revision}/assetHoldings/{holdingId}
@@ -156,6 +158,7 @@ households/{householdId}/snapshots/{revision}/merchantRules/{safeDocId(ruleKey)}
 households/{householdId}/snapshots/{revision}/csvPresets/{safeDocId(layoutSignature)}
 users/{uid}/households/{householdId}   UserHouseholdLink
 users/{uid}/profile/current            UserProfile
+households/{householdId}/weeklyCloses/{weeklyCloseId}  Per-user weekly-close progress
 ```
 
 Normal saves diff the active revision and commit its changed documents, settings, and manifest in
@@ -179,7 +182,7 @@ If a legacy `mizan_v2` or `trackr_v1` browser payload is found, only an explicit
 household receives it. Joining or switching never overwrites an existing household, and the browser
 financial keys are cleared only after the Firestore save succeeds.
 
-**Migration.** `migrate()` normalizes any known shape into v18; unrelated junk degrades to empty
+**Migration.** `migrate()` normalizes any known shape into v19; unrelated junk degrades to empty
 data, while a newer schema fails loudly so an older client cannot discard unknown fields. Legacy
 data (schema v4, or a v1 "trackr" backup) seeds members from ids already present
 and pins the previous currency. v5 → v6 adds movement kinds, v6 → v7 adds income portions, v7 → v8
@@ -200,7 +203,10 @@ income and protected-budget semantics; split-cloud v8 round-trips efficiency dec
 collection, split-cloud v9 carries lifecycle and coverage fields, and split-cloud v10 carries holdings
 and reconciled commitments in the revisioned snapshot. v17 → v18 adds optional `Account.cadence`; an
 account without one is read as monthly, so no pre-v18 document is rewritten, and split-cloud v11
-round-trips the chosen rhythm.
+round-trips the chosen rhythm. The v18 → v19 migration also accepts append-only settlement evidence
+and optional statement-arrival metadata. Cloud sync v11 → v12 carries settlements in the revisioned
+snapshot; weekly-close progress is stored separately per authenticated user and does not alter AppData
+or ledger math.
 The migrator preserves statement provenance, movement semantics, contribution evidence, and locked one-row
 classifications. Fresh data with no member list triggers onboarding.
 
@@ -259,6 +265,6 @@ already cover you — no code needed.
 The simplicity reset deliberately leaves the Firestore save/read protocol unchanged. A separate,
 reviewable persistence tranche may redesign revision manifests, stale-write recovery, and snapshot
 read/write batching only after the Core + Optional UX has shipped and its browser journeys are stable.
-That tranche must preserve Firestore as the sole authority for live financial data, keep schema v18
-and split-cloud v11 readable throughout rollout, define rollback and mixed-client behavior, and pass
+That tranche must preserve Firestore as the sole authority for live financial data, keep schema v19
+and split-cloud v12 readable throughout rollout, define rollback and mixed-client behavior, and pass
 emulator-backed conflict, failed-save recovery, and reload-persistence tests before migration.

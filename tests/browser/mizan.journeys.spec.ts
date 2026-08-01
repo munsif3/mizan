@@ -57,9 +57,21 @@ async function chooseOption(locator: Locator, option: string | { label: string }
   await locator.selectOption(option);
 }
 
+function syncChip(page: Page): Locator {
+  return page.locator(".sync-chip").first();
+}
+
+function balanceConfidenceChip(page: Page): Locator {
+  return page.locator(".balance-confidence-chip").first();
+}
+
 async function waitForWorkspace(page: Page): Promise<void> {
   await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
-  await expect(page.locator(".sync-chip")).toBeVisible();
+  if (await syncChip(page).count()) {
+    await expect(syncChip(page)).toHaveText(/Synced|Syncing/);
+  } else {
+    await expect(balanceConfidenceChip(page)).toBeVisible();
+  }
 }
 
 /**
@@ -69,7 +81,11 @@ async function waitForWorkspace(page: Page): Promise<void> {
  */
 async function waitForCloudSave(page: Page): Promise<void> {
   await page.waitForTimeout(350);
-  await expect(page.locator(".sync-chip")).toHaveText("Synced", { timeout: 15_000 });
+  if (await syncChip(page).count()) {
+    await expect(syncChip(page)).toHaveText("Synced", { timeout: 15_000 });
+  } else {
+    await expect(balanceConfidenceChip(page)).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
+  }
 }
 
 async function assertNoSeriousAxeViolations(page: Page): Promise<void> {
@@ -94,18 +110,25 @@ async function capture(page: Page, testInfo: TestInfo, name: string): Promise<vo
   });
 }
 
+async function expectHorizontalInset(parent: Locator, child: Locator, minimum: number): Promise<void> {
+  const [parentBox, childBox] = await Promise.all([parent.boundingBox(), child.boundingBox()]);
+  expect(parentBox).not.toBeNull();
+  expect(childBox).not.toBeNull();
+  expect(childBox!.x - parentBox!.x).toBeGreaterThanOrEqual(minimum);
+  expect((parentBox!.x + parentBox!.width) - (childBox!.x + childBox!.width)).toBeGreaterThanOrEqual(minimum);
+}
+
 async function openView(
   page: Page,
-  name: "Home" | "Transactions" | "History",
+  name: "Balance" | "Sort" | "Ledger" | "Trend",
 ): Promise<void> {
-  const headings = {
-    Home: "Money check-in",
-    Transactions: "Transactions",
-    History: "Month by month",
-  } as const;
   const navigation = page.getByRole("navigation", { name: "Primary" });
-  await activate(navigation.getByRole("button", { name, exact: true }));
-  await expect(page.getByRole("heading", { name: headings[name], exact: true })).toBeVisible();
+  const destination = navigation.getByRole("button", { name: new RegExp(`^${name}(?:,|$)`) });
+  await activate(destination);
+  await expect(destination).toHaveAttribute("aria-current", "page");
+  if (name === "Ledger" || name === "Trend") {
+    await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  }
 }
 
 async function setupSoloHousehold(
@@ -152,7 +175,7 @@ async function setupSoloHousehold(
 
   await activate(onboarding.getByRole("button", { name: "Get started" }));
   await waitForWorkspace(page);
-  await expect(page.getByRole("heading", { name: "Money check-in", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Balance", exact: true })).toHaveAttribute("aria-current", "page");
   await expect(page.locator("html")).toHaveAttribute("data-theme", projectTheme(testInfo));
   await waitForCloudSave(page);
 }
@@ -162,7 +185,7 @@ async function selectSettingsTab(
   tabValue: string,
   tabLabel: string,
 ): Promise<void> {
-  const compactSelect = settingsDialog.getByLabel("Settings section");
+  const compactSelect = settingsDialog.getByRole("combobox", { name: "Settings section", exact: true });
   if (await compactSelect.isVisible()) {
     await chooseOption(compactSelect, tabValue);
     return;
@@ -184,16 +207,18 @@ async function addAccount(page: Page): Promise<void> {
   await expect(settings).toBeHidden();
 }
 
-function homeSpendMetric(page: Page): Locator {
-  return page.locator(".financial-strip > div").filter({ hasText: "Recorded spend" });
+function balanceSpendMetric(page: Page): Locator {
+  return page.getByRole("img", { name: /^Spent:/ });
 }
 
-function historySpendMetric(page: Page): Locator {
+function trendSpendMetric(page: Page): Locator {
   return page.locator(".selected-month-metrics > div").filter({ hasText: "Spend" });
 }
 
 async function openTransaction(page: Page, description: string): Promise<Locator> {
-  await activate(page.getByRole("button", { name: `Open details for ${description}`, exact: true }));
+  const tableControl = page.getByRole("button", { name: `Open details for ${description}`, exact: true });
+  const cardControl = page.locator(".transaction-card-open").filter({ hasText: description });
+  await activate(await tableControl.isVisible() ? tableControl : cardControl);
   const drawer = page.getByRole("dialog", { name: description });
   await expect(drawer).toBeVisible();
   return drawer;
@@ -209,12 +234,12 @@ test.beforeEach(async ({ page }, testInfo) => {
 test("signs in, creates a solo household, and finishes minimal onboarding", async ({ page }, testInfo) => {
   await setupSoloHousehold(page, testInfo, { captureOnboarding: true });
   await expect(page.locator("html")).toHaveAttribute("data-theme", projectTheme(testInfo));
-  await expect(page.getByText("Alex", { exact: true }).first()).toBeVisible();
+  await expect(page.locator('[title="Alex"]').first()).toBeVisible();
 
   await page.reload();
   await waitForWorkspace(page);
-  await expect(page.getByRole("heading", { name: "Money check-in", exact: true })).toBeVisible();
-  await expect(page.getByText("Alex", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Balance", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator('[title="Alex"]').first()).toBeVisible();
 
   await assertNoSeriousAxeViolations(page);
   await capture(page, testInfo, "solo-household-after-reload");
@@ -224,6 +249,7 @@ test("imports activity, confirms coverage, classifies a merchant, and completes 
   await setupSoloHousehold(page, testInfo);
   await addAccount(page);
 
+  await openView(page, "Ledger");
   await activate(page.locator(".page-actions").getByRole("button", { name: "Import activity" }));
   const importDialog = page.getByRole("dialog", { name: "Import" });
   await activate(importDialog.getByRole("tab", { name: "CSV export" }));
@@ -243,32 +269,60 @@ test("imports activity, confirms coverage, classifies a merchant, and completes 
   await expect(csvDialog).toContainText("1 row ready");
   await activate(csvDialog.getByRole("button", { name: "Import 1 transaction" }));
   await expect(csvDialog.getByText("Confirm account coverage", { exact: true })).toBeVisible();
-  await activate(csvDialog.getByRole("button", { name: "Confirm coverage" }));
+  await csvDialog.getByRole("button", { name: "Confirm coverage" }).click();
   await expect(csvDialog.getByRole("button", { name: "Coverage confirmed" })).toBeDisabled();
   await activate(csvDialog.getByRole("button", { name: "Close", exact: true }));
 
-  await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
-  const reviewCard = page.locator(".merchant-review-card").filter({ hasText: IMPORTED_MERCHANT });
-  await expect(reviewCard).toBeVisible();
-  await expect(reviewCard.getByText("Who it was for", { exact: true })).toHaveCount(0);
-  await expect(reviewCard.getByRole("button", { name: `Change movement for ${IMPORTED_MERCHANT}` })).toBeVisible();
-  await chooseOption(reviewCard.getByLabel(`Category for ${IMPORTED_MERCHANT}`), { label: "Groceries" });
-  await activate(reviewCard.getByRole("button", { name: `Save merchant default for ${IMPORTED_MERCHANT}` }));
-  await expect(reviewCard).toBeHidden();
+  await expect(page.getByRole("button", { name: /^Sort(?:,|$)/ })).toHaveAttribute("aria-current", "page");
+  const sortCard = page.locator(".sort-card").filter({ hasText: IMPORTED_MERCHANT }).first();
+  await expect(sortCard).toBeVisible();
+  await expect(sortCard.getByText("Who for", { exact: true })).toHaveCount(0);
+  await expect(sortCard.getByRole("button", { name: /Groceries/ })).toBeVisible();
+  await page.keyboard.press("1");
+  await page.keyboard.press("Enter");
+  await expect(sortCard).toBeHidden();
 
-  await openView(page, "Home");
-  await activate(page.getByRole("button", { name: "Mark reviewed", exact: true }));
-  await expect(page.locator(".workspace-alert")).toContainText("Weekly money check-in recorded");
+  await openView(page, "Ledger");
+  const ledgerPanel = page.locator(".transactions-panel");
+  await expectHorizontalInset(ledgerPanel, ledgerPanel.locator(".table-toolbar"), 14);
+  await capture(page, testInfo, "ledger-spacing");
+
+  await openView(page, "Balance");
+  await activate(page.getByRole("button", { name: "Open the books", exact: true }));
+  const booksDisclosure = page.locator(".books-content > .disclosure");
+  const purposeSection = booksDisclosure.locator(".attribution-section");
+  await expectHorizontalInset(booksDisclosure, purposeSection, 10);
+  await expectHorizontalInset(purposeSection, purposeSection.locator(".attribution-heading"), 14);
+  const booksSections = booksDisclosure.locator(".disclosure-panel > section");
+  if (await booksSections.count() > 1) {
+    const sectionBoxes = await booksSections.evaluateAll((sections) =>
+      sections.map((section) => {
+        const box = section.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom, width: box.width };
+      }));
+    expect(sectionBoxes[1]!.top - sectionBoxes[0]!.bottom).toBeGreaterThanOrEqual(14);
+    expect(Math.abs(sectionBoxes[1]!.width - sectionBoxes[0]!.width)).toBeLessThanOrEqual(1);
+  }
+  await capture(page, testInfo, "books-purpose-spacing");
+  await activate(page.locator(".books-back"));
+  await activate(page.getByRole("button", { name: "Continue", exact: true }));
+  await expect(page.getByRole("heading", { name: "A short reading of the household.", exact: true })).toBeVisible();
+  await activate(page.getByRole("button", { name: /^Accounts current/ }));
+  await activate(page.getByRole("button", { name: /^Sorting answered/ }));
+  await activate(page.getByRole("button", { name: /^I've read this/ }));
+  await activate(page.getByRole("button", { name: "Nothing this week, thanks", exact: true }));
+  await expect(page.getByRole("heading", { name: /Week \d+ is closed\./ })).toBeVisible();
   await waitForCloudSave(page);
 
   await assertNoSeriousAxeViolations(page);
   await capture(page, testInfo, "weekly-check-in-complete");
 });
 
-test("adds, edits, and deletes a transaction with reload-stable Home and History totals", async ({ page }, testInfo) => {
+test("adds, edits, and deletes a transaction with reload-stable Balance and Trend totals", async ({ page }, testInfo) => {
   await setupSoloHousehold(page, testInfo);
   const date = todayIso();
 
+  await openView(page, "Ledger");
   await activate(page.locator(".page-actions").getByRole("button", { name: "Add transaction" }));
   const addDialog = page.getByRole("dialog", { name: "Add transaction" });
   await enterText(addDialog.getByLabel("Date"), date);
@@ -276,36 +330,37 @@ test("adds, edits, and deletes a transaction with reload-stable Home and History
   await enterText(addDialog.getByLabel("Description"), MANUAL_MERCHANT);
   await chooseOption(addDialog.getByLabel("Category"), { label: "Dining" });
   await enterText(addDialog.getByLabel("Account name"), "Cash Wallet");
-  await activate(addDialog.getByRole("button", { name: "Add transaction" }));
+  await activate(addDialog.getByRole("button", { name: "Add transaction", exact: true }));
   await expect(addDialog).toBeHidden();
   await waitForCloudSave(page);
-  await expect(homeSpendMetric(page)).toContainText("125");
+  await openView(page, "Balance");
+  await expect(balanceSpendMetric(page)).toHaveAccessibleName(/126/);
 
-  await openView(page, "Transactions");
+  await openView(page, "Ledger");
   let drawer = await openTransaction(page, MANUAL_MERCHANT);
   await chooseOption(drawer.getByLabel(`Category for ${MANUAL_MERCHANT}`), "food");
   await expect(drawer.getByLabel(`Category for ${MANUAL_MERCHANT}`)).toHaveValue("food");
   await activate(drawer.getByRole("button", { name: `Close ${MANUAL_MERCHANT}` }));
   await waitForCloudSave(page);
 
-  await openView(page, "History");
-  await expect(historySpendMetric(page)).toContainText("125");
-  await capture(page, testInfo, "history-after-edit");
+  await openView(page, "Trend");
+  await expect(trendSpendMetric(page)).toContainText("126");
+  await capture(page, testInfo, "trend-after-edit");
 
   await page.reload();
   await waitForWorkspace(page);
-  await openView(page, "Transactions");
+  await openView(page, "Ledger");
   drawer = await openTransaction(page, MANUAL_MERCHANT);
   await expect(drawer.getByLabel(`Category for ${MANUAL_MERCHANT}`)).toHaveValue("food");
   await activate(drawer.getByRole("button", { name: `Close ${MANUAL_MERCHANT}` }));
 
-  await openView(page, "Home");
-  await expect(homeSpendMetric(page)).toContainText("125");
-  await openView(page, "History");
-  await expect(historySpendMetric(page)).toContainText("125");
-  await capture(page, testInfo, "home-and-history-after-reload");
+  await openView(page, "Balance");
+  await expect(balanceSpendMetric(page)).toHaveAccessibleName(/126/);
+  await openView(page, "Trend");
+  await expect(trendSpendMetric(page)).toContainText("126");
+  await capture(page, testInfo, "balance-and-trend-after-reload");
 
-  await openView(page, "Transactions");
+  await openView(page, "Ledger");
   drawer = await openTransaction(page, MANUAL_MERCHANT);
   await activate(drawer.getByRole("button", { name: "Delete transaction", exact: true }));
   const deleteDialog = page.getByRole("dialog", { name: "Delete transaction" });
@@ -315,12 +370,12 @@ test("adds, edits, and deletes a transaction with reload-stable Home and History
 
   await page.reload();
   await waitForWorkspace(page);
-  await openView(page, "Transactions");
+  await openView(page, "Ledger");
   await expect(page.getByText(MANUAL_MERCHANT, { exact: true })).toHaveCount(0);
-  await openView(page, "Home");
-  await expect(homeSpendMetric(page)).toContainText(/0(?:[.,]00)?/);
-  await openView(page, "History");
-  await expect(historySpendMetric(page)).toContainText(/0(?:[.,]00)?/);
+  await openView(page, "Balance");
+  await expect(page.getByRole("region", { name: "Income accounted for" })).toContainText("No activity has been measured");
+  await openView(page, "Trend");
+  await expect(trendSpendMetric(page)).toContainText(/0(?:[.,]00)?/);
 
   await assertNoSeriousAxeViolations(page);
   await capture(page, testInfo, "after-delete-and-reload");

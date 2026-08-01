@@ -121,6 +121,7 @@ describe("signed-in startup bootstrap", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState(null, "", "/");
     localStorage.clear();
     bootstrap.authState = signedIn;
     bootstrap.saveUserProfile.mockResolvedValue(undefined);
@@ -135,6 +136,7 @@ describe("signed-in startup bootstrap", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    window.history.replaceState(null, "", "/");
     vi.restoreAllMocks();
   });
 
@@ -164,9 +166,56 @@ describe("signed-in startup bootstrap", () => {
       metaRequest.resolve(meta);
       dataRequest.resolve(householdData());
     });
-    expect(container.textContent).toContain("Money check-in");
+    expect(button(container, "Balance").getAttribute("aria-current")).toBe("page");
     expect(bootstrap.saveUserProfile).not.toHaveBeenCalled();
     expect(bootstrap.repositorySubscribe).toHaveBeenCalledWith(expect.any(Function), expect.any(Function), { skipInitial: true });
+  });
+
+  it("pushes into The Books and returns cleanly through primary navigation", async () => {
+    const data = householdData();
+    data.settings.members[0]!.portions = [{
+      id: "salary",
+      label: "Monthly income",
+      amount: 100_000,
+      currency: "LKR",
+      taxRate: 0,
+      taxWithheld: true,
+      window: null,
+      schedule: { frequency: "monthly" },
+      budgetTreatment: "ordinary",
+    }];
+    bootstrap.loadUserProfile.mockResolvedValue(profile);
+    bootstrap.loadUserHouseholds.mockResolvedValue([]);
+    bootstrap.loadHouseholdMeta.mockResolvedValue(meta);
+    bootstrap.repositoryLoad.mockResolvedValue(data);
+
+    await act(async () => root.render(<App />));
+    await vi.waitFor(() => expect(button(container, "Balance").getAttribute("aria-current")).toBe("page"));
+
+    await act(async () => button(container, "Open the books").click());
+    expect(container.querySelector(".app-shell")?.classList.contains("books-open")).toBe(true);
+    expect(container.textContent).toContain("The Books");
+
+    await act(async () => button(container, "Ledger").click());
+    expect(container.querySelector(".app-shell")?.classList.contains("books-open")).toBe(false);
+    expect(button(container, "Ledger").getAttribute("aria-current")).toBe("page");
+
+    await act(async () => button(container, "Balance").click());
+    expect(container.textContent).toContain("Open the books");
+    expect(container.querySelector(".books-view")).toBeNull();
+  });
+
+  it("keeps a weekly-close deep link open while the saved view preference loads", async () => {
+    window.history.replaceState(null, "", "/#weekly-close/step-1");
+    bootstrap.loadUserProfile.mockResolvedValue({ ...profile, lastView: "trend" });
+    bootstrap.loadUserHouseholds.mockResolvedValue([]);
+    bootstrap.loadHouseholdMeta.mockResolvedValue(meta);
+    bootstrap.repositoryLoad.mockResolvedValue(householdData());
+
+    await act(async () => root.render(<App />));
+    await vi.waitFor(() => expect(container.querySelector(".weekly-close-view")).not.toBeNull());
+    expect(container.querySelector(".weekly-close-progress")).not.toBeNull();
+    expect(window.location.hash).toBe("#weekly-close/step-1");
   });
 
   it("offers a retry and completes startup after a transient profile failure", async () => {
@@ -182,7 +231,7 @@ describe("signed-in startup bootstrap", () => {
     expect(container.textContent).toContain("profile unavailable");
 
     await act(async () => button(container, "Retry household load").click());
-    await vi.waitFor(() => expect(container.textContent).toContain("Money check-in"));
+    await vi.waitFor(() => expect(button(container, "Balance").getAttribute("aria-current")).toBe("page"));
     expect(bootstrap.loadUserProfile).toHaveBeenCalledTimes(2);
   });
 
@@ -214,13 +263,13 @@ describe("signed-in startup bootstrap", () => {
     expect(bootstrap.saveUserProfile).not.toHaveBeenCalled();
 
     await act(async () => dataRequest.resolve(data));
-    await vi.waitFor(() => expect(container.textContent).toContain("Money check-in"));
+    await vi.waitFor(() => expect(button(container, "Balance").getAttribute("aria-current")).toBe("page"));
 
     expect(container.querySelector(".month-trigger")?.textContent).toContain(monthLabel(oldMonth));
     expect(bootstrap.saveUserProfile).not.toHaveBeenCalled();
   });
 
-  it("keeps an empty calendar month global without adding it to History", async () => {
+  it("keeps an empty calendar month global without adding it to Trend", async () => {
     const data = householdData();
     data.settings.members[0]!.portions = [{
       id: "salary",
@@ -239,23 +288,24 @@ describe("signed-in startup bootstrap", () => {
     bootstrap.repositoryLoad.mockResolvedValue(data);
 
     await act(async () => root.render(<App />));
-    await vi.waitFor(() => expect(container.textContent).toContain("Money check-in"));
+    await vi.waitFor(() => expect(button(container, "Balance").getAttribute("aria-current")).toBe("page"));
 
     const todayMonth = isoDateOf(new Date()).slice(0, 7);
     const previousMonth = addMonths(todayMonth, -1);
     const previousLabel = monthLabel(previousMonth);
-    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Previous month"]')?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".month-trigger")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(`button[aria-label="${previousLabel}"]`)?.click());
 
     expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
     expect(container.textContent).toContain(previousLabel);
 
-    await act(async () => button(container, "Transactions").click());
+    await act(async () => button(container, "Ledger").click());
     expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
-    expect(container.textContent).toContain("No activity in Jun 2026");
+    expect(container.textContent).toContain(`No activity in ${previousLabel}`);
     expect(container.querySelector(".ledger-table")).toBeNull();
 
-    await act(async () => button(container, "History").click());
-    // History is lazy-loaded, so wait for its chunk to resolve and render.
+    await act(async () => button(container, "Trend").click());
+    // Trend is lazy-loaded, so wait for its chunk to resolve and render.
     await vi.waitFor(() => expect(container.textContent).toContain(`No recorded data for ${previousLabel}.`));
     expect(container.querySelector(".month-trigger")?.textContent).toContain(previousLabel);
   });
@@ -278,7 +328,7 @@ describe("signed-in startup bootstrap", () => {
     });
 
     expect(container.textContent).toContain("Sign in to continue");
-    expect(container.textContent).not.toContain("Money check-in");
+    expect(container.textContent).not.toContain("Balance");
     expect(bootstrap.repositorySubscribe).not.toHaveBeenCalled();
   });
 });

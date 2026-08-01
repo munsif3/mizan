@@ -149,18 +149,6 @@ th {
   font-weight: 850;
 }
 
-.nav-badge {
-  min-width: 20px;
-  height: 20px;
-  display: inline-grid;
-  place-items: center;
-  padding-inline: 5px;
-  border-radius: 999px;
-  background: var(--ql-danger);
-  color: var(--ql-on-brand);
-  font-size: 12px;
-}
-
 .who-matrix-header {
   display: grid;
   grid-template-columns: minmax(210px, 1.35fr) repeat(var(--who-columns), minmax(112px, .7fr));
@@ -183,14 +171,6 @@ th {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: .08em;
-  text-transform: uppercase;
-}
-
-.review-account-contexts > span:first-child {
-  color: var(--ql-text);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
@@ -323,8 +303,6 @@ button:focus-visible {
 
 @media (max-width: 720px) {
   body { overflow-x: clip; }
-
-  .nav-badge { position: absolute; top: 8px; left: calc(50% + 7px); }
 
   .sync-chip { display: none; }
 

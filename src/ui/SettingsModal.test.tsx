@@ -339,6 +339,41 @@ describe("SettingsModal recurring commitments", () => {
     expect(onUpdateAccounts.mock.calls[0]?.[0][0]?.match).toEqual(["1234"]);
   });
 
+  it("shows the inferred statement day and persists a Settings override", async () => {
+    const data = emptyData();
+    data.settings.members = [{ id: "owner", name: "Owner", color: "#5b8cff", portions: [] }];
+    data.accounts = [{
+      id: "card",
+      label: "Main card",
+      owner: "owner",
+      beneficiaryDefault: "owner",
+      match: [],
+      coverage: {
+        throughDate: "2026-03-03",
+        confirmedAt: "2026-03-04T00:00:00.000Z",
+        confirmedByUid: "u1",
+        source: "statement",
+        confirmedDates: ["2026-01-03", "2026-02-04", "2026-03-03"],
+      },
+    }];
+    const onUpdateAccounts = vi.fn();
+
+    await act(async () => root.render(
+      <SettingsModal
+        {...baseProps(data)}
+        target={{ tab: "accounts", section: "accounts", itemId: "card" }}
+        onUpdateAccounts={onUpdateAccounts}
+      />,
+    ));
+
+    const statementDay = container.querySelector<HTMLInputElement>('input[aria-label="Main card statement day"]')!;
+    expect(statementDay.value).toBe("3");
+    await enterText(statementDay, "17");
+    await act(async () => button(container, "Save account").click());
+    expect(onUpdateAccounts.mock.calls[0]?.[0][0]?.statementDay).toBe(17);
+    expect(onUpdateAccounts.mock.calls[0]?.[0][0]?.statementDaySource).toBe("manual");
+  });
+
   it("keeps Assets hidden until relevant or explicitly activated", async () => {
     const data = emptyData();
     data.settings.members = [{ id: "owner", name: "Owner", color: "#5b8cff", portions: [] }];

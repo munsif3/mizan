@@ -6,16 +6,21 @@ import {
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
 import {
+  collection,
   deleteDoc,
   deleteField,
   doc,
   getDoc,
+  getDocs,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from "firebase/firestore";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { CLOUD_HOUSEHOLD_SCHEMA_VERSION } from "../src/household/types";
 
 const PROJECT_ID = "demo-mizan";
 const HOUSEHOLD_ID = "hh_rules123";
@@ -51,7 +56,9 @@ function signedIn(uid: string, displayName: string, email: string) {
   }).firestore();
 }
 
-function cloudSettings(updatedBy: string, schemaVersion = 10) {
+// Bound to the constant the client actually writes, so bumping the cloud schema
+// without widening firestore.rules fails here instead of in the deployed app.
+function cloudSettings(updatedBy: string, schemaVersion: number = CLOUD_HOUSEHOLD_SCHEMA_VERSION) {
   return {
     schemaVersion,
     targetSaveRate: 25,
@@ -65,6 +72,20 @@ function cloudSettings(updatedBy: string, schemaVersion = 10) {
 
 function transactionDoc(id: string) {
   return { id, amount: 10 };
+}
+
+function settlementDoc(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    householdId: HOUSEHOLD_ID,
+    month: "2026-07",
+    fromMemberId: "owner",
+    toMemberId: "member",
+    amount: 10,
+    settledAt: "2026-07-31T16:00:00.000Z",
+    settledByUid: "owner",
+    ...overrides,
+  };
 }
 
 function manifest(updatedBy: string, versionToken = "token_1") {
@@ -109,6 +130,59 @@ describe("Firestore household authorization", () => {
     await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1`), cloudSettings("owner")));
     await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/transactions/txn_1`), transactionDoc("txn_1")));
     await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/snapshots/rev_1/efficiencyPlans/plan_1`), { id: "plan_1", action: "reduce" }));
+  });
+
+  it("keeps weekly close progress per user and allows resumable partial answers", async () => {
+    const owner = environment.authenticatedContext("owner").firestore();
+    const outsider = environment.authenticatedContext("outsider").firestore();
+    const record = {
+      id: "weekly_close_owner_2026-W31",
+      householdId: HOUSEHOLD_ID,
+      uid: "owner",
+      weekIso: "2026-W31",
+      closedAt: "",
+      stepsCompleted: ["catch-up"],
+      sortedCount: 4,
+    };
+
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/weeklyCloses/${record.id}`), record));
+    await assertSucceeds(getDoc(doc(owner, `households/${HOUSEHOLD_ID}/weeklyCloses/${record.id}`)));
+    await assertSucceeds(getDocs(query(
+      collection(owner, `households/${HOUSEHOLD_ID}/weeklyCloses`),
+      where("uid", "==", "owner"),
+    )));
+    await assertFails(getDoc(doc(outsider, `households/${HOUSEHOLD_ID}/weeklyCloses/${record.id}`)));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/weeklyCloses/${record.id}`), { ...record, uid: "someone-else" }));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/weeklyCloses/${record.id}`), { ...record, injected: true }));
+    await assertFails(deleteDoc(doc(owner, `households/${HOUSEHOLD_ID}/weeklyCloses/${record.id}`)));
+
+    await assertSucceeds(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/weeklyCloses/${record.id}`), {
+      ...record,
+      closedAt: "2026-07-31T16:00:00.000Z",
+      stepsCompleted: ["catch-up", "sort", "read", "decide"],
+      committedPlanId: "plan_1",
+    }));
+  });
+
+  it("keeps settlements append-only and bound to the recording user", async () => {
+    const owner = environment.authenticatedContext("owner").firestore();
+    const outsider = environment.authenticatedContext("outsider").firestore();
+    const path = `households/${HOUSEHOLD_ID}/settlements/settlement_1`;
+    const record = settlementDoc("settlement_1");
+
+    await assertSucceeds(setDoc(doc(owner, path), record));
+    await assertSucceeds(getDoc(doc(owner, path)));
+    await assertFails(getDoc(doc(outsider, path)));
+    await assertFails(updateDoc(doc(owner, path), { amount: 5 }));
+    await assertFails(deleteDoc(doc(owner, path)));
+    await assertFails(setDoc(doc(owner, path), record));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settlements/bad_uid`), settlementDoc("bad_uid", { settledByUid: "someone-else" })));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settlements/injected`), settlementDoc("injected", { injected: true })));
+    await assertFails(setDoc(doc(owner, `households/${HOUSEHOLD_ID}/settlements/zero`), settlementDoc("zero", { amount: 0 })));
+
+    const snapshotPath = `households/${HOUSEHOLD_ID}/snapshots/rev_1/settlements/snapshot_settlement`;
+    await assertSucceeds(setDoc(doc(owner, snapshotPath), settlementDoc("snapshot_settlement", { __order: 1 })));
+    await assertFails(updateDoc(doc(owner, snapshotPath), { amount: 6 }));
   });
 
   it("permits only the invite-proven user to add itself as a regular member", async () => {

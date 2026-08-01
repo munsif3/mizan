@@ -44,47 +44,6 @@ export function ruleFromControls(
   };
 }
 
-/** The control values a review card opens with. */
-export interface ReviewControls {
-  kind: MovementKind;
-  category: CategoryKey;
-  beneficiary: RuleBeneficiaryValue;
-  counterpartyId: string;
-  holdingId: string;
-}
-
-/** Suggestions a review queue item can carry into the controls. */
-interface ReviewSuggestions {
-  suggestedKind?: MovementKind;
-  suggestedCategory?: CategoryKey;
-  suggestedBeneficiary?: MerchantRule["beneficiary"];
-  suggestedCounterpartyId?: string;
-  suggestedHoldingId?: string;
-}
-
-/**
- * The controls a review card starts with, derived purely from the queue item.
- * Shared with bulk accept so accepting a suggestion in one tap saves exactly the
- * rule the card would have saved.
- */
-export function reviewControlDefaults(item: ReviewSuggestions): ReviewControls {
-  return {
-    kind: item.suggestedKind ?? "expense",
-    category: item.suggestedCategory ?? "uncategorized",
-    beneficiary: ruleBeneficiaryValue(item.suggestedBeneficiary),
-    counterpartyId: item.suggestedCounterpartyId ?? "",
-    holdingId: item.suggestedHoldingId ?? "",
-  };
-}
-
-/** Whether these controls describe a rule complete enough to save. */
-export function reviewControlsComplete(controls: ReviewControls, solo: boolean): boolean {
-  const spend = isSpendKind(controls.kind);
-  return (!kindNeedsCategory(controls.kind) || controls.category !== "uncategorized")
-    && (!spend || solo || controls.beneficiary !== "unassigned")
-    && (controls.kind !== "investment_transfer" || Boolean(controls.holdingId));
-}
-
 export interface RuleFieldsProps {
   /** Suffix for each control's aria-label, e.g. the merchant name. */
   context: string;

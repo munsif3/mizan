@@ -33,8 +33,9 @@ export function householdIdFromInvite(code: string): string | null {
 
 export function hasLocalFinancialData(data: AppData): boolean {
   return Boolean(
-    data.transactions.length ||
+      data.transactions.length ||
       data.sharedContributions.length ||
+      data.settlements.length ||
       Object.keys(data.merchantRules).length ||
       data.accounts.length ||
       data.fixedCosts.length ||
@@ -112,6 +113,7 @@ export function appDataToCloudCollections(appData: AppData, updatedBy: string, n
     settings: createCloudSettings(appData, updatedBy, now),
     transactions: appData.transactions,
     sharedContributions: appData.sharedContributions,
+    settlements: appData.settlements,
     accounts: appData.accounts,
     fixedCosts: appData.fixedCosts,
     assetHoldings: appData.assetHoldings,
@@ -136,10 +138,12 @@ export function cloudCollectionsToAppData(collections: Partial<CloudCollections>
     // Split-cloud v4 stored AppData v10 semantics; v5 added beneficiaries,
     // v6 recurring-commitment payment types, v7 scheduled income sources,
     // v8 household-shared efficiency plans, v9 lifecycle/coverage evidence,
-    // v10 asset holdings plus reconciled commitments, and v11 account statement cadence.
-    schemaVersion: cloudSchemaVersion >= 11 ? 18 : cloudSchemaVersion >= 10 ? 17 : cloudSchemaVersion >= 9 ? 16 : cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
+    // v10 asset holdings plus reconciled commitments, v11 account statement
+    // cadence, and v12 append-only settlements.
+    schemaVersion: cloudSchemaVersion >= 12 ? 19 : cloudSchemaVersion >= 11 ? 18 : cloudSchemaVersion >= 10 ? 17 : cloudSchemaVersion >= 9 ? 16 : cloudSchemaVersion >= 8 ? 15 : cloudSchemaVersion >= 7 ? 14 : cloudSchemaVersion >= 6 ? 13 : cloudSchemaVersion >= 5 ? 12 : 10,
     transactions: collections.transactions ?? [],
     sharedContributions: collections.sharedContributions ?? [],
+    settlements: collections.settlements ?? [],
     merchantRules,
     accounts: collections.accounts ?? [],
     fixedCosts: collections.fixedCosts ?? [],

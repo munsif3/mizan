@@ -10,10 +10,11 @@ import type {
   Member,
   MerchantRule,
   SharedContribution,
+  Settlement,
   Transaction,
 } from "../domain/types";
 
-export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 11;
+export const CLOUD_HOUSEHOLD_SCHEMA_VERSION = 12;
 export const CLOUD_SNAPSHOT_MANIFEST_VERSION = 1;
 
 type HouseholdRole = "owner" | "member";
@@ -65,6 +66,7 @@ export interface CloudCollections {
   settings: CloudSettings | null;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
+  settlements: Settlement[];
   accounts: Account[];
   fixedCosts: FixedCost[];
   assetHoldings: AssetHolding[];

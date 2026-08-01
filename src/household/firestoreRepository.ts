@@ -10,14 +10,17 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  query,
+  where,
   writeBatch,
   type DocumentData,
   type Firestore,
   type WriteBatch,
 } from "firebase/firestore";
 import type { AuthUser } from "../auth/authStore";
-import type { Account, AppData, AssetHolding, Counterparty, CustomCategory, EfficiencyPlan, FixedCost, IncomeReceipt, Member, SharedContribution, Transaction } from "../domain/types";
+import type { Account, AppData, AssetHolding, Counterparty, CustomCategory, EfficiencyPlan, FixedCost, IncomeReceipt, Member, SharedContribution, Settlement, Transaction, WeeklyClose } from "../domain/types";
 import type { DataRepository, RepositorySubscriptionOptions } from "../storage/repository";
+import { normalizeWeeklyClose } from "../domain/weeklyClose";
 import {
   appDataToCloudCollections,
   cloudCollectionsToAppData,
@@ -50,6 +53,7 @@ const BATCH_LIMIT = 450;
 const SNAPSHOT_DATA_COLLECTIONS = [
   "transactions",
   "sharedContributions",
+  "settlements",
   "accounts",
   "fixedCosts",
   "assetHoldings",
@@ -108,6 +112,10 @@ function snapshotsRootCollection(db: Firestore, householdId: string) {
   return collection(db, "households", householdId, "snapshots");
 }
 
+function weeklyClosesCollection(db: Firestore, householdId: string) {
+  return collection(db, "households", householdId, "weeklyCloses");
+}
+
 function makeRevision(): string {
   const random = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID().replace(/-/g, "")
@@ -161,7 +169,7 @@ function emptyProfile(): UserProfile {
   return {
     activeHouseholdId: "",
     privacy: false,
-    lastView: "home",
+    lastView: "balance",
     lastMonth: "",
     categoryFilter: "all",
     beneficiaryFilter: "all",
@@ -185,7 +193,7 @@ function coerceProfile(value: unknown): UserProfile {
     activeHouseholdId: typeof raw.activeHouseholdId === "string" ? raw.activeHouseholdId : "",
     privacy: raw.privacy === true,
     theme: raw.theme === "light" || raw.theme === "dark" ? raw.theme : undefined,
-    lastView: typeof raw.lastView === "string" ? raw.lastView : "home",
+    lastView: typeof raw.lastView === "string" ? raw.lastView : "balance",
     lastMonth: typeof raw.lastMonth === "string" ? raw.lastMonth : "",
     categoryFilter: typeof raw.categoryFilter === "string" ? raw.categoryFilter : "all",
     // The old ownerFilter mixed account ownership with personal-category
@@ -240,6 +248,23 @@ async function replaceOrderedCollectionJobs<T>(
     if (!current || !sameDocument(current, next)) jobs.push((batch) => batch.set(doc(ref, id), next));
   });
   return jobs;
+}
+
+/** Settlement documents are immutable ledger evidence: only missing ids may be appended. */
+async function appendOnlyCollectionJobs<T>(
+  ref: FirestoreCollectionRef,
+  items: T[],
+  idOf: (item: T) => string,
+): Promise<BatchJob[]> {
+  const existing = await getDocs(ref);
+  const existingIds = new Set(existing.docs.map((item) => item.id));
+  return items
+    .map((item, order) => ({ item, order, id: idOf(item) }))
+    .filter(({ id }) => !existingIds.has(id))
+    .map(({ item, order, id }) => (batch) => batch.set(
+      doc(ref, id),
+      cleanForFirestore({ ...item, [ORDER_FIELD]: order }),
+    ));
 }
 
 async function replaceKeyedCollectionJobs<T>(
@@ -458,6 +483,23 @@ export class FirestoreHouseholdRepository implements DataRepository {
     private readonly uid: string,
   ) {}
 
+  async loadWeeklyCloses(): Promise<WeeklyClose[]> {
+    const snapshot = await getDocs(query(
+      weeklyClosesCollection(this.db, this.householdId),
+      where("uid", "==", this.uid),
+    ));
+    return snapshot.docs
+      .map((item) => normalizeWeeklyClose(item.data(), item.id))
+      .filter((record): record is WeeklyClose => record !== null);
+  }
+
+  async saveWeeklyClose(record: WeeklyClose): Promise<void> {
+    if (record.householdId !== this.householdId || record.uid !== this.uid) {
+      throw new Error("That weekly close does not belong to the active household user.");
+    }
+    await setDoc(doc(weeklyClosesCollection(this.db, this.householdId), record.id), cleanForFirestore(record));
+  }
+
   private async loadCollections(
     settings: CloudSettings,
     collectionFor: (name: string) => FirestoreCollectionRef,
@@ -465,6 +507,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
     const [
       transactions,
       sharedContributions,
+      settlements,
       accounts,
       fixedCosts,
       assetHoldings,
@@ -478,6 +521,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
     ] = await Promise.all([
       orderedCollection<Transaction>(collectionFor("transactions")),
       orderedCollection<SharedContribution>(collectionFor("sharedContributions")),
+      orderedCollection<Settlement>(collectionFor("settlements")),
       orderedCollection<Account>(collectionFor("accounts")),
       orderedCollection<FixedCost>(collectionFor("fixedCosts")),
       orderedCollection<AssetHolding>(collectionFor("assetHoldings")),
@@ -493,6 +537,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
       settings,
       transactions,
       sharedContributions,
+      settlements,
       accounts,
       fixedCosts,
       assetHoldings,
@@ -564,6 +609,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
         (batch) => batch.set(snapshotRef(this.db, this.householdId, revision), cleanForFirestore(cloud.settings)),
         ...appendOrderedCollectionJobs(collectionFor("transactions"), cloud.transactions, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("sharedContributions"), cloud.sharedContributions, (item) => item.id),
+        ...appendOrderedCollectionJobs(collectionFor("settlements"), cloud.settlements, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("accounts"), cloud.accounts, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("fixedCosts"), cloud.fixedCosts, (item) => item.id),
         ...appendOrderedCollectionJobs(collectionFor("assetHoldings"), cloud.assetHoldings, (item) => item.id),
@@ -597,6 +643,7 @@ export class FirestoreHouseholdRepository implements DataRepository {
     const groups = await Promise.all([
       replaceOrderedCollectionJobs(collectionFor("transactions"), cloud.transactions, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("sharedContributions"), cloud.sharedContributions, (item) => item.id),
+      appendOnlyCollectionJobs(collectionFor("settlements"), cloud.settlements, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("accounts"), cloud.accounts, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("fixedCosts"), cloud.fixedCosts, (item) => item.id),
       replaceOrderedCollectionJobs(collectionFor("assetHoldings"), cloud.assetHoldings, (item) => item.id),
@@ -621,6 +668,40 @@ export class FirestoreHouseholdRepository implements DataRepository {
       transaction.set(snapshotManifestRef(this.db, this.householdId), cleanForFirestore(manifest));
     });
     this.loadedManifestVersion = manifest.versionToken;
+  }
+
+  /** Append one settlement without rewriting transactions or any existing settlement. */
+  async appendSettlement(record: Settlement): Promise<void> {
+    if (record.householdId !== this.householdId || record.settledByUid !== this.uid) {
+      throw new Error("That settlement does not belong to the active household user.");
+    }
+    const next = cleanForFirestore({
+      ...record,
+      [ORDER_FIELD]: Number.isFinite(Date.parse(record.settledAt)) ? Date.parse(record.settledAt) : Date.now(),
+    });
+    if (!this.activeRevision) {
+      await setDoc(doc(householdCollection(this.db, this.householdId, "settlements"), record.id), next);
+      return;
+    }
+
+    const expectedRevision = this.activeRevision;
+    const expectedVersion = this.loadedManifestVersion;
+    const nextManifest = createCloudSnapshotManifest(expectedRevision, makeRevision(), this.uid);
+    await runTransaction(this.db, async (transaction) => {
+      const currentSnapshot = await transaction.get(snapshotManifestRef(this.db, this.householdId));
+      const current = currentSnapshot.exists() ? currentSnapshot.data() as Partial<CloudSnapshotManifest> : null;
+      if (!current
+        || current.activeRevision !== expectedRevision
+        || manifestVersion(current) !== expectedVersion) {
+        throw new Error("This household changed on another device. Reload before saving the settlement.");
+      }
+      transaction.set(
+        doc(snapshotCollection(this.db, this.householdId, expectedRevision, "settlements"), record.id),
+        next,
+      );
+      transaction.set(snapshotManifestRef(this.db, this.householdId), cleanForFirestore(nextManifest));
+    });
+    this.loadedManifestVersion = nextManifest.versionToken;
   }
 
   /** Delete every obsolete revision root and its subcollections, keeping `keep`. */

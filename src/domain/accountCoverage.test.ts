@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { computeAccountCoverage, coverageLabel, importedAccountCoverageCandidates } from "./accountCoverage";
-import type { Account, Member } from "./types";
+import {
+  computeAccountCoverage,
+  coverageLabel,
+  inferStatementDay,
+  importedAccountCoverageCandidates,
+  statementDayForAccount,
+  unmeasuredExposure,
+  type AccountCoverageRow,
+} from "./accountCoverage";
+import type { MonthSummary } from "./summary";
+import type { Account, Member, Transaction } from "./types";
 
 const members: Member[] = [
   { id: "alex", name: "Alex", color: "#000000", portions: [] },
@@ -11,6 +20,46 @@ function account(id: string, owner: string, throughDate = ""): Account {
   return {
     id, label: id, owner, beneficiaryDefault: "review", match: [],
     ...(throughDate ? { coverage: { throughDate, confirmedAt: `${throughDate}T12:00:00.000Z`, confirmedByUid: "u1", source: "manual" as const } } : {}),
+  };
+}
+
+function transaction(accountId: string, date: string, amount: number, kind: Transaction["kind"] = "expense"): Transaction {
+  return {
+    id: `${accountId}-${date}-${amount}-${kind}`,
+    date,
+    description: "Recorded row",
+    amount,
+    category: "food",
+    beneficiary: { type: "household" },
+    account: accountId,
+    accountId,
+    note: "",
+    source: "imported",
+    direction: kind === "account_credit" ? "credit" : "debit",
+    kind,
+  };
+}
+
+function historyMonth(month: string, daysInMonth: number, transactions: Transaction[]): MonthSummary {
+  return {
+    month,
+    daysInMonth,
+    monthTransactions: transactions,
+  } as MonthSummary;
+}
+
+function coverageRow(
+  trackedAccount: Account,
+  status: AccountCoverageRow["status"],
+  throughDate = "",
+): AccountCoverageRow {
+  return {
+    account: trackedAccount,
+    ownerLabel: "Alex",
+    throughDate,
+    ageDays: throughDate ? 5 : null,
+    nextExpectedDate: null,
+    status,
   };
 }
 
@@ -109,5 +158,88 @@ describe("account coverage", () => {
       label: "Main card",
       suggestedThroughDate: "2026-07-20",
     }]);
+  });
+
+  it("uses the median daily recorded spend from the latest three completed months", () => {
+    const card = account("card", "alex", "2026-07-15");
+    const current = account("current", "sam", "2026-07-20");
+    const exposure = unmeasuredExposure([
+      coverageRow(card, "stale", "2026-07-15"),
+      coverageRow(current, "current", "2026-07-20"),
+    ], [
+      historyMonth("2026-03", 31, [transaction("card", "2026-03-10", 31_000)]),
+      historyMonth("2026-04", 30, [transaction("card", "2026-04-10", 3_000)]),
+      historyMonth("2026-05", 31, [transaction("card", "2026-05-10", 6_200)]),
+      historyMonth("2026-06", 30, [transaction("card", "2026-06-10", 9_000)]),
+      historyMonth("2026-07", 31, [transaction("card", "2026-07-10", 310_000)]),
+    ], new Date(2026, 6, 20));
+
+    // Latest completed months are Apr-Jun: 100, 200, and 300 per day.
+    // Five exposed days at the median is 1,000.
+    expect(exposure).toEqual({
+      amount: 1_000,
+      throughDate: "2026-07-15",
+      accounts: [expect.objectContaining({ account: card, status: "stale" })],
+    });
+  });
+
+  it("sums account bounds and rounds the household exposure up to the next thousand", () => {
+    const first = account("first", "alex", "2026-07-17");
+    const second = account("second", "sam", "2026-07-18");
+    const exposure = unmeasuredExposure([
+      coverageRow(first, "stale", "2026-07-17"),
+      coverageRow(second, "stale", "2026-07-18"),
+    ], [
+      historyMonth("2026-06", 30, [
+        transaction("first", "2026-06-10", 3_000),
+        transaction("second", "2026-06-11", 6_000),
+      ]),
+    ], new Date(2026, 6, 20));
+
+    // 3 days * 100 plus 2 days * 200 = 700, rounded up once after summing.
+    expect(exposure.amount).toBe(1_000);
+    expect(exposure.throughDate).toBe("2026-07-17");
+  });
+
+  it("flags never-confirmed accounts and uses elapsed-month history only as a floor", () => {
+    const card = account("card", "alex");
+    const exposure = unmeasuredExposure([
+      coverageRow(card, "missing"),
+    ], [
+      historyMonth("2026-06", 30, [transaction("card", "2026-06-10", 3_000)]),
+    ], new Date(2026, 6, 20));
+
+    expect(exposure.amount).toBe(2_000);
+    expect(exposure.throughDate).toBe("");
+    expect(exposure.accounts[0]?.status).toBe("missing");
+  });
+
+  it("does not treat non-spend movements as unmeasured spending", () => {
+    const card = account("card", "alex", "2026-07-10");
+    const exposure = unmeasuredExposure([
+      coverageRow(card, "stale", "2026-07-10"),
+    ], [
+      historyMonth("2026-06", 30, [
+        transaction("card", "2026-06-10", 30_000, "internal_transfer"),
+        transaction("card", "2026-06-11", 3_000, "expense"),
+      ]),
+    ], new Date(2026, 6, 20));
+
+    expect(exposure.amount).toBe(1_000);
+  });
+
+  it("infers a statement arrival day from the median coverage edge and honors an override", () => {
+    expect(inferStatementDay(["2026-01-03", "2026-02-04", "2026-03-03"])).toBe(3);
+    expect(statementDayForAccount({
+      ...account("card", "alex"),
+      coverage: {
+        throughDate: "2026-03-03",
+        confirmedAt: "2026-03-04T00:00:00.000Z",
+        confirmedByUid: "u1",
+        source: "statement",
+        confirmedDates: ["2026-01-03", "2026-02-04", "2026-03-03"],
+      },
+    })).toBe(3);
+    expect(statementDayForAccount({ ...account("card", "alex"), statementDay: 17 })).toBe(17);
   });
 });

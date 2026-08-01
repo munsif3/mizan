@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { SettingsTarget } from "../../app/settingsTarget";
+import { statementDayForAccount } from "../../domain/accountCoverage";
 import { transitionAccounts } from "../../domain/appDataTransitions";
 import { categoryOptions } from "../../domain/categories";
 import { isoDateOf } from "../../domain/dates";
@@ -288,10 +289,37 @@ export function AccountRuleSettings({
                             confirmedAt: new Date().toISOString(),
                             confirmedByUid: currentUserUid,
                             source: "manual",
+                            confirmedDates: [...new Set([
+                              ...(accountDraft.coverage?.confirmedDates ?? []),
+                              event.target.value,
+                            ])],
                           }
                         : undefined,
                     })}
                   />
+                </label>
+                <label className="field">
+                  <span>Statement day</span>
+                  <input
+                    aria-label={`${accountDraft.label || "Account"} statement day`}
+                    type="number"
+                    min="1"
+                    max="28"
+                    inputMode="numeric"
+                    placeholder="Auto"
+                    value={accountDraft.statementDay ?? statementDayForAccount(accountDraft) ?? ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      const day = Math.trunc(Number(value));
+                      setAccountDraft({
+                        ...accountDraft,
+                        ...(value && day >= 1 && day <= 28
+                          ? { statementDay: day, statementDaySource: "manual" as const }
+                          : { statementDay: undefined, statementDaySource: undefined }),
+                      });
+                    }}
+                  />
+                  <small>Usually arrives. Clear it to use confirmed coverage dates.</small>
                 </label>
                 <label className="field">
                   <span>Statement arrives</span>

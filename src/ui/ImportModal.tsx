@@ -18,6 +18,15 @@ export interface ImportResult {
   coverageCandidates?: AccountCoverageCandidate[];
 }
 
+export type ImportHandler = (
+  files: File[],
+  passwords: Record<string, string>,
+  onProgress: (step: string) => void,
+  scopedAccountId?: string,
+) => Promise<ImportResult>;
+
+export type MapStatementHandler = (file: File, password: string, scopedAccountId?: string) => void;
+
 type ImportMode = "statement" | "csv";
 
 /** The registry id whose password field covers PDFs, reused when mapping one manually. */
@@ -30,17 +39,17 @@ export function ImportModal({
   onReview,
   onConfirmCoverage = () => undefined,
   onClose,
+  scopedAccountId,
+  scopedAccountLabel,
 }: {
-  onImport: (
-    files: File[],
-    passwords: Record<string, string>,
-    onProgress: (step: string) => void,
-  ) => Promise<ImportResult>;
+  onImport: ImportHandler;
   onCsv: (file: File) => void;
-  onMapStatement: (file: File, password: string) => void;
+  onMapStatement: MapStatementHandler;
   onReview: () => void;
   onConfirmCoverage?: (confirmations: AccountCoverageConfirmation[]) => void;
   onClose: () => void;
+  scopedAccountId?: string;
+  scopedAccountLabel?: string;
 }) {
   const [mode, setMode] = useState<ImportMode>("statement");
   const [files, setFiles] = useState<File[]>([]);
@@ -98,7 +107,7 @@ export function ImportModal({
     setResult(null);
     setBusy("Reading statements");
     try {
-      setResult(await onImport(files, passwords, setBusy));
+      setResult(await onImport(files, passwords, setBusy, scopedAccountId));
     } finally {
       setBusy("");
     }
@@ -131,6 +140,10 @@ export function ImportModal({
             setSelectionError("");
           }}
         />
+
+        {scopedAccountLabel && (
+          <p className="import-scope" role="status">Importing statement activity for <strong>{scopedAccountLabel}</strong>.</p>
+        )}
 
         <label
           className="dropzone"
@@ -196,7 +209,7 @@ export function ImportModal({
                 key={file.name}
                 variant="secondary"
                 disabled={!!busy}
-                onClick={() => onMapStatement(file, passwords[PDF_PARSER_ID] ?? "")}
+                onClick={() => onMapStatement(file, passwords[PDF_PARSER_ID] ?? "", scopedAccountId)}
               >
                 Map {file.name} myself
               </Button>

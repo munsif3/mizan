@@ -46,7 +46,7 @@ export function useBrowserPreferences(data: AppData, bootstrapPhase: BootstrapPh
     document.documentElement.style.colorScheme = theme;
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute(
       "content",
-      theme === "dark" ? "#0f1713" : "#f1eee5",
+      theme === "dark" ? "#0d1713" : "#f4efe6",
     );
   }, [theme]);
 

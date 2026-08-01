@@ -3,7 +3,7 @@ import {
   applyAccountBeneficiaryDefaults,
   applyAccounts,
 } from "./domain/accounts";
-import { importedAccountCoverageCandidates } from "./domain/accountCoverage";
+import { importedAccountCoverageCandidates, inferStatementDay } from "./domain/accountCoverage";
 import {
   transitionAccounts,
   transitionAssetHoldings,
@@ -46,6 +46,7 @@ import { validLifecycleDate } from "./domain/memberLifecycle";
 import { directionForKind } from "./domain/movements";
 import { applyRules } from "./domain/rules";
 import { needsClassificationReview } from "./domain/summary";
+import type { Transfer } from "./domain/summary";
 import {
   uid,
   type AppData,
@@ -56,6 +57,7 @@ import {
   type CustomCategory,
   type EfficiencyOpportunity,
   type EfficiencyOutcomeResult,
+  type EfficiencyPlan,
   type FixedCost,
   type IncomeReceipt,
   type IncomePortion,
@@ -66,6 +68,7 @@ import {
   type SpendBeneficiary,
   type Split,
   type SharedContribution,
+  type Settlement,
   type Transaction,
 } from "./domain/types";
 import { parsersFor } from "./import/registry";
@@ -124,6 +127,7 @@ export default function App() {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   /** Rows reconstructed from a statement with no verified parser, awaiting mapping. */
   const [statementTable, setStatementTable] = useState<{ rows: string[][]; signature: string } | null>(null);
+  const [statementAccountId, setStatementAccountId] = useState<string | undefined>(undefined);
 
   const clearUndo = useCallback(() => setUndoChange(null), []);
   const resetTransientState = useCallback(() => {
@@ -137,6 +141,7 @@ export default function App() {
     setEfficiencyVerification(null);
     setCsvFile(null);
     setStatementTable(null);
+    setStatementAccountId(undefined);
   }, []);
   const session = useHouseholdSession({ clearUndo, resetTransientState });
   const {
@@ -155,6 +160,8 @@ export default function App() {
     householdMeta,
     bootstrapPhase,
     saveAuthoritativeSnapshot,
+    saveSettlement,
+    auth,
   } = session;
 
   const derived = useAppDerivedState({
@@ -289,8 +296,22 @@ export default function App() {
   }
 
   /** Shared tail for every import route: apply accounts + rules, dedupe, store, notify. */
-  function ingestTransactions(parsed: Transaction[], failures: string[], extraNotes: string[] = []): ImportResult {
-    const normalized = parsed.map((txn) => normalizeFxTransaction(txn, data.settings.currency));
+  function ingestTransactions(
+    parsed: Transaction[],
+    failures: string[],
+    extraNotes: string[] = [],
+    scopedAccountId?: string,
+  ): ImportResult {
+    const scopedAccount = scopedAccountId ? data.accounts.find((account) => account.id === scopedAccountId) : undefined;
+    const scoped = scopedAccount
+      ? parsed.map((txn) => ({
+          ...txn,
+          account: scopedAccount.label,
+          accountId: scopedAccount.id,
+          rawAccount: txn.rawAccount ?? txn.account,
+        }))
+      : parsed;
+    const normalized = scoped.map((txn) => normalizeFxTransaction(txn, data.settings.currency));
     const linked = applyAccounts(normalized, data.accounts);
     const defaulted = applyAccountBeneficiaryDefaults(linked, data.accounts, data.settings.members);
     const ruled = applyCommitments(
@@ -319,19 +340,22 @@ export default function App() {
     const parts = [
       `Imported ${fresh.length} transaction${fresh.length === 1 ? "" : "s"}; skipped ${ruled.length - fresh.length} duplicate${ruled.length - fresh.length === 1 ? "" : "s"}.`,
       importedMonths.spreadNotice,
-      needsReview ? `${needsReview} need a purpose or who they were for — see the review queue under Transactions.` : "",
+      needsReview ? `${needsReview} need a purpose or who they were for — open Sort to review them.` : "",
       ...extraNotes,
       ...failures,
     ].filter(Boolean);
     setNotice(parts.join(" "));
     if (needsReview) {
       setLedgerFilters(EMPTY_LEDGER_FILTERS);
-      setView("transactions");
+      setView("sort");
     }
     return { imported: fresh.length, duplicates: ruled.length - fresh.length, needsReview, failures, coverageCandidates };
   }
 
-  function confirmImportedAccountCoverage(confirmations: AccountCoverageConfirmation[]) {
+  function confirmImportedAccountCoverage(
+    confirmations: AccountCoverageConfirmation[],
+    source: "statement" | "manual" = "statement",
+  ) {
     if (session.auth.status !== "signed-in") {
       setNotice("Sign in before confirming account coverage.");
       return;
@@ -350,15 +374,28 @@ export default function App() {
       ...previous,
       accounts: previous.accounts.map((account) => {
         const throughDate = dates.get(account.id);
-        return throughDate ? {
+        if (!throughDate) return account;
+        const confirmedDates = [...new Set([
+          ...(account.coverage?.confirmedDates ?? []),
+          ...(account.coverage?.throughDate ? [account.coverage.throughDate] : []),
+          ...(source === "statement" ? [throughDate] : []),
+        ])];
+        const inferred = source === "statement" ? inferStatementDay(confirmedDates) : undefined;
+        return {
           ...account,
+          ...(account.statementDaySource === "manual"
+            ? {}
+            : inferred
+              ? { statementDay: inferred, statementDaySource: "inferred" as const }
+              : {}),
           coverage: {
             throughDate,
             confirmedAt,
             confirmedByUid,
-            source: "statement" as const,
+            source,
+            ...(confirmedDates.length ? { confirmedDates } : {}),
           },
-        } : account;
+        };
       }),
     }));
     setNotice(`Coverage confirmed for ${dates.size} account${dates.size === 1 ? "" : "s"}.`);
@@ -370,7 +407,7 @@ export default function App() {
    * one the CSV route uses, so an unsupported bank stops being a dead end without
    * anything being guessed silently (ADR #12). PDF.js stays lazily imported.
    */
-  async function mapStatementTable(file: File, password: string) {
+  async function mapStatementTable(file: File, password: string, scopedAccountId?: string) {
     try {
       const { extractStatementTable } = await import("./import/pdfTable");
       const table = await extractStatementTable(file, password);
@@ -380,6 +417,7 @@ export default function App() {
       }
       setModal(null);
       setStatementTable({ rows: table.rows, signature: table.signature });
+      setStatementAccountId(scopedAccountId);
       setCsvFile(file);
     } catch (error) {
       setNotice(`Could not read ${file.name}: ${(error as Error).message}`);
@@ -390,13 +428,14 @@ export default function App() {
     files: File[],
     passwords: Record<string, string>,
     onProgress: (step: string) => void,
+    scopedAccountId?: string,
   ): Promise<ImportResult> {
     const parsed: Transaction[] = [];
     const failures: string[] = [];
     try {
       assertStatementFiles(files);
     } catch (error) {
-      return ingestTransactions([], [(error as Error).message]);
+      return ingestTransactions([], [(error as Error).message], [], scopedAccountId);
     }
     for (const file of files) {
       try {
@@ -408,7 +447,7 @@ export default function App() {
         failures.push(`${file.name}: ${(error as Error).message}`);
       }
     }
-    return ingestTransactions(parsed, failures);
+    return ingestTransactions(parsed, failures, [], scopedAccountId);
   }
 
   function updateMembers(members: Member[]) {
@@ -614,7 +653,53 @@ export default function App() {
     setNotice("Weekly money check-in recorded. Come back after your next statement update, or within seven days.");
   }
 
-  function saveEfficiencyDecision(opportunity: EfficiencyOpportunity, input: EfficiencyPlanInput) {
+  async function markSettled(transfer: Transfer) {
+    if (auth.status !== "signed-in" || !householdMeta) {
+      setNotice("Sign in to record a household settlement.");
+      return;
+    }
+    const record: Settlement = {
+      id: uid("settlement"),
+      householdId: householdMeta.id,
+      month: currentMonth,
+      fromMemberId: transfer.fromId,
+      toMemberId: transfer.toId,
+      amount: transfer.amount,
+      settledAt: new Date().toISOString(),
+      settledByUid: auth.user.uid,
+    };
+    try {
+      await saveSettlement(record);
+      setNotice("Settlement recorded. This month’s figures were not changed.");
+    } catch (error) {
+      setNotice(`Settlement could not be recorded: ${(error as Error).message}`);
+    }
+  }
+
+  async function undoLastSettlement() {
+    if (auth.status !== "signed-in" || !householdMeta) return;
+    const latest = [...data.settlements]
+      .filter((settlement) => settlement.householdId === householdMeta.id
+        && settlement.month === currentMonth
+        && settlement.settledByUid === auth.user.uid)
+      .sort((left, right) => left.settledAt.localeCompare(right.settledAt) || left.id.localeCompare(right.id))
+      .at(-1);
+    if (!latest || latest.amount <= 0) return;
+    const inverse: Settlement = {
+      ...latest,
+      id: uid("settlement"),
+      amount: -latest.amount,
+      settledAt: new Date().toISOString(),
+    };
+    try {
+      await saveSettlement(inverse);
+      setNotice("The last settlement was undone. This month’s figures were not changed.");
+    } catch (error) {
+      setNotice(`Settlement undo could not be recorded: ${(error as Error).message}`);
+    }
+  }
+
+  function saveEfficiencyDecision(opportunity: EfficiencyOpportunity, input: EfficiencyPlanInput): EfficiencyPlan {
     const existing = opportunity.planId
       ? data.efficiencyPlans.find((plan) => plan.id === opportunity.planId)
       : undefined;
@@ -627,6 +712,7 @@ export default function App() {
     setNotice(input.action === "keep"
       ? "Value check recorded. Mizan will revisit it in six months or after a material price increase."
       : "Efficiency plan saved to the shared household board.");
+    return plan;
   }
 
   function verifyEfficiencyOutcome(opportunity: EfficiencyOpportunity, result: EfficiencyOutcomeResult) {
@@ -671,6 +757,8 @@ export default function App() {
       setCsvFile,
       statementTable,
       setStatementTable,
+      statementAccountId,
+      setStatementAccountId,
       undoChange,
     },
     actions: {
@@ -680,6 +768,8 @@ export default function App() {
         updateCustomCategories,
         completeWeeklyCheckIn,
         addOneOffIncome,
+        markSettled,
+        undoLastSettlement,
       },
       budget: {
         updateAccounts,

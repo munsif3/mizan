@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { transactionDisplayCurrency } from "../domain/accounts";
+import { computeAccountCoverage } from "../domain/accountCoverage";
 import { detectSharedContributionCandidates } from "../domain/contributions";
 import { isoDateOf } from "../domain/dates";
 import { computeEfficiencySnapshot } from "../domain/efficiency";
@@ -33,9 +34,10 @@ export function useAppDerivedState({
   privacy,
 }: DerivedStateInput) {
   const today = new Date();
-  const todayMonth = isoDateOf(today).slice(0, 7);
-  const historyMonths = useMemo(() => monthsWithData(data, today), [data, todayMonth]);
-  const navigationMonths = useMemo(() => selectableMonths(data, today), [data, todayMonth]);
+  const todayKey = isoDateOf(today);
+  const todayMonth = todayKey.slice(0, 7);
+  const historyMonths = useMemo(() => monthsWithData(data, today), [data, todayKey]);
+  const navigationMonths = useMemo(() => selectableMonths(data, today), [data, todayKey]);
   const monthRangeReady = bootstrapPhase === "ready";
   const currentMonth = month && (!monthRangeReady || navigationMonths.includes(month)) ? month : todayMonth;
 
@@ -43,13 +45,24 @@ export function useAppDerivedState({
     if (monthRangeReady && month && month !== currentMonth) setMonth(currentMonth);
   }, [currentMonth, month, monthRangeReady, setMonth]);
 
-  const summary = useMemo(() => computeMonthSummary(data, currentMonth, new Date()), [data, currentMonth]);
+  const summary = useMemo(() => computeMonthSummary(data, currentMonth, today), [data, currentMonth, todayKey]);
+  const completedMonthSummaries = useMemo(
+    () => navigationMonths
+      .filter((candidate) => candidate < todayMonth)
+      .slice(-3)
+      .map((candidate) => computeMonthSummary(data, candidate, today)),
+    [data, navigationMonths, todayMonth, todayKey],
+  );
   const efficiency = useMemo(
-    () => computeEfficiencySnapshot(data, currentMonth, new Date()),
-    [data, currentMonth, todayMonth],
+    () => computeEfficiencySnapshot(data, currentMonth, today),
+    [data, currentMonth, todayKey],
   );
   const queue = useMemo(() => reviewQueue(data.transactions), [data]);
-  const history = useMemo(() => computeHistory(data, historyMonths, new Date()), [data, historyMonths]);
+  const history = useMemo(() => computeHistory(data, historyMonths, today), [data, historyMonths, todayKey]);
+  const coverageRows = useMemo(
+    () => computeAccountCoverage(data.accounts, data.settings.members, today),
+    [data.accounts, data.settings.members, todayKey],
+  );
   const transferCandidates = useMemo(
     () => detectTransferCandidates(data.transactions, data.accounts, undefined, true),
     [data.transactions, data.accounts],
@@ -107,12 +120,15 @@ export function useAppDerivedState({
 
   return {
     todayMonth,
+    today,
     navigationMonths,
     currentMonth,
     summary,
+    completedMonthSummaries,
     efficiency,
     queue,
     history,
+    coverageRows,
     transferCandidates,
     contributionCandidates,
     incomeCandidateMap,

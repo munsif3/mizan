@@ -189,6 +189,10 @@ export interface Account {
   coverage?: AccountCoverage;
   /** Statement rhythm. Absent means monthly, the common case for a bank statement. */
   cadence?: AccountCadence;
+  /** The usual statement arrival day, constrained to the reliable 1–28 range. */
+  statementDay?: number;
+  /** Internal provenance so a later coverage confirmation does not replace a manual override. */
+  statementDaySource?: "inferred" | "manual";
   /**
    * case-insensitive substrings matched against the account text detected in a
    * statement (card number fragment, bank name) or the statement file name;
@@ -202,6 +206,8 @@ interface AccountCoverage {
   confirmedAt: string;
   confirmedByUid: string;
   source: "statement" | "manual";
+  /** Retained evidence used to infer a stable statement arrival day. */
+  confirmedDates?: string[];
 }
 
 export interface Split {
@@ -284,6 +290,20 @@ export interface SharedContribution {
 export interface SharedContributionAllocation {
   expenseTransactionId: string;
   amount: number;
+}
+
+/** A recorded member-to-member settlement. Undo is represented by an inverse record. */
+export interface Settlement {
+  id: string;
+  householdId: string;
+  /** YYYY-MM of the computed balance this payment settles. */
+  month: string;
+  fromMemberId: MemberId;
+  toMemberId: MemberId;
+  /** Positive for a payment; negative records append an undo of that payment. */
+  amount: number;
+  settledAt: string;
+  settledByUid: string;
 }
 
 export interface FixedCost {
@@ -501,10 +521,28 @@ export interface MerchantRule {
 
 export type MerchantRules = Record<string, MerchantRule>;
 
+export const WEEKLY_CLOSE_STEP_IDS = ["catch-up", "sort", "read", "decide"] as const;
+export type WeeklyCloseStep = (typeof WEEKLY_CLOSE_STEP_IDS)[number];
+
+/** A per-user answer record for one household week. Progress is resumable. */
+export interface WeeklyClose {
+  id: string;
+  householdId: string;
+  uid: string;
+  /** ISO week identity, for example 2026-W31. */
+  weekIso: string;
+  /** Empty until all four steps have been answered. */
+  closedAt: string;
+  stepsCompleted: WeeklyCloseStep[];
+  sortedCount: number;
+  committedPlanId?: string;
+}
+
 export interface AppData {
-  schemaVersion: 18;
+  schemaVersion: 19;
   transactions: Transaction[];
   sharedContributions: SharedContribution[];
+  settlements: Settlement[];
   merchantRules: MerchantRules;
   accounts: Account[];
   fixedCosts: FixedCost[];

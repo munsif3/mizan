@@ -50,7 +50,7 @@ describe("household dialogs", () => {
 
     expect(view.textContent).toContain("older Mizan data");
 
-    setInput(view, "  Shared budget  ");
+    await act(async () => setInput(view, "  Shared budget  "));
     await act(async () => button(view, "Create household").click());
 
     expect(onCreate).toHaveBeenCalledWith("Shared budget");
@@ -70,7 +70,7 @@ describe("household dialogs", () => {
     const onClose = vi.fn();
     const view = await render(<JoinHouseholdDialog onJoin={onJoin} onClose={onClose} />);
 
-    setInput(view, "hh_1_invite");
+    await act(async () => setInput(view, "hh_1_invite"));
     await act(async () => button(view, "Join household").click());
 
     expect(onJoin).toHaveBeenCalledWith("hh_1_invite");

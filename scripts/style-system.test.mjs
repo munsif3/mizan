@@ -10,7 +10,10 @@ const styleFiles = ["tokens.css", "base.css", "components.css", "views.css"];
 const dynamicClassTokens = new Set([
   "button-default", "button-compact",
   "button-primary", "button-secondary", "button-ghost", "button-danger",
-  "success", "info", "up", "down", "due", "overdue", "upcoming", "received",
+  "success", "info", "up", "down",
+  "mz-display-xl", "mz-display-l", "mz-display-m", "mz-display-s", "mz-figure",
+  "mz-body-l", "mz-body", "mz-body-s", "mz-caption", "mz-eyebrow",
+  "full", "partial", "empty", "spent", "left-in-plan", "saved",
 ]);
 
 function sourceFiles(directory) {
@@ -170,6 +173,17 @@ describe("Quiet Ledger style-system ownership", () => {
     const emittedClasses = staticClassTokens();
     const unused = [...cssClasses].filter((token) => !emittedClasses.has(token)).sort();
     expect(unused).toEqual([]);
+  });
+
+  it("keeps every unmeasured Balance segment hollow", () => {
+    const root = postcss.parse(fs.readFileSync(path.join(styleDirectory, "views.css"), "utf8"));
+    const rule = [...root.nodes].find((node) =>
+      node.type === "rule" && node.selector === ".accounted-segment.unmeasured");
+    const declarations = Object.fromEntries(
+      rule?.nodes.filter((node) => node.type === "decl").map((node) => [node.prop, node.value]) ?? [],
+    );
+    expect(declarations.background).toBe("transparent");
+    expect(declarations.border).toBe("var(--ql-unmeasured-stroke)");
   });
 
   it("keeps the readable source cascade within the cleanup budget", () => {

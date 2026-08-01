@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import type { AppData } from "../domain/types";
+import type { AppData, Settlement, WeeklyClose } from "../domain/types";
 import { saveAuthoritativeData, type DataRepository } from "../storage/repository";
 import { sync, type SyncState } from "./syncState";
 
@@ -44,6 +44,8 @@ export function useCloudSync({
   const skipNextSave = useRef(false);
   const saveTimer = useRef<number | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const settlementQueue = useRef<Promise<void>>(Promise.resolve());
+  const weeklyCloseQueue = useRef<Promise<void>>(Promise.resolve());
   const saveVersion = useRef(0);
   const completedSaveVersion = useRef(0);
   const repositoryRef = useRef<DataRepository | null>(null);
@@ -244,6 +246,52 @@ export function useCloudSync({
     await operation;
   }
 
+  const saveWeeklyClose = useCallback(async (record: WeeklyClose): Promise<void> => {
+    const activeRepository = repositoryRef.current;
+    if (!activeRepository?.saveWeeklyClose) throw new Error("The active household cannot save weekly close records.");
+    setSyncStatus(sync.syncing("Saving weekly close"));
+    const queued = weeklyCloseQueue.current
+      .catch(() => undefined)
+      .then(() => activeRepository.saveWeeklyClose!(record));
+    weeklyCloseQueue.current = queued;
+    try {
+      await queued;
+      if (repositoryRef.current === activeRepository) setSyncStatus(sync.synced("Weekly close saved"));
+    } catch (error) {
+      if (repositoryRef.current === activeRepository) setSyncStatus(sync.error(`Weekly close save failed: ${(error as Error).message}`));
+      throw error;
+    }
+  }, [setSyncStatus]);
+
+  const saveSettlement = useCallback(async (record: Settlement): Promise<void> => {
+    const activeRepository = repositoryRef.current;
+    if (!activeRepository?.appendSettlement) throw new Error("The active household cannot save settlement records.");
+    cancelPendingAutosave();
+    const pendingSave = saveQueue.current;
+    setSyncStatus(sync.syncing("Saving settlement"));
+    const queued = settlementQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        await pendingSave;
+        await activeRepository.appendSettlement!(record);
+        if (repositoryRef.current !== activeRepository) return;
+        skipNextSave.current = true;
+        const version = ++saveVersion.current;
+        completedSaveVersion.current = version;
+        setData((previous) => previous.settlements.some((item) => item.id === record.id)
+          ? previous
+          : { ...previous, settlements: [...previous.settlements, record] });
+      });
+    settlementQueue.current = queued;
+    try {
+      await queued;
+      if (repositoryRef.current === activeRepository) setSyncStatus(sync.synced("Settlement saved"));
+    } catch (error) {
+      if (repositoryRef.current === activeRepository) setSyncStatus(sync.error(`Settlement save failed: ${(error as Error).message}`));
+      throw error;
+    }
+  }, [setData, setSyncStatus]);
+
   return {
     conflict,
     resolveConflict,
@@ -252,5 +300,7 @@ export function useCloudSync({
     flushPendingAutosave,
     cancelPendingAutosave,
     saveAuthoritativeSnapshot,
+    saveWeeklyClose,
+    saveSettlement,
   };
 }

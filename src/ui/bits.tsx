@@ -227,7 +227,7 @@ export function PageHeader({
         <span>{description}</span>
         {context && <div className="page-context">{context}</div>}
       </div>
-      <div className="page-actions" aria-label={`${title} actions`}>
+      <div className="page-actions" role="group" aria-label={`${title} actions`}>
         {actions}
       </div>
     </header>

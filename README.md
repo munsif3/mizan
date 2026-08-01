@@ -22,9 +22,9 @@ Firestore household before any financial data screen is available.
 - **Household sync.** Sign in with Google to create or join a household so multiple people can share
   the same budget data.
 - **Installable PWA.** Works offline for the app shell and installs to your home screen.
-- **A repeatable check-in.** Home shows whether transaction data is current, keeps old review debt
+- **A repeatable close.** Balance shows whether transaction data is current, keeps old review debt
   separate from the selected month, checks every active account's confirmed coverage date, and records
-  a user-specific weekly review for each household.
+  a user-specific weekly close for each household.
 - **Explainable efficiency opportunities.** Mizan compares classified recorded spending with completed-month
   baselines, asks the household what is actually valuable, and tracks planned changes without altering ledger math.
 - **Assets without fake portfolio math.** Track Cash, property, FDs, shares/funds, policies, retirement
@@ -32,11 +32,14 @@ Firestore household before any financial data screen is available.
 
 ## Screens
 
-- **Home** - the weekly review of the current month: data freshness, projected save rate vs. your
-  target, the next cleanup action, the top three efficiency opportunities, per-member panels, settlement,
-  and what changed since last month.
-- **Transactions** - the full ledger plus a review queue for teaching categories to new merchants.
-- **History** - month-by-month save rate.
+- **Balance** - the weekly reading of the current month: measurement confidence, projected save rate
+  versus target, one next action, the weekly close, and settlement.
+- **Sort** - one-at-a-time review for teaching new merchants their purpose and beneficiary.
+- **Ledger** - the full statement-backed ledger with filters and row editing.
+- **Trend** - month-by-month save rate and movement.
+
+The Books, Catch up, and Weekly Close workflows are pushed from Balance; Settings and import tools
+remain modal or pushed surfaces rather than additional primary navigation.
 
 ## Prerequisites
 

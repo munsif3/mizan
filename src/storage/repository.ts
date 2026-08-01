@@ -1,4 +1,4 @@
-import type { AppData } from "../domain/types";
+import type { AppData, Settlement, WeeklyClose } from "../domain/types";
 
 export type RepositoryMode = "cloud" | "none";
 
@@ -11,11 +11,16 @@ export interface DataRepository {
   mode: "cloud";
   load(): Promise<AppData>;
   save(data: AppData): Promise<void>;
+  /** Append immutable settlement evidence without rewriting the household snapshot. */
+  appendSettlement?(record: Settlement): Promise<void>;
   subscribe?(
     onData: (data: AppData) => void,
     onError: (message: string) => void,
     options?: RepositorySubscriptionOptions,
   ): () => void;
+  /** Per-user ritual records live beside the authoritative household snapshot. */
+  loadWeeklyCloses?(): Promise<WeeklyClose[]>;
+  saveWeeklyClose?(record: WeeklyClose): Promise<void>;
 }
 
 /**

@@ -8,7 +8,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { monthLabel } from "../domain/dates";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
@@ -19,6 +19,7 @@ export interface MonthNavigatorProps {
   months: string[];
   todayMonth: string;
   onChange: (month: string) => void;
+  compact?: boolean;
 }
 
 function yearOf(month: string): number | undefined {
@@ -34,7 +35,7 @@ function clampYear(year: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(year, minimum), maximum);
 }
 
-export function MonthNavigator({ value, months, todayMonth, onChange }: MonthNavigatorProps) {
+export function MonthNavigator({ value, months, todayMonth, onChange, compact = false }: MonthNavigatorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -160,17 +161,19 @@ export function MonthNavigator({ value, months, todayMonth, onChange }: MonthNav
   };
 
   return (
-    <div className="month-nav" ref={rootRef}>
-      <button
-        type="button"
-        className="icon-btn"
-        aria-label="Previous month"
-        title="Previous month"
-        disabled={!previousMonth}
-        onClick={() => stepToMonth(previousMonth)}
-      >
-        <ChevronLeft size={17} strokeWidth={2.2} aria-hidden="true" />
-      </button>
+    <div className={`month-nav${compact ? " compact" : ""}`} ref={rootRef}>
+      {!compact && (
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label="Previous month"
+          title="Previous month"
+          disabled={!previousMonth}
+          onClick={() => stepToMonth(previousMonth)}
+        >
+          <ChevronLeft size={17} strokeWidth={2.2} aria-hidden="true" />
+        </button>
+      )}
 
       <div className="month-picker">
         <button
@@ -183,8 +186,17 @@ export function MonthNavigator({ value, months, todayMonth, onChange }: MonthNav
           aria-controls={popoverId}
           onClick={() => open ? closePopover(true) : openPopover()}
         >
-          <CalendarDays size={17} strokeWidth={2.2} aria-hidden="true" />
-          <span>{monthLabel(value)}</span>
+          {compact ? (
+            <>
+              <span>{monthLabel(value)}</span>
+              <ChevronDown size={14} strokeWidth={2.2} aria-hidden="true" />
+            </>
+          ) : (
+            <>
+              <CalendarDays size={17} strokeWidth={2.2} aria-hidden="true" />
+              <span>{monthLabel(value)}</span>
+            </>
+          )}
         </button>
 
         {open && (
@@ -257,16 +269,18 @@ export function MonthNavigator({ value, months, todayMonth, onChange }: MonthNav
         )}
       </div>
 
-      <button
-        type="button"
-        className="icon-btn"
-        aria-label="Next month"
-        title="Next month"
-        disabled={!nextMonth}
-        onClick={() => stepToMonth(nextMonth)}
-      >
-        <ChevronRight size={17} strokeWidth={2.2} aria-hidden="true" />
-      </button>
+      {!compact && (
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label="Next month"
+          title="Next month"
+          disabled={!nextMonth}
+          onClick={() => stepToMonth(nextMonth)}
+        >
+          <ChevronRight size={17} strokeWidth={2.2} aria-hidden="true" />
+        </button>
+      )}
     </div>
   );
 }

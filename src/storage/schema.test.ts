@@ -154,6 +154,22 @@ describe("migrate (legacy member data -> v5 members)", () => {
 });
 
 describe("migrate (v5 passthrough and fresh data)", () => {
+  it("defaults missing settlements during the schema bump and preserves valid records", () => {
+    expect(migrate({ schemaVersion: 18, transactions: [], settings: {} }).settlements).toEqual([]);
+    const settlement = {
+      id: "settlement_1",
+      householdId: "hh_1",
+      month: "2026-07",
+      fromMemberId: "alex",
+      toMemberId: "sam",
+      amount: 100,
+      settledAt: "2026-07-15T12:00:00.000Z",
+      settledByUid: "user_1",
+    };
+    expect(migrate({ schemaVersion: 19, transactions: [], settlements: [settlement], settings: {} }).settlements)
+      .toEqual([settlement]);
+  });
+
   it("passes a v5 member list through and marks an orphaned personal category unassigned", () => {
     const v5 = {
       schemaVersion: 5,
@@ -235,7 +251,7 @@ describe("migrate (v7 income portions)", () => {
       schemaVersion: 6,
       settings: { members: [{ id: "m", name: "Member", color: "#123456", income: 1000 }], currency: "LKR" },
     });
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
     expect(data.settings.members[0]?.portions).toEqual([
       { id: "por_m", label: "Monthly income", amount: 1000, currency: "LKR", taxRate: 0, taxWithheld: true, window: null, schedule: { frequency: "monthly" }, budgetTreatment: "ordinary" },
     ]);
@@ -322,7 +338,7 @@ describe("migrate (v13 -> v14 scheduled income)", () => {
       },
       incomeReceipts: [{ id: "old", month: "2026-07", memberId: "m", portionId: "salary", amount: 1100 }],
     });
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
     expect(data.settings.members[0]?.portions[0]).toMatchObject({
       schedule: { frequency: "monthly" },
       budgetTreatment: "ordinary",
@@ -425,7 +441,7 @@ describe("migrate (v11 -> v12 purpose and beneficiary classification)", () => {
 
   it("preserves purpose categories and separates valid legacy personal beneficiaries", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
     expect(data.transactions.map(({ id, category, beneficiary }) => ({ id, category, beneficiary }))).toEqual([
       { id: "shared", category: "food", beneficiary: { type: "household" } },
       { id: "personal", category: "uncategorized", beneficiary: { type: "member", memberId: "sam" } },
@@ -556,7 +572,7 @@ describe("migrate (v9 shared contributions -> v10 allocations)", () => {
 
   it("preserves valid statement-backed contribution links", () => {
     const data = migrate(source);
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
     expect(data.sharedContributions).toEqual([{
       id: "c1",
       allocations: [{ expenseTransactionId: "loan", amount: 125000 }],
@@ -701,7 +717,7 @@ describe("schema v16 household continuity", () => {
         },
       }],
     });
-    expect(current.schemaVersion).toBe(18);
+    expect(current.schemaVersion).toBe(19);
     expect(current.settings.members[0]?.lifecycle).toMatchObject({ inactiveReason: "left" });
     expect(current.accounts[0]?.coverage?.throughDate).toBe("2026-07-31");
 
@@ -782,7 +798,7 @@ describe("schema v17 holdings, commitments, and transfer decisions", () => {
       ],
     });
 
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
     expect(data.assetHoldings[0]).toMatchObject({ id: "policy", owner: "unassigned" });
     expect(data.assetHoldings[0]?.linkedAccountId).toBeUndefined();
     expect(data.fixedCosts[0]).toMatchObject({ holdingId: "policy", totalAmount: 1_106_043 });
@@ -809,7 +825,7 @@ describe("schema v17 -> v18 account statement cadence", () => {
     // Absence means monthly, so pre-v18 households behave correctly without a
     // mass document rewrite on first load.
     const data = migrate({ ...base, accounts: [v17Account] });
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
     expect(data.accounts[0]?.cadence).toBeUndefined();
     expect(data.accounts[0]?.coverage?.throughDate).toBe("2026-07-01");
   });
@@ -817,11 +833,33 @@ describe("schema v17 -> v18 account statement cadence", () => {
   it("round-trips an explicit cadence", () => {
     const data = migrate({
       ...base,
-      schemaVersion: 18,
+      schemaVersion: 19,
       accounts: [{ ...v17Account, cadence: { period: "monthly", dueDay: 25 } }],
     });
     expect(data.accounts[0]?.cadence).toEqual({ period: "monthly", dueDay: 25 });
     expect(migrate(data).accounts[0]?.cadence).toEqual({ period: "monthly", dueDay: 25 });
+  });
+
+  it("round-trips an inferred or manually overridden statement day", () => {
+    const data = migrate({
+      ...base,
+      schemaVersion: 19,
+      accounts: [{
+        ...v17Account,
+        statementDay: 17,
+        statementDaySource: "manual",
+        coverage: {
+          ...v17Account.coverage,
+          confirmedDates: ["2026-01-03", "2026-02-04", "2026-03-03"],
+        },
+      }],
+    });
+    expect(data.accounts[0]?.statementDay).toBe(17);
+    expect(data.accounts[0]?.statementDaySource).toBe("manual");
+    expect(data.accounts[0]?.coverage?.confirmedDates).toEqual([
+      "2026-01-03", "2026-02-04", "2026-03-03", "2026-07-01",
+    ]);
+    expect(migrate(data).accounts[0]?.statementDay).toBe(17);
   });
 
   it("drops a nonsense cadence rather than trusting it", () => {
@@ -844,7 +882,7 @@ describe("schema v17 -> v18 account statement cadence", () => {
   });
 
   it("refuses data written by a newer schema instead of dropping the new field", () => {
-    expect(() => migrate({ ...base, schemaVersion: 19, accounts: [v17Account] }))
-      .toThrow(/schema v19.*Update Mizan/i);
+    expect(() => migrate({ ...base, schemaVersion: 20, accounts: [v17Account] }))
+      .toThrow(/schema v20.*Update Mizan/i);
   });
 });

@@ -66,6 +66,36 @@ function txn(
 const JULY_15: Date = new Date(2026, 6, 15); // mid-month, 31-day month
 
 describe("computeMonthSummary", () => {
+  it("subtracts append-only settlements from the displayed transfer without changing month figures", () => {
+    const data = fixture();
+    const before = computeMonthSummary(data, "2026-07", JULY_15);
+    const transfer = before.transfers[0]!;
+    const transactionSnapshot = before.monthTransactions;
+
+    data.settlements.push({
+      id: "settlement_1",
+      householdId: "hh_1",
+      month: "2026-07",
+      fromMemberId: transfer.fromId,
+      toMemberId: transfer.toId,
+      amount: transfer.amount,
+      settledAt: "2026-07-15T12:00:00.000Z",
+      settledByUid: "user_1",
+    });
+    const settled = computeMonthSummary(data, "2026-07", JULY_15);
+    expect(settled.transfers).toEqual([]);
+    expect(settled.totalSpend).toBe(before.totalSpend);
+    expect(settled.monthTransactions).toEqual(transactionSnapshot);
+
+    data.settlements.push({
+      ...data.settlements[0]!,
+      id: "settlement_undo",
+      amount: -transfer.amount,
+      settledAt: "2026-07-15T12:01:00.000Z",
+    });
+    expect(computeMonthSummary(data, "2026-07", JULY_15).transfers).toEqual(before.transfers);
+  });
+
   it("totals card + fixed spend and derives save rate", () => {
     const s = computeMonthSummary(fixture(), "2026-07", JULY_15);
     expect(s.incomeTotal).toBe(1_400_000);

@@ -96,6 +96,7 @@ describe("household helpers", () => {
       { id: "loan2", date: "2026-07-04", description: "LOAN FOR500240015943", amount: 60, category: "custom:cat1", beneficiary: { type: "household" }, account: "Card", note: "", source: "imported", direction: "debit", kind: "loan_payment" },
     ];
     data.sharedContributions = [{ id: "c1", allocations: [{ expenseTransactionId: "loan", amount: 20 }, { expenseTransactionId: "loan2", amount: 20 }], transferDebitTransactionId: "out", transferCreditTransactionId: "in", contributorMemberId: "contributor", amount: 40 }];
+    data.settlements = [{ id: "settlement1", householdId: "hh_1", month: "2026-07", fromMemberId: "sam", toMemberId: "alex", amount: 40, settledAt: "2026-07-09T00:00:00.000Z", settledByUid: "user_1" }];
     const subject = { type: "merchant", merchantKey: "SHOP", category: "custom:cat1", beneficiary: { type: "member", memberId: "owner" } } as const;
     data.efficiencyPlans = [{
       id: "plan1", fingerprint: efficiencySubjectFingerprint(subject), subject, subjectLabel: "Shop · Owner",
@@ -106,11 +107,12 @@ describe("household helpers", () => {
     }];
 
     const cloud = appDataToCloudCollections(data, "user_1", "2026-07-09T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(11);
+    expect(cloud.settings?.schemaVersion).toBe(12);
     expect(cloud.merchantRules[0]?.key).toBe("SHOP");
     expect(cloud.csvPresets[0]?.signature).toBe("signature_1");
     expect(cloud.incomeReceipts).toEqual(data.incomeReceipts);
     expect(cloud.sharedContributions).toEqual(data.sharedContributions);
+    expect(cloud.settlements).toEqual(data.settlements);
     expect(cloud.assetHoldings).toEqual(data.assetHoldings);
     expect(cloud.efficiencyPlans).toEqual(data.efficiencyPlans);
     expect(cloud.settings?.fxRates).toEqual({ LKR: 0.0032 });
@@ -164,7 +166,7 @@ describe("household helpers", () => {
       } as never],
     });
     expect(data.fixedCosts[0]?.kind).toBe("expense");
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
   });
 
   it("defaults cloud v6 income sources to monthly ordinary treatment", () => {
@@ -190,20 +192,20 @@ describe("household helpers", () => {
     expect(data.incomeReceipts[0]).toMatchObject({
       label: "Salary", taxRate: 0, taxWithheld: true, budgetTreatment: "ordinary",
     });
-    expect(data.schemaVersion).toBe(18);
+    expect(data.schemaVersion).toBe(19);
   });
 
   it("rejects household data written by a newer cloud schema", () => {
     const settings = appDataToCloudCollections(emptyData(), "user_1").settings!;
     expect(() => cloudCollectionsToAppData({
-      settings: { ...settings, schemaVersion: 12 as 11 },
-    })).toThrow(/cloud schema v12.*update Mizan/i);
+        settings: { ...settings, schemaVersion: 13 as 12 },
+    })).toThrow(/cloud schema v13.*update Mizan/i);
   });
 
   it("maps a full reset to empty split collections with valid settings", () => {
     const reset = emptyData();
     const cloud = appDataToCloudCollections(reset, "user_1", "2026-07-10T00:00:00.000Z");
-    expect(cloud.settings?.schemaVersion).toBe(11);
+    expect(cloud.settings?.schemaVersion).toBe(12);
     expect(cloud.transactions).toEqual([]);
     expect(cloud.sharedContributions).toEqual([]);
     expect(cloud.accounts).toEqual([]);

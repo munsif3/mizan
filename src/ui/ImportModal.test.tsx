@@ -111,4 +111,34 @@ describe("ImportModal retries", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("passes the Catch up account scope through the import handler", async () => {
+    const result: ImportResult = { imported: 1, duplicates: 0, needsReview: 0, failures: [] };
+    const onImport = vi.fn().mockResolvedValue(result);
+    container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => root.render(
+      <ImportModal
+        onImport={onImport}
+        onCsv={() => {}}
+        onMapStatement={() => {}}
+        onReview={() => {}}
+        onClose={() => {}}
+        scopedAccountId="card"
+        scopedAccountLabel="Sam card"
+      />,
+    ));
+    expect(container.textContent).toContain("Importing statement activity for Sam card");
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(fileInput, "files", {
+      configurable: true,
+      value: [new File(["statement"], "statement.pdf", { type: "application/pdf" })],
+    });
+    await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
+    await act(async () => button(container!, "Import 1 statement").click());
+    expect(onImport.mock.calls[0]?.[3]).toBe("card");
+    await act(async () => root.unmount());
+  });
 });

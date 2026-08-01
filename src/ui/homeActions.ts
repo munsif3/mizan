@@ -29,6 +29,7 @@ export interface HomeAction {
   id: string;
   family: HomeActionFamily;
   priority: number;
+  estimateMinutes: number;
   title: string;
   body: string;
   count?: number;
@@ -56,6 +57,15 @@ export const HOME_ACTION_PRIORITY: Record<HomeActionFamily, number> = {
   ending_commitment: 320,
   save_rate: 330,
 };
+
+export function homeActionEstimateMinutes(family: HomeActionFamily, count = 1): number {
+  if (family === "account_coverage") return 2;
+  if (family === "classification") return Math.max(1, Math.ceil(count / 8));
+  if (family === "income_confirmation" || family === "settlement") return 1;
+  if (family === "weekly_check_in" || family === "save_rate") return 4;
+  if (family === "contribution_confirmation") return 3;
+  return 2;
+}
 
 export function rankHomeActions(actions: HomeAction[]): HomeAction[] {
   return [...actions].sort(
